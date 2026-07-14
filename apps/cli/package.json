@@ -1,0 +1,33 @@
+{
+  "name": "@forge/cli",
+  "version": "0.2.0",
+  "type": "module",
+  "bin": {
+    "forge": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "../../node_modules/.pnpm/node_modules/.bin/vitest run",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@forge/bus": "workspace:*",
+    "@forge/config": "workspace:*",
+    "@forge/marketplace": "workspace:*",
+    "@forge/platform": "workspace:*",
+    "@forge/plugin-registry": "workspace:*",
+    "@forge/project-rules": "workspace:*",
+    "@forge/protocol": "workspace:*",
+    "@forge/session-manager": "workspace:*",
+    "@forge/workflows": "workspace:*",
+    "@forge/workspace": "workspace:*",
+    "@forge/tools": "workspace:*",
+    "commander": "^13.1.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3",
+    "@types/node": "^22.13.10"
+  }
+}

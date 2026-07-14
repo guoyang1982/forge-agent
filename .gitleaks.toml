@@ -1,0 +1,20 @@
+title = "Forge Agent secret scanning configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Documented placeholder API keys"
+regexTarget = "match"
+regexes = [
+  '''sk-your-[a-z0-9-]+''',
+  '''tvly-your-[a-z0-9-]+''',
+  '''<YOUR_API_KEY>''',
+]
+
+[[allowlists]]
+description = "Generated xterm map export misidentified as a generic API key"
+regexTarget = "line"
+regexes = [
+  '''FourKeyMap\s*=\s*[^;]+TwoKeyMap\s*=\s*void 0''',
+]

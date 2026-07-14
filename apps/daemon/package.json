@@ -1,0 +1,45 @@
+{
+  "name": "@forge/daemon",
+  "version": "0.2.0",
+  "type": "module",
+  "bin": {
+    "forge-daemon": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/main.ts",
+    "start": "node dist/main.js",
+    "test": "../../node_modules/.pnpm/node_modules/.bin/vitest run"
+  },
+  "dependencies": {
+    "@forge/agent-core": "workspace:*",
+    "@forge/automation": "workspace:*",
+    "@forge/channel": "workspace:*",
+    "@forge/channel-core": "workspace:*",
+    "@forge/channel-ilink": "workspace:*",
+    "@forge/bus": "workspace:*",
+    "@forge/config": "workspace:*",
+    "@forge/context": "workspace:*",
+    "@forge/extension-hub": "workspace:*",
+    "@forge/llm": "workspace:*",
+    "@forge/marketplace": "workspace:*",
+    "@forge/memory": "workspace:*",
+    "@forge/tool-network": "workspace:*",
+    "@forge/tool-software": "workspace:*",
+    "@forge/hooks": "workspace:*",
+    "@forge/plugin-registry": "workspace:*",
+    "@forge/protocol": "workspace:*",
+    "@forge/session": "workspace:*",
+    "@forge/skill-registry": "workspace:*",
+    "@forge/run-orchestrator": "workspace:*",
+    "@forge/talent-registry": "workspace:*",
+    "@forge/tool-mcp": "workspace:*",
+    "@forge/tools": "workspace:*",
+    "@forge/workflows": "workspace:*",
+    "@forge/workspace": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3"
+  }
+}

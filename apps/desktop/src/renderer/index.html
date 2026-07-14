@@ -1,0 +1,793 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Forge 桌面端</title>
+    <link rel="icon" type="image/png" href="./assets/forge-icon.png" />
+    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./hljs-theme.css" />
+    <link rel="stylesheet" href="./xterm.css" />
+  </head>
+  <body>
+    <div id="bootstrapBanner" class="bootstrap-banner hidden" role="alert"></div>
+    <div id="appShell" class="app-shell">
+      <aside class="left-panel">
+        <div class="brand">
+          <img class="logo" src="./assets/forge-icon.png" alt="" />
+          <div class="brand-text">
+            <h1>Forge</h1>
+            <p>桌面端</p>
+          </div>
+        </div>
+
+        <nav class="side-nav">
+          <button id="navChatBtn" class="side-nav-item active">
+            <span class="nav-icon">✎</span>
+            <span>新对话</span>
+          </button>
+          <div id="navCustomizeGroup" class="side-nav-group collapsed">
+            <button
+              id="navCustomizeToggle"
+              class="side-nav-item side-nav-group-toggle"
+              type="button"
+              aria-expanded="false"
+              aria-controls="navCustomizeItems"
+            >
+              <span class="nav-icon">⚙</span>
+              <span>定制</span>
+              <span class="nav-caret">▸</span>
+            </button>
+            <div id="navCustomizeItems" class="side-nav-group-items" hidden>
+              <button id="navPluginsBtn" class="side-nav-item side-nav-subitem">
+                <span class="nav-icon">⊞</span>
+                <span>插件</span>
+              </button>
+              <button id="navMcpBtn" class="side-nav-item side-nav-subitem">
+                <span class="nav-icon">⎈</span>
+                <span>MCP</span>
+              </button>
+              <button id="navSkillsBtn" class="side-nav-item side-nav-subitem">
+                <span class="nav-icon">◆</span>
+                <span>Skills</span>
+              </button>
+              <button id="navHooksBtn" class="side-nav-item side-nav-subitem">
+                <span class="nav-icon">⚡</span>
+                <span>Hooks</span>
+              </button>
+              <button id="navRuntimesBtn" class="side-nav-item side-nav-subitem">
+                <span class="nav-icon">🤖</span>
+                <span>Runtime</span>
+              </button>
+            </div>
+          </div>
+          <button id="navChannelsBtn" class="side-nav-item">
+            <span class="nav-icon">📡</span>
+            <span>渠道</span>
+          </button>
+          <button id="navAutomationsBtn" class="side-nav-item">
+            <span class="nav-icon">⏱</span>
+            <span>自动化</span>
+          </button>
+          <div id="navTeamGroup" class="side-nav-group collapsed">
+            <button
+              id="navTeamToggle"
+              class="side-nav-item side-nav-group-toggle"
+              type="button"
+              aria-expanded="false"
+              aria-controls="navTeamItems"
+            >
+              <span class="nav-icon">👥</span>
+              <span class="nav-team-label">团队</span>
+              <span class="nav-caret" aria-hidden="true">▸</span>
+            </button>
+            <div id="navTeamItems" class="side-nav-group-items sidebar-team-items" hidden>
+              <button id="navTeamCenterBtn" class="side-nav-item side-nav-subitem" type="button">
+                <span class="nav-icon">🧑</span>
+                <span>人才中心</span>
+              </button>
+              <div id="talentRosterSidebar" class="talent-roster-list" role="list" aria-label="团队成员"></div>
+            </div>
+          </div>
+        </nav>
+
+        <div class="projects-section">
+          <div class="projects-head">
+            <label>项目</label>
+            <button id="sessionSearchBtn" class="icon-btn subtle" title="搜索所有会话">⌕</button>
+            <button id="addProjectBtn" class="icon-btn subtle" title="新增项目">＋</button>
+          </div>
+          <div id="sessionSearchPanel" class="session-search hidden">
+            <input id="sessionSearchInput" type="text" placeholder="搜索所有会话…" aria-label="搜索会话" />
+            <div id="sessionSearchResults" class="session-search-results"></div>
+          </div>
+          <div id="projectList" class="project-list"></div>
+        </div>
+
+        <div class="left-footer">
+          <button id="daemonBtn" class="side-nav-item ghost">检查 Daemon</button>
+          <div id="daemonOut" class="tiny"></div>
+          <button id="openSettingsBtn" class="side-nav-item ghost">设置</button>
+        </div>
+      </aside>
+
+      <div
+        id="resizeHandleLeft"
+        class="resize-handle resize-handle-left"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整左侧栏宽度"
+        tabindex="0"
+      ></div>
+
+      <main id="centerPanel" class="center-panel chat-empty-mode">
+        <header class="center-top">
+          <h2 id="centerTitle">新对话</h2>
+          <div class="top-actions">
+            <button id="terminalToggleBtn" class="icon-btn subtle" type="button" title="打开终端（当前工作目录）" aria-label="打开终端">&gt;_</button>
+            <button id="toggleRightBtn" class="icon-btn subtle" title="展开/收起代码侧栏">⫶</button>
+            <span id="runState" class="pill idle">空闲</span>
+          </div>
+        </header>
+
+        <div id="timelineFindBar" class="timeline-find hidden" role="search">
+          <input id="timelineFindInput" type="text" placeholder="在会话中查找…" aria-label="会话内查找" />
+          <span id="timelineFindCount" class="find-count"></span>
+          <button id="findPrevBtn" class="icon-btn subtle" type="button" title="上一个 (Shift+Enter)">↑</button>
+          <button id="findNextBtn" class="icon-btn subtle" type="button" title="下一个 (Enter)">↓</button>
+          <button id="findCloseBtn" class="icon-btn subtle" type="button" title="关闭 (Esc)">✕</button>
+        </div>
+
+        <div class="center-stage">
+          <div id="chatEmpty" class="chat-empty">
+            <h2 id="chatEmptyTitle">我们应该构建什么？</h2>
+          </div>
+          <div id="resourceToolbar" class="resource-toolbar resource-toolbar-skills hidden">
+            <div class="skill-toolbar-row">
+              <div class="skill-page-tabs" role="tablist">
+                <button type="button" class="skill-page-tab active" data-skill-tab="installed" role="tab">管理</button>
+                <button type="button" class="skill-page-tab" data-skill-tab="discover" role="tab">发现</button>
+              </div>
+              <div id="skillToolbarInstalled" class="skill-toolbar-pane skill-toolbar-pane-grow">
+                <input
+                  id="skillSearchInput"
+                  type="search"
+                  class="resource-search skill-filter-input toolbar-control"
+                  placeholder="筛选…"
+                  autocomplete="off"
+                />
+              </div>
+              <div id="skillToolbarDiscover" class="skill-toolbar-pane skill-toolbar-pane-grow hidden">
+                <input
+                  id="skillMarketSearchInput"
+                  type="search"
+                  class="resource-search skill-filter-input toolbar-control"
+                  placeholder="搜索 Skill（≥2 字）…"
+                  autocomplete="off"
+                />
+                <button type="button" id="skillManualAddBtn" class="btn secondary btn-sm skill-manual-btn toolbar-control">+ 手动添加</button>
+              </div>
+            </div>
+            <p id="skillToolbarHint" class="skill-toolbar-hint hidden">精选来自热门 GitHub 仓库；输入关键词可搜索 skills.sh 在线安装。</p>
+          </div>
+          <div id="skillManualModal" class="modal hidden">
+            <div class="modal-mask"></div>
+            <div class="modal-card modal-card-sm">
+              <h3>从 GitHub 安装 Skill</h3>
+              <p class="tiny">仓库根目录需含 SKILL.md，或多层 skills/&lt;id&gt;/SKILL.md</p>
+              <input id="skillManualRepoInput" type="text" class="modal-input" placeholder="owner/repo 或完整 GitHub URL" />
+              <div class="modal-actions">
+                <button type="button" id="skillManualCancelBtn" class="btn secondary">取消</button>
+                <button type="button" id="skillManualConfirmBtn" class="btn primary">安装</button>
+              </div>
+            </div>
+          </div>
+          <div id="hooksToolbar" class="resource-toolbar resource-toolbar-hooks hidden">
+            <div class="skill-toolbar-row">
+              <div class="skill-page-tabs" role="tablist">
+                <button type="button" class="hooks-page-tab active" data-hooks-tab="guide" role="tab">说明</button>
+                <button type="button" class="hooks-page-tab" data-hooks-tab="project" role="tab">项目</button>
+                <button type="button" class="hooks-page-tab" data-hooks-tab="project-local" role="tab">本地覆盖</button>
+                <button type="button" class="hooks-page-tab" data-hooks-tab="discovered" role="tab">已发现</button>
+              </div>
+            </div>
+          </div>
+          <div id="pluginToolbar" class="resource-toolbar resource-toolbar-plugins hidden">
+            <div class="skill-toolbar-row plugin-toolbar-row">
+              <div class="skill-page-tabs" role="tablist">
+                <button type="button" class="skill-page-tab active" data-plugin-tab="installed" role="tab">管理</button>
+                <button type="button" class="skill-page-tab" data-plugin-tab="discover" role="tab">发现</button>
+              </div>
+              <div id="pluginToolbarInstalled" class="skill-toolbar-pane skill-toolbar-pane-grow">
+                <input
+                  id="pluginSearchInput"
+                  type="search"
+                  class="resource-search skill-filter-input toolbar-control"
+                  placeholder="筛选…"
+                  autocomplete="off"
+                />
+              </div>
+              <div id="pluginToolbarDiscover" class="skill-toolbar-pane skill-toolbar-pane-grow hidden">
+                <input
+                  id="pluginMarketSearchInput"
+                  type="search"
+                  class="resource-search skill-filter-input toolbar-control"
+                  placeholder="搜索插件（≥2 字搜 GitHub）…"
+                  autocomplete="off"
+                />
+                <button type="button" id="pluginManualAddBtn" class="btn secondary btn-sm skill-manual-btn toolbar-control">+ 手动添加</button>
+              </div>
+            </div>
+            <p id="pluginToolbarHint" class="skill-toolbar-hint hidden">精选推荐 + GitHub 搜索；安装需含 plugin.json 或 .cursor-plugin / .claude-plugin 清单。</p>
+          </div>
+          <div id="talentsToolbar" class="resource-toolbar resource-toolbar-talents hidden">
+            <div class="skill-toolbar-row talents-toolbar-row">
+              <div class="skill-page-tabs" role="tablist">
+                <button type="button" class="talents-page-tab active" data-talents-tab="market" role="tab">人才市场</button>
+                <button type="button" class="talents-page-tab" data-talents-tab="roster" role="tab">已租用</button>
+              </div>
+              <div id="talentsToolbarMarket" class="skill-toolbar-pane skill-toolbar-pane-grow">
+                <input
+                  id="talentMarketSearchInput"
+                  type="search"
+                  class="resource-search skill-filter-input toolbar-control"
+                  placeholder="搜索角色、分类或 ID…"
+                  autocomplete="off"
+                />
+              </div>
+              <div id="talentsToolbarRoster" class="skill-toolbar-pane skill-toolbar-pane-grow hidden">
+                <input
+                  id="talentRosterSearchInput"
+                  type="search"
+                  class="resource-search skill-filter-input toolbar-control"
+                  placeholder="筛选已租用人才…"
+                  autocomplete="off"
+                />
+              </div>
+              <button type="button" id="talentsSyncBtn" class="btn secondary btn-sm toolbar-control" title="从 GitHub 或本地同步模板">↻ 同步</button>
+            </div>
+            <p id="talentsToolbarHint" class="skill-toolbar-hint">同步模板库后在此浏览；点击卡片在右侧「人才模版」面板查看完整 Markdown；租用后在对话中用 @mention 调用。</p>
+          </div>
+          <div id="pluginManualModal" class="modal hidden">
+            <div class="modal-mask"></div>
+            <div class="modal-card modal-card-sm">
+              <h3>从 GitHub 安装插件</h3>
+              <p class="tiny">仓库根目录或子目录需包含 plugin.json 清单文件。</p>
+              <input id="pluginManualRepoInput" type="text" class="modal-input" placeholder="owner/repo 或完整 GitHub URL" />
+              <div class="modal-actions">
+                <button type="button" id="pluginManualCancelBtn" class="btn secondary">取消</button>
+                <button type="button" id="pluginManualConfirmBtn" class="btn primary">安装</button>
+              </div>
+            </div>
+          </div>
+          <section id="timeline" class="timeline hidden"></section>
+          <section id="resourceView" class="timeline hidden"></section>
+
+          <footer id="composer" class="composer">
+            <div class="composer-wrap">
+              <div
+                id="slashPalette"
+                class="slash-palette hidden"
+                role="listbox"
+                aria-label="命令选择"
+              ></div>
+              <div
+                id="mentionPalette"
+                class="slash-palette mention-palette hidden"
+                role="listbox"
+                aria-label="文件引用"
+              ></div>
+              <div class="composer-card" id="composerCard">
+                <div id="networkPermissionHost" class="network-permission-host hidden" aria-live="polite"></div>
+                <div id="composerQueue" class="composer-queue hidden" aria-label="排队消息"></div>
+                <div id="composerAttachments" class="composer-attachments hidden" aria-label="附件"></div>
+                <textarea id="messageInput" placeholder="尽管问…" rows="4"></textarea>
+                <div class="composer-footer">
+                  <div class="composer-footer-left">
+                    <div class="composer-attach-wrap">
+                      <button
+                        type="button"
+                        id="composerAddBtn"
+                        class="composer-add-btn"
+                        title="添加附件"
+                        aria-label="添加附件"
+                        aria-expanded="false"
+                        aria-haspopup="menu"
+                      >
+                        +
+                      </button>
+                    </div>
+                    <div class="tag tag-project" title="切换项目">
+                      <span class="tag-icon" aria-hidden="true">📁</span>
+                      <span id="composerProjectLabel" class="tag-project-label">项目</span>
+                      <select id="composerProjectSelect" aria-label="切换项目"></select>
+                    </div>
+                    <button id="composerGitBranchTag" class="tag tag-project tag-branch hidden" type="button" title="切换 Git 分支" aria-haspopup="listbox" aria-expanded="false">
+                      <span class="tag-icon" aria-hidden="true">⑂</span>
+                      <span id="composerGitBranchLabel" class="tag-project-label">branch</span>
+                    </button>
+                    <span id="contextMeter" class="tag tag-static context-meter hidden" title=""></span>
+                    <select
+                      id="runtimeSelect"
+                      class="inline-select runtime-select"
+                      title="Agent Runtime"
+                      aria-label="选择 Agent Runtime"
+                    >
+                      <option value="forge">Forge Agent</option>
+                      <option value="codex">Codex</option>
+                      <option value="claude-code">Claude Code</option>
+                      <option value="cursor">Cursor</option>
+                    </select>
+                    <select
+                      id="runtimeModeSelect"
+                      class="inline-select runtime-mode-select hidden"
+                      title="Agent Mode"
+                      aria-label="选择 Agent 模式"
+                    ></select>
+                    <span
+                      id="runtimeStatusTag"
+                      class="tag tag-static runtime-status-tag hidden"
+                      title=""
+                    ></span>
+                    <select id="profileSelect" class="inline-select" title="模型"></select>
+                  </div>
+                  <button id="runBtn" class="send-btn" type="button" title="开始执行" aria-label="开始执行">
+                    <span class="send-icon send-icon-arrow" aria-hidden="true">↑</span>
+                    <span class="send-icon send-icon-stop" aria-hidden="true"></span>
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div id="composerAttachMenu" class="composer-attach-menu hidden" role="menu">
+              <button
+                type="button"
+                class="composer-attach-menu-item"
+                data-attach-action="files"
+                role="menuitem"
+                title="图片、PDF/Office、代码与文本（单文件≤20MB）"
+              >
+                <span class="composer-attach-menu-icon" aria-hidden="true">📎</span>
+                添加照片和文件
+              </button>
+            </div>
+          </footer>
+        </div>
+      </main>
+
+      <div
+        id="resizeHandleRight"
+        class="resize-handle resize-handle-right hidden"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整右侧栏宽度"
+        tabindex="0"
+      ></div>
+
+      <aside id="rightPanel" class="right-panel collapsed">
+        <header class="right-panel-head">
+          <div class="right-head-toolbar">
+            <button
+              id="toggleWorkspaceExplorerBtn"
+              type="button"
+              class="icon-btn subtle explorer-toggle"
+              title="工程目录"
+              aria-expanded="false"
+              aria-controls="workspaceExplorer"
+            >
+              ☰
+            </button>
+            <nav id="codePathBreadcrumb" class="path-breadcrumb hidden" aria-label="文件路径"></nav>
+          </div>
+          <h3>代码详情</h3>
+          <p>点击「修改的文件」或目录树中的文件，查看相对路径、diff 与完整内容。</p>
+        </header>
+        <div class="right-panel-body">
+          <aside id="workspaceExplorer" class="workspace-explorer hidden" aria-label="目录浏览">
+            <div id="workspaceExplorerTree" class="ws-tree"></div>
+          </aside>
+          <div class="right-panel-main">
+            <section id="codeDetail" class="code-detail-empty">
+              暂无代码详情。请先点击一条代码相关事件，或打开工程目录浏览文件。
+            </section>
+            <div id="codeDetailActions" class="code-detail-actions hidden"></div>
+          </div>
+        </div>
+      </aside>
+
+      <section id="terminalPanel" class="terminal-panel collapsed" aria-hidden="true" aria-label="终端">
+        <header class="terminal-panel-head">
+          <div id="terminalTabs" class="terminal-tabs"></div>
+          <button id="terminalNewBtn" class="icon-btn subtle terminal-head-btn" type="button" title="新建终端">＋</button>
+          <div class="terminal-head-spacer"></div>
+          <button id="terminalCloseBtn" class="icon-btn subtle terminal-head-btn" type="button" title="关闭终端面板">✕</button>
+        </header>
+        <div id="terminalBodies" class="terminal-bodies"></div>
+      </section>
+    </div>
+
+    <div id="channelEditorModal" class="modal hidden">
+      <div class="modal-mask"></div>
+      <div class="modal-card modal-card-md">
+        <header class="modal-head">
+          <h3>添加渠道</h3>
+          <button type="button" id="channelEditorCloseBtn" class="icon-btn subtle">✕</button>
+        </header>
+        <div class="field">
+          <label for="channelKindSelect">渠道类型</label>
+          <select id="channelKindSelect" class="modal-input"></select>
+        </div>
+        <div class="field">
+          <label for="channelNameInput">名称</label>
+          <input id="channelNameInput" type="text" class="modal-input" placeholder="例如：公司微信 Bot" />
+        </div>
+        <div class="field">
+          <label for="channelDescInput">描述</label>
+          <input id="channelDescInput" type="text" class="modal-input" placeholder="可选说明" />
+        </div>
+        <div class="field">
+          <label>工作目录</label>
+          <div id="channelCwdDisplay" class="automation-cwd-display tiny">—</div>
+        </div>
+        <div id="channelConfigFields"></div>
+        <div class="modal-actions">
+          <button type="button" id="channelEditorCancelBtn" class="btn secondary">取消</button>
+          <button type="button" id="channelEditorSaveBtn" class="btn primary">创建</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="channelLoginModal" class="modal hidden">
+      <div class="modal-mask"></div>
+      <div class="modal-card modal-card-md channel-login-modal">
+        <header class="modal-head">
+          <h3>微信 iLink 扫码登录</h3>
+          <button type="button" id="channelLoginCloseBtn" class="icon-btn subtle">✕</button>
+        </header>
+        <p class="channel-login-lead">请用微信扫描下方二维码，确认后 Bot Token 会自动写入渠道配置。</p>
+        <div id="channelLoginQrHost" class="channel-login-qr-host"></div>
+        <p id="channelLoginStatus" class="channel-login-status">等待扫码…</p>
+        <div class="modal-actions">
+          <button type="button" id="channelLoginCancelBtn" class="btn secondary">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="automationEditorModal" class="modal hidden">
+      <div class="modal-mask"></div>
+      <div class="modal-card modal-card-md">
+        <header class="modal-head">
+          <h3>创建自动化</h3>
+          <button type="button" id="automationEditorCloseBtn" class="icon-btn subtle">✕</button>
+        </header>
+        <div class="field">
+          <label for="automationNameInput">名称</label>
+          <input id="automationNameInput" type="text" class="modal-input" placeholder="每日简报" />
+        </div>
+        <div class="field">
+          <label for="automationDescInput">描述</label>
+          <input id="automationDescInput" type="text" class="modal-input" placeholder="可选说明" />
+        </div>
+        <div class="field-grid">
+          <div class="field">
+            <label for="automationCronInput">Cron</label>
+            <input id="automationCronInput" type="text" class="modal-input" placeholder="例如 */3 * * * *（每3分钟）；留空=仅手动" />
+          </div>
+          <div class="field">
+            <label for="automationTzInput">时区</label>
+            <input id="automationTzInput" type="text" class="modal-input" placeholder="Asia/Shanghai" />
+          </div>
+        </div>
+        <div class="field">
+          <label for="automationPromptInput">Prompt</label>
+          <textarea id="automationPromptInput" class="modal-input" rows="6" placeholder="自动化任务说明…"></textarea>
+        </div>
+        <div class="field">
+          <label>工作目录</label>
+          <div id="automationCwdDisplay" class="automation-cwd-display tiny">—</div>
+        </div>
+        <label class="toggle">
+          <input id="automationEnabledInput" type="checkbox" checked />
+          <span>启用</span>
+        </label>
+        <div class="field">
+          <label for="automationNotifyChannelSelect">完成后通知</label>
+          <select id="automationNotifyChannelSelect" class="modal-input">
+            <option value="">关闭</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button type="button" id="automationEditorCancelBtn" class="btn secondary">取消</button>
+          <button type="button" id="automationEditorSaveBtn" class="btn primary">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="composerGitBranchMenu" class="branch-menu hidden" role="dialog" aria-label="切换 Git 分支">
+      <input id="composerGitBranchSearch" class="branch-search-input" type="search" placeholder="搜索分支…" autocomplete="off" />
+      <div id="composerGitBranchList" class="branch-menu-list" role="listbox" aria-label="Git 分支列表"></div>
+    </div>
+
+    <div id="talentHireModal" class="modal hidden">
+      <div class="modal-mask"></div>
+      <div class="modal-card modal-card-sm talent-hire-card">
+        <header class="modal-head">
+          <h3 id="talentHireModalTitle">租用人才</h3>
+          <button type="button" id="talentHireModalCloseBtn" class="icon-btn subtle" aria-label="关闭">✕</button>
+        </header>
+        <p id="talentHireModalDesc" class="talent-hire-hint tiny muted"></p>
+        <div class="field">
+          <label for="talentHireDisplayNameInput">显示名称</label>
+          <input id="talentHireDisplayNameInput" type="text" class="modal-input" placeholder="例如：Nova" />
+        </div>
+        <div class="field">
+          <label for="talentHireMentionInput">@ 提及名</label>
+          <input id="talentHireMentionInput" type="text" class="modal-input" placeholder="例如：nova（不含 @）" />
+        </div>
+        <div class="modal-actions">
+          <button type="button" id="talentHireCancelBtn" class="btn secondary">取消</button>
+          <button type="button" id="talentHireConfirmBtn" class="btn primary">租用</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="talentDetailModal" class="modal hidden">
+      <div class="modal-mask"></div>
+      <div class="modal-card modal-card-md talent-detail-card">
+        <header class="modal-head">
+          <h3 id="talentDetailModalTitle">人才详情</h3>
+          <button type="button" id="talentDetailModalCloseBtn" class="icon-btn subtle" aria-label="关闭">✕</button>
+        </header>
+        <div class="field">
+          <label for="talentDetailDisplayNameInput">显示名称</label>
+          <input id="talentDetailDisplayNameInput" type="text" class="modal-input" />
+        </div>
+        <div class="field">
+          <label for="talentDetailMentionInput">@ 提及名</label>
+          <input id="talentDetailMentionInput" type="text" class="modal-input" />
+        </div>
+        <div class="field talent-detail-toggle">
+          <label class="checkbox-row">
+            <input id="talentDetailEnabledInput" type="checkbox" />
+            <span>启用（可在对话中 @ 提及）</span>
+          </label>
+        </div>
+        <p id="talentDetailMeta" class="tiny muted"></p>
+        <div class="field">
+          <label for="talentDetailSkillsInput">绑定 Skills（逗号分隔）</label>
+          <input id="talentDetailSkillsInput" type="text" class="modal-input" placeholder="留空则使用模板建议" />
+        </div>
+        <div class="field talent-detail-toggle">
+          <label class="checkbox-row">
+            <input id="talentDetailStrictSkillsInput" type="checkbox" />
+            <span>仅使用绑定 Skills（@ 该人才时不加载其它 skill）</span>
+          </label>
+          <p class="tiny muted">关闭时优先使用绑定 skills，但仍可按需调用其它 skill。需绑定至少一个 skill 才会生效。</p>
+        </div>
+        <div class="field">
+          <label for="talentDetailToolsInput">工具白名单（逗号分隔）</label>
+          <input id="talentDetailToolsInput" type="text" class="modal-input" placeholder="留空则使用模板建议" />
+        </div>
+        <details class="talent-detail-prompt">
+          <summary>查看人设（system prompt）</summary>
+          <pre id="talentDetailPromptPre" class="talent-detail-prompt-body"></pre>
+        </details>
+        <div class="modal-actions">
+          <button type="button" id="talentDetailFireBtn" class="btn secondary">解约</button>
+          <button type="button" id="talentDetailCancelBtn" class="btn secondary">关闭</button>
+          <button type="button" id="talentDetailSaveBtn" class="btn primary">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="settingsModal" class="settings-view hidden">
+      <div class="settings-shell">
+        <aside class="settings-sidebar" aria-label="设置分类">
+          <button id="closeSettingsBtn" type="button" class="settings-back-btn">← Back</button>
+          <div class="settings-search" aria-hidden="true">
+            <span>⌕</span>
+            <input type="text" value="" placeholder="Search Settings" tabindex="-1" />
+          </div>
+          <nav class="settings-nav tabs">
+            <button class="settings-nav-item tab active" data-tab="quick">快捷配置</button>
+            <button class="settings-nav-item tab" data-tab="models">模型配置</button>
+            <button class="settings-nav-item tab" data-tab="permissions">权限</button>
+            <button class="settings-nav-item tab" data-tab="hooks">Hooks</button>
+          </nav>
+        </aside>
+        <main class="settings-content">
+          <section id="tab-quick" class="tab-pane active">
+            <header class="settings-page-head">
+              <h2>快捷配置</h2>
+            </header>
+            <div class="settings-section-card">
+              <div class="settings-row">
+                <div>
+                  <h3>当前配置档</h3>
+                  <p>选择默认使用的 Forge profile。</p>
+                </div>
+                <select id="quickActiveProfile"></select>
+              </div>
+            </div>
+            <h3 class="settings-group-title">运行限制</h3>
+            <div class="settings-section-card">
+              <div class="settings-row">
+                <div>
+                  <h3>最大步数</h3>
+                  <p>限制单次 Agent 运行的工具调用步数。</p>
+                </div>
+                <input id="maxStepsInput" type="number" min="1" />
+              </div>
+              <div class="settings-row">
+                <div>
+                  <h3>上下文 Token</h3>
+                  <p>控制上下文窗口的预算上限。</p>
+                </div>
+                <input id="maxCtxInput" type="number" min="1000" step="1000" />
+              </div>
+            </div>
+            <h3 class="settings-group-title">显示</h3>
+            <div class="settings-section-card">
+              <div class="settings-row">
+                <div>
+                  <h3>主题</h3>
+                  <p>选择 Forge 桌面端的颜色主题。</p>
+                </div>
+                <select id="themeSelect">
+                  <option value="system">跟随系统</option>
+                  <option value="dark">深色</option>
+                  <option value="light">浅色</option>
+                </select>
+              </div>
+              <div class="settings-row">
+                <div>
+                  <h3>思考展示</h3>
+                  <p>选择 reasoning 内容在时间线中的呈现方式。</p>
+                </div>
+                <select id="thinkingSelect">
+                  <option value="collapse">collapse</option>
+                  <option value="stream">stream</option>
+                  <option value="hidden">hidden</option>
+                </select>
+              </div>
+              <div class="settings-row">
+                <div>
+                  <h3>进度展示</h3>
+                  <p>切换运行进度的简洁或详细模式。</p>
+                </div>
+                <select id="progressSelect">
+                  <option value="compact">compact</option>
+                  <option value="verbose">verbose</option>
+                </select>
+              </div>
+            </div>
+            <h3 class="settings-group-title">安全确认</h3>
+            <div class="settings-section-card">
+              <label class="settings-row settings-toggle-row">
+                <div>
+                  <h3>自动应用补丁</h3>
+                  <p>允许 write_file/write_patch 直接写入文件。</p>
+                </div>
+                <input id="settingsAutoApplyCheck" type="checkbox" />
+              </label>
+              <label class="settings-row settings-toggle-row">
+                <div>
+                  <h3>执行命令前确认</h3>
+                  <p>run_command 执行前弹出确认，可在本会话总是允许。</p>
+                </div>
+                <input id="settingsConfirmCommandsCheck" type="checkbox" />
+              </label>
+            </div>
+            <h3 class="settings-group-title">反思校验</h3>
+            <div class="settings-section-card">
+              <label class="settings-row settings-toggle-row">
+                <div>
+                  <h3>启用反思校验</h3>
+                  <p>交付结论前自检，发现阻断问题自动返工一轮。</p>
+                </div>
+                <input id="settingsReflectionCheck" type="checkbox" />
+              </label>
+              <div class="settings-row">
+                <div>
+                  <h3>反思审校模型</h3>
+                  <p>留空时使用当前模型。</p>
+                </div>
+                <select id="reflectionReviewerSelect"></select>
+              </div>
+              <div class="settings-row">
+                <div>
+                  <h3>最大返工轮数</h3>
+                  <p>限制自动返工循环次数。</p>
+                </div>
+                <input id="reflectionMaxRoundsInput" type="number" min="1" max="3" />
+              </div>
+              <div class="settings-row">
+                <div>
+                  <h3>触发返工的严重度</h3>
+                  <p>选择哪些审查问题会触发自动返工。</p>
+                </div>
+                <select id="reflectionSeveritySelect">
+                  <option value="blocker">仅阻断级问题（blocker）</option>
+                  <option value="minor">任何问题（含 minor）</option>
+                </select>
+              </div>
+            </div>
+            <div class="settings-actions-bar">
+              <button id="saveQuickBtn" class="btn primary">保存快捷配置</button>
+            </div>
+          </section>
+          <section id="tab-permissions" class="tab-pane">
+            <header class="settings-page-head">
+              <h2>权限</h2>
+              <p>控制 Agent 可执行的敏感能力。写入 <code>~/.forge-agent/config.json</code>。</p>
+            </header>
+            <div id="permissionsEditorHost" class="permissions-editor-host"></div>
+            <div class="settings-actions-bar">
+              <button id="savePermissionsBtn" type="button" class="btn primary">保存权限配置</button>
+            </div>
+          </section>
+          <section id="tab-hooks" class="tab-pane">
+            <header class="settings-page-head">
+              <h2>Hooks</h2>
+              <p>用户全局 Hooks（<code>~/.forge-agent/settings.json</code>）。项目级配置请用左侧「Hooks」页。</p>
+            </header>
+            <div id="userHooksEditorHost"></div>
+          </section>
+          <section id="tab-models" class="tab-pane">
+            <header class="settings-page-head">
+              <h2>模型配置</h2>
+              <p>管理多模型配置档。停用后不会在对话栏出现，且无法设为当前档。</p>
+            </header>
+            <div id="modelProfilesList" class="model-profiles-list"></div>
+            <div class="model-profiles-actions">
+              <button id="addModelProfileBtn" type="button" class="btn secondary">+ 添加模型</button>
+              <button id="saveModelProfilesBtn" type="button" class="btn primary">保存模型配置</button>
+            </div>
+            <details class="settings-advanced-json">
+              <summary>高级：编辑完整 JSON</summary>
+              <textarea id="configJsonInput"></textarea>
+              <button id="saveJsonBtn" type="button" class="btn secondary">保存完整配置 JSON</button>
+            </details>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div id="projectModal" class="modal hidden">
+      <div class="modal-mask"></div>
+      <div class="modal-card">
+        <header class="modal-head">
+          <h3>新增项目</h3>
+          <button id="closeProjectBtn" class="icon-btn subtle">✕</button>
+        </header>
+        <div class="field">
+          <label>项目名称</label>
+          <input id="projectNameInput" placeholder="例如：vip-present" />
+        </div>
+        <div class="field">
+          <label>工作目录（绝对路径）</label>
+          <div class="field-row">
+            <input id="projectCwdInput" placeholder="选择或输入绝对路径" />
+            <button id="pickProjectDirBtn" type="button" class="btn secondary">选择目录</button>
+          </div>
+        </div>
+        <button id="saveProjectBtn" class="btn primary">创建项目</button>
+      </div>
+    </div>
+    <script src="./file-preview.bundle.js"></script>
+    <script src="./channel-login-qr.bundle.js"></script>
+    <script src="./terminal.bundle.js"></script>
+    <script src="./terminal-panel.js"></script>
+    <script src="./slash-palette.js"></script>
+    <script src="./file-mention.js"></script>
+    <script src="./skills-marketplace.js"></script>
+    <script src="./plugins-marketplace.js"></script>
+    <script src="./extension-hub-ui.js"></script>
+    <script src="./model-profiles-ui.js"></script>
+    <script src="./runtime-ui.js"></script>
+    <script src="./permissions-ui.js"></script>
+    <script src="./hooks-ui.js"></script>
+    <script src="./session-run-ui.js"></script>
+    <script src="./git-branch-refresh.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

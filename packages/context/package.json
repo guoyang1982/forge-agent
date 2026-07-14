@@ -1,0 +1,13 @@
+{
+  "name": "@forge/context",
+  "version": "0.2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "scripts": { "build": "tsc" },
+  "dependencies": {
+    "@forge/project-rules": "workspace:*",
+    "@forge/workspace": "workspace:*"
+  }
+}

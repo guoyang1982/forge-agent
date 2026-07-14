@@ -1,0 +1,36 @@
+appId: dev.forge.desktop
+productName: Forge
+copyright: Copyright © Forge
+electronVersion: "31.7.7"
+npmRebuild: false
+directories:
+  output: ../../../../release
+files:
+  - dist/**/*
+  - src/renderer/**/*
+  - "!src/renderer/**/*.test.js"
+  - package.json
+asarUnpack:
+  - "**/node_modules/node-pty/**/*"
+extraResources:
+  - from: ../daemon
+    to: daemon
+    filter:
+      - "**/*"
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+  icon: src/renderer/assets/forge-icon.png
+  artifactName: Forge-${version}-mac-${arch}.${ext}
+win:
+  target:
+    - nsis
+  icon: src/renderer/assets/forge-icon.png
+  artifactName: Forge-${version}-win-${arch}.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  createDesktopShortcut: true
+  shortcutName: Forge

@@ -1,0 +1,24 @@
+node_modules/
+dist/
+apps/desktop/.forge-electron/
+apps/desktop/.electron-staging/
+.idea/
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+# Local credentials and runtime configuration. Keep example files tracked.
+.env
+.env.*
+!.env.example
+!.env.*.example
+config.json
+mcp.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+# Local electron-builder output. Release artifacts are published outside Git.
+release/

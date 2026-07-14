@@ -1,0 +1,81 @@
+{
+  "activeProfile": "openai",
+  "profiles": {
+    "openai": {
+      "provider": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKey": "sk-your-openai-key",
+      "name": "gpt-4o-mini"
+    },
+    "deepseek": {
+      "provider": "deepseek",
+      "baseUrl": "https://api.deepseek.com",
+      "apiKey": "sk-your-deepseek-key",
+      "name": "deepseek-v4-flash",
+      "options": {}
+    },
+    "deepseek-pro": {
+      "provider": "deepseek",
+      "baseUrl": "https://api.deepseek.com",
+      "apiKey": "sk-your-deepseek-key",
+      "name": "deepseek-v4-pro",
+      "options": {
+        "thinking": { "type": "enabled" },
+        "reasoning_effort": "high"
+      }
+    },
+    "dashscope": {
+      "provider": "dashscope",
+      "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "apiKey": "sk-your-dashscope-key",
+      "name": "qwen3.7-plus"
+    }
+  },
+  "limits": {
+    "maxSteps": 40,
+    "toolResultMaxChars": 12000,
+    "maxContextTokens": 64000
+  },
+  "ui": {
+    "thinking": "collapse",
+    "progress": "compact"
+  },
+  "reflection": {
+    "enabled": false,
+    "reviewerProfile": "deepseek",
+    "maxRounds": 1,
+    "minStepsBudget": 2,
+    "severityGate": "blocker"
+  },
+  "permissions": {
+    "fileSystem": {
+      "allowedRoots": [
+        "~/Documents",
+        "~/Downloads",
+        "~/Desktop",
+        "~/Pictures",
+        "~/Movies",
+        "~/Music"
+      ],
+      "read": "allow",
+      "write": "confirm",
+      "delete": "confirm"
+    },
+    "network": {
+      "enabled": true,
+      "search": "allow",
+      "web": "allow",
+      "api": "confirm",
+      "download": "confirm",
+      "allowedHosts": [],
+      "searchMode": "live",
+      "fetchMaxBytes": 2000000,
+      "fetchTimeoutMs": 15000
+    }
+  },
+  "network": {
+    "searchProvider": "tavily",
+    "searchApiKey": "tvly-your-tavily-key",
+    "searchCacheTtlHours": 24
+  }
+}

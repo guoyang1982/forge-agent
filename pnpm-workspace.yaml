@@ -1,0 +1,9 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+allowBuilds:
+  better-sqlite3: true
+  electron: true
+  esbuild: true
+  node-pty: true
+  tesseract.js: true

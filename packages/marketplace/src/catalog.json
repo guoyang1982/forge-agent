@@ -1,0 +1,11 @@
+[
+  {
+    "id": "excalidraw-diagram",
+    "name": "Excalidraw Diagram",
+    "description": "Generate Excalidraw diagram JSON with brand-aware visual arguments (coleam00/excalidraw-diagram-skill).",
+    "kind": "skill",
+    "repo": "coleam00/excalidraw-diagram-skill",
+    "subdir": "",
+    "tags": ["diagram", "excalidraw", "visualization", "architecture"]
+  }
+]

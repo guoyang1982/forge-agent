@@ -1,0 +1,34 @@
+{
+  "id": "forge-demo",
+  "name": "Forge Demo Plugin",
+  "version": "0.1.0",
+  "description": "Example plugin showing skills, commands, workflows, and optional MCP declarations.",
+  "publisher": "forge",
+  "enabledByDefault": false,
+  "capabilities": {
+    "skills": ["skills/demo-review.md"],
+    "mcpServers": [
+      {
+        "name": "demo",
+        "command": "node",
+        "args": ["mcp/demo-server.js"],
+        "enabled": false
+      }
+    ],
+    "commands": [
+      {
+        "name": "demo:review",
+        "description": "Example plugin command contribution."
+      }
+    ],
+    "workflows": ["workflows/demo-review.json"]
+  },
+  "settings": {
+    "schema": {
+      "demo.enabled": {
+        "type": "boolean",
+        "description": "Example plugin setting."
+      }
+    }
+  }
+}

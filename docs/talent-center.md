@@ -1,0 +1,175 @@
+# 如何组建和使用 AI 人才团队
+
+Forge 人才中心把专业角色、Skills、工具和权限打包成可以租用的 AI 同事。你可以点名单个专家完成任务，也可以把不同子任务交给多人，由团队负责人统一编排、写盘和验收。
+
+## 你能获得什么
+
+- **248 个内置中文模板**：覆盖工程、产品、设计、营销、安全、财务、销售、测试、游戏开发等 17 个领域。
+- **可定制的人才名册**：为人才设置姓名、`@mention`、启用状态、Skills、工具和严格 Skill 模式。
+- **单人或多人执行**：一个 `@mention` 让专家前台接管；多个 `@mention` 触发团队派活。
+- **可解释的协作过程**：桌面端显示团队负责人计划、派活波次、每个人才的状态、输出摘要和最终汇总。
+- **受控的写入边界**：后台人才只读生产，团队负责人统一修改工作区并运行验证，降低并发写冲突。
+
+人才模板随应用内置并在首次运行时写入本地目录，无需联网同步即可浏览。你也可以手动从 GitHub 或本地 `agency-agents` 仓库更新模板库。
+
+## 前置条件
+
+1. 完成 [Forge 快速开始](getting-started.md)。
+2. 保持 Forge Daemon 运行。
+3. 打开一个准备使用人才的项目。
+
+## 第一步：浏览人才市场
+
+桌面端打开 **团队 → 人才中心 → 人才市场**，可以按领域筛选、搜索并预览完整人设、推荐 Skills 和工具。
+
+*人才市场按领域展示中文职业模板；点击卡片可查看详情，点击“租用”即可加入当前项目。*
+
+CLI：
+
+```bash
+forge talents catalog
+forge talents catalog engineering
+forge talents catalog product --query "产品"
+```
+
+若需要从上游重新同步模板：
+
+```bash
+forge talents sync
+```
+
+## 第二步：租用并命名人才
+
+在桌面端点击人才卡片上的 **租用**，设置显示名称和唯一的 `@mention`。
+
+CLI 示例：
+
+```bash
+forge talents hire product-manager \
+  --name 方夏 \
+  --mention fangxia \
+  --cwd .
+```
+
+验证人才已经加入当前项目：
+
+```bash
+forge talents list --cwd .
+```
+
+## 第三步：点名单个人才
+
+在对话中输入 `@mention` 即可指定人才。加上 `!` 可明确要求该人才前台接管整轮任务：
+
+```bash
+forge run "@fangxia! 分析这个功能，输出目标、非目标和验收标准" --cwd .
+```
+
+人才会加载自己的人设和绑定 Skills，但仍必须遵守 Forge 的安全规则、项目规则和工具权限。
+
+## 第四步：让多人协作
+
+一条消息中点名多个人才，并把各自任务写在对应名字后面：
+
+```bash
+forge run "@fangxia 定义需求边界 @lumi 设计交互方案 @laozhou 审查技术风险" --cwd .
+```
+
+团队负责人会：
+
+1. 解析每个人才对应的任务。
+2. 判断任务依赖并生成派活计划。
+3. 将无依赖任务放在同一波次执行；依赖前置产出的任务后置。
+4. 汇总人才产出，由唯一写手修改工作区并验证结果。
+
+当任务明确彼此独立时，可用 `(并行)` 或 `||` 强制并行：
+
+```bash
+forge run "@fangxia 调研用户价值 @laozhou 独立审查安全风险 (并行)" --cwd .
+```
+
+当任务必须依次执行时，使用 `(串行)`、`→` 或自然语言说明依赖：
+
+```bash
+forge run "@fangxia 先写验收标准 → @laozhou 根据前述标准审查实现" --cwd .
+```
+
+## 第五步：绑定 Skills 和工具
+
+桌面端打开 **人才中心 → 已租用 → 人才详情**，可修改：
+
+- 显示名称和 `@mention`
+- 是否启用
+- 绑定的 Skills
+- 允许的工具
+- 是否只使用绑定 Skills
+
+CLI：
+
+```bash
+forge talents bind fangxia \
+  --skills spec,brainstorming \
+  --tools read_file,list_dir,grep \
+  --cwd .
+```
+
+后台多人模式始终只开放 `read_file`、`list_dir`、`grep` 和 `echo` 等只读工具；前台单人模式才可能使用人才配置中的写入或命令工具。
+
+## 管理人才
+
+```bash
+# 查看名册与任务统计
+forge talents list --cwd .
+
+# 改名或更换 mention
+forge talents rename fangxia --name 方夏老师 --mention pm --cwd .
+
+# 暂停或恢复
+forge talents bind pm --disable --cwd .
+forge talents bind pm --enable --cwd .
+
+# 解约
+forge talents fire pm --cwd .
+```
+
+## 验证协作是否生效
+
+桌面端执行多人任务后，应看到：
+
+1. “团队负责人计划”或“团队派活”卡片。
+2. 每个人才的待处理、执行中、完成或失败状态。
+3. 各人才的输出摘要。
+4. “团队负责人汇总中”以及最终统一结果。
+
+CLI 会把相同事件降级为文本进度行。
+
+## 常见问题
+
+### 输入 `@名字` 没有触发人才
+
+运行 `forge talents list --cwd .`，确认人才已启用，并使用唯一的 `mention`。邮箱、代码段和单词中间的 `@` 不会被识别为人才点名。
+
+### 多人任务没有并行
+
+安全回退会把无法判断依赖的多人任务串行执行。明确独立时加入 `(并行)`；存在依赖时让后一个任务写明“根据前述结果”。
+
+### 人才无法使用某个工具
+
+检查人才详情中的工具绑定。后台人才即使绑定了写工具也仍保持只读，这是避免多人写入冲突的安全边界。
+
+### 人才市场没有模板
+
+先确认 Daemon 已更新并重启，再运行：
+
+```bash
+forge talents sync
+```
+
+网络同步失败时，可设置 `FORGE_TALENTS_SOURCE_DIR`，或使用 `forge talents sync --source /path/to/agency-agents` 从本地仓库导入。
+
+## 相关文档
+
+- [操作手册](user-guide.md)
+- [Agent 能力与边界](agent-capabilities.md)
+- [配置参考](configuration.md)
+- [返回首页](../README.md)

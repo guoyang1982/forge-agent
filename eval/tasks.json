@@ -1,0 +1,18 @@
+[
+  {
+    "name": "fix-readme-typo",
+    "prompt": "Fix any obvious typo in README.md if present",
+    "cwd": ".",
+    "assert": "git diff --name-only | grep -q README || true"
+  },
+  {
+    "name": "add-jsdoc",
+    "prompt": "Add a one-line JSDoc comment to the main exported function in src/index.ts if it exists",
+    "cwd": "."
+  },
+  {
+    "name": "echo-react",
+    "prompt": "Use the echo tool three times with different messages, then summarize",
+    "cwd": "."
+  }
+]

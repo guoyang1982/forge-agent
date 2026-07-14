@@ -1,0 +1,6 @@
+# Require owner review for security-sensitive repository configuration.
+/.github/ @guoyang1982
+/.gitleaks.toml @guoyang1982
+
+# Default owner for the rest of the repository.
+* @guoyang1982

@@ -1,0 +1,10 @@
+[
+  {
+    "id": "superpowers",
+    "name": "Superpowers",
+    "description": "Agentic workflow bundle (brainstorming, TDD, plans). 仓库需含 plugin.json，否则请用手动导入指定子目录。",
+    "repo": "obra/superpowers",
+    "stars": 12000,
+    "tags": ["workflow", "skills"]
+  }
+]

@@ -1,0 +1,111 @@
+[
+  {
+    "id": "frontend-design",
+    "name": "frontend-design",
+    "description": "Create distinctive, production-grade frontend interfaces with high design quality.",
+    "repo": "anthropics/skills",
+    "subdir": "skills/frontend-design",
+    "installs": 499027,
+    "tags": ["design", "ui", "frontend"]
+  },
+  {
+    "id": "canvas-design",
+    "name": "canvas-design",
+    "description": "Create visual art and design assets in PNG/PDF using design philosophy.",
+    "repo": "anthropics/skills",
+    "subdir": "skills/canvas-design",
+    "installs": 67197,
+    "tags": ["design", "canvas"]
+  },
+  {
+    "id": "algorithmic-art",
+    "name": "algorithmic-art",
+    "description": "Creating algorithmic art using p5.js with seeded randomness and parameters.",
+    "repo": "anthropics/skills",
+    "subdir": "skills/algorithmic-art",
+    "installs": 146100,
+    "tags": ["art", "p5js"]
+  },
+  {
+    "id": "brand-guidelines",
+    "name": "brand-guidelines",
+    "description": "Applies Anthropic brand colors and typography to artifacts.",
+    "repo": "anthropics/skills",
+    "subdir": "skills/brand-guidelines",
+    "installs": 120000,
+    "tags": ["brand", "design"]
+  },
+  {
+    "id": "web-design-guidelines",
+    "name": "web-design-guidelines",
+    "description": "Review UI code for Web Interface Guidelines compliance.",
+    "repo": "vercel-labs/agent-skills",
+    "subdir": "skills/web-design-guidelines",
+    "installs": 364311,
+    "tags": ["web", "design", "a11y"]
+  },
+  {
+    "id": "vercel-react-best-practices",
+    "name": "vercel-react-best-practices",
+    "description": "React and Next.js performance optimization guidelines from Vercel Engineering.",
+    "repo": "vercel-labs/agent-skills",
+    "subdir": "skills/vercel-react-best-practices",
+    "installs": 449430,
+    "tags": ["react", "nextjs", "performance"]
+  },
+  {
+    "id": "find-skills",
+    "name": "find-skills",
+    "description": "Discover and install agent skills from the open skills ecosystem.",
+    "repo": "vercel-labs/skills",
+    "subdir": "skills/find-skills",
+    "installs": 1845259,
+    "tags": ["skills", "discovery"]
+  },
+  {
+    "id": "excalidraw-diagram",
+    "name": "excalidraw-diagram",
+    "description": "Generate Excalidraw diagram JSON with brand-aware visual arguments.",
+    "repo": "coleam00/excalidraw-diagram-skill",
+    "subdir": "",
+    "installs": 3440,
+    "catalogId": "excalidraw-diagram",
+    "tags": ["diagram", "excalidraw"]
+  },
+  {
+    "id": "skill-creator",
+    "name": "skill-creator",
+    "description": "Guide for creating effective Agent Skills with triggers and structure.",
+    "repo": "anthropics/skills",
+    "subdir": "skills/skill-creator",
+    "installs": 251268,
+    "tags": ["meta", "authoring"]
+  },
+  {
+    "id": "mcp-builder",
+    "name": "mcp-builder",
+    "description": "Build MCP servers with tools, resources, and best practices.",
+    "repo": "anthropics/skills",
+    "subdir": "skills/mcp-builder",
+    "installs": 85000,
+    "tags": ["mcp", "tools"]
+  },
+  {
+    "id": "pdf",
+    "name": "pdf",
+    "description": "Extract text and tables from PDFs, merge documents, fill forms.",
+    "repo": "anthropics/skills",
+    "subdir": "skills/pdf",
+    "installs": 90000,
+    "tags": ["pdf", "documents"]
+  },
+  {
+    "id": "docx",
+    "name": "docx",
+    "description": "Create and edit Word documents with formatting and tracked changes.",
+    "repo": "anthropics/skills",
+    "subdir": "skills/docx",
+    "installs": 75000,
+    "tags": ["word", "documents"]
+  }
+]

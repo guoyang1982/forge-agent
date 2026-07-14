@@ -1,0 +1,26 @@
+{
+  "name": "@forge/channel-gateway",
+  "version": "0.2.0",
+  "type": "module",
+  "bin": {
+    "forge-channel-gateway": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/main.ts",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@forge/bus": "workspace:*",
+    "@forge/channel": "workspace:*",
+    "@forge/channel-core": "workspace:*",
+    "@forge/channel-ilink": "workspace:*",
+    "@forge/config": "workspace:*",
+    "@forge/protocol": "workspace:*",
+    "@forge/session": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3"
+  }
+}

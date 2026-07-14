@@ -1,0 +1,25 @@
+{
+  "name": "@forge/tools",
+  "version": "0.2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forge/protocol": "workspace:*",
+    "@forge/workspace": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.9",
+    "@types/node": "^22.13.10"
+  }
+}

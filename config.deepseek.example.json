@@ -1,0 +1,27 @@
+{
+  "activeProfile": "deepseek",
+  "profiles": {
+    "deepseek": {
+      "provider": "deepseek",
+      "baseUrl": "https://api.deepseek.com",
+      "apiKey": "sk-your-deepseek-key",
+      "name": "deepseek-v4-flash",
+      "options": {}
+    },
+    "deepseek-pro": {
+      "provider": "deepseek",
+      "baseUrl": "https://api.deepseek.com",
+      "apiKey": "sk-your-deepseek-key",
+      "name": "deepseek-v4-pro",
+      "options": {
+        "thinking": { "type": "enabled" },
+        "reasoning_effort": "high"
+      }
+    }
+  },
+  "limits": {
+    "maxSteps": 40,
+    "toolResultMaxChars": 12000,
+    "maxContextTokens": 64000
+  }
+}

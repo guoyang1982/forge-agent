@@ -1,0 +1,17 @@
+{
+  "id": "demo-review",
+  "title": "Demo Review Workflow",
+  "description": "Example workflow contribution for plugin authors.",
+  "steps": [
+    {
+      "id": "inspect",
+      "title": "Inspect changes",
+      "description": "Read the diff and any referenced files."
+    },
+    {
+      "id": "findings",
+      "title": "Report findings",
+      "description": "Prioritize bugs, regressions, and missing tests."
+    }
+  ]
+}

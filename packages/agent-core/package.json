@@ -1,0 +1,27 @@
+{
+  "name": "@forge/agent-core",
+  "version": "0.2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forge/platform": "workspace:*",
+    "@forge/protocol": "workspace:*",
+    "@forge/llm": "workspace:*",
+    "@forge/tools": "workspace:*",
+    "@forge/workspace": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.9"
+  }
+}

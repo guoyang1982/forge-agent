@@ -1,0 +1,1 @@
+-- Legacy: 001 used session_scope; rename via add+copy (safe to re-run in app migrate)
