@@ -379,6 +379,13 @@ describe("restored team dispatch sessions", () => {
 });
 
 describe("restored step narratives", () => {
+  it("replays durable session events and renders canonical multi-file activity", () => {
+    const source = appSource();
+    expect(source).toContain("function renderPersistedSessionEvents");
+    expect(source).toContain("Array.isArray(res?.events)");
+    expect(source).toContain("const fileChanges = Array.isArray(payload.changes)");
+    expect(source).toContain("state.normalizedFileActivityCallIds");
+  });
   it("survive the conclusion render and use markdown", () => {
     const source = appSource();
     // Live stream copies inside the fold are stripped when the root conclusion renders.
@@ -507,6 +514,67 @@ describe("restored step narratives", () => {
     expect(source).toContain("stopRunActivityTimer");
     const summary = source.match(/function updateRunActivitySummary[\s\S]*?\n}\n/)?.[0] ?? "";
     expect(summary).toContain("`${elapsed}s`");
+  });
+
+  it("reuses one modified-files bar when the live stream is outside the details shell", () => {
+    const source = appSource();
+    const update = source.match(/function updateRunFilesChangedBar[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(update).toContain("data-run-activity-key");
+    expect(update).toContain("mount?.querySelectorAll?.(selector)");
+    expect(update).toContain("keyedBars.forEach((duplicate) => duplicate.remove())");
+    expect(update).toContain(":scope > .run-files-changed-bar:not([data-run-activity-key])");
+  });
+
+  it("accumulates file stats across calls while replacing running/done updates from one call", () => {
+    const source = appSource();
+    const helper =
+      source.match(/function accumulateRuntimeFileStats[\s\S]*?\n}\n/)?.[0] ?? "";
+    const accumulate = Function(`${helper}; return accumulateRuntimeFileStats;`)();
+    let stats = accumulate({}, "create", 97, 0);
+    stats = accumulate(stats.contributions, "create", 97, 0);
+    stats = accumulate(stats.contributions, "edit-1", 5, 5);
+    stats = accumulate(stats.contributions, "edit-2", 1, 0);
+    stats = accumulate(stats.contributions, "edit-3", 1, 1);
+    expect(stats).toMatchObject({ adds: 104, dels: 6 });
+
+    const render = source.match(/function renderCodexActivityChip[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(render).toContain("aggregateEntry.adds");
+    expect(render).toContain("statKey: callId");
+    const conclusion = source.match(/function buildRunConclusionFilesHtml[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(conclusion).toContain("diffStatsHtml(item.adds, item.dels)");
+    const css = readFileSync(join(here, "styles.css"), "utf-8");
+    expect(css).toContain(".run-files-changed-bar .modified-file-status");
+  });
+
+  it("shows exact runtime commands and expands their output inline", () => {
+    const source = appSource();
+    const handler = source.match(/function handleRuntimeActivityEvent[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(handler).toContain("args: displayEvent.args");
+    expect(handler).toContain("result: displayEvent.result");
+    const render = source.match(/function renderCodexActivityChip[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(render).toContain('kind: "command"');
+    expect(render).toContain("codex-activity-expand");
+    expect(source).toContain("function toggleCodexCommandDetail");
+    expect(source).toContain("退出码 ${detail.exitCode}");
+    expect(source).toContain(".codex-activity-chip.clickable");
+    const css = readFileSync(join(here, "styles.css"), "utf-8");
+    expect(css).toContain(".codex-command-detail-output");
+  });
+
+  it("normalizes legacy add-file events and terminalizes orphaned running chips", () => {
+    const source = appSource();
+    const normalize = source.match(
+      /function normalizeRuntimeFileActivityForDisplay[\s\S]*?\n}\n/,
+    )?.[0] ?? "";
+    expect(normalize).toContain("normalizeRuntimeFileChangeForDisplay");
+    expect(normalize).toContain("adds: Number(ev?.adds || 0) || adds");
+    const terminalize = source.match(
+      /function terminalizePendingActivityChips[\s\S]*?\n}\n/,
+    )?.[0] ?? "";
+    expect(terminalize).toContain(".codex-activity-chip.is-running");
+    expect(terminalize).toContain('.replace(/^正在运行/, "已运行")');
+    const finalize = source.match(/function finalizeRunActivity[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(finalize).toContain("terminalizePendingActivityChips(mount)");
   });
 
   it("allows one conclusion block per turn in a multi-turn session", () => {

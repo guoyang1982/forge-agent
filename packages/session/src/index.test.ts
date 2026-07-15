@@ -14,7 +14,8 @@ describe("SessionStore", () => {
       `CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE workspace_checkpoints (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, sha TEXT NOT NULL, created_at TEXT NOT NULL);
-CREATE TABLE session_dispatch_plans (session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, turn_index));`,
+CREATE TABLE session_dispatch_plans (session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, turn_index));
+CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER, event_type TEXT NOT NULL, item_id TEXT, payload TEXT NOT NULL, emitted_at_ms INTEGER NOT NULL);`,
     );
     const store = new SessionStore(join(root, "data.db"), migrations);
     const id = store.createSession("/tmp/project");
@@ -47,7 +48,8 @@ describe("workspace checkpoints persistence", () => {
       `CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE workspace_checkpoints (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, sha TEXT NOT NULL, created_at TEXT NOT NULL);
-CREATE TABLE session_dispatch_plans (session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, turn_index));`,
+CREATE TABLE session_dispatch_plans (session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, turn_index));
+CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER, event_type TEXT NOT NULL, item_id TEXT, payload TEXT NOT NULL, emitted_at_ms INTEGER NOT NULL);`,
     );
     return new SessionStore(join(root, "data.db"), migrations);
   }
@@ -125,6 +127,10 @@ CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT
   PRIMARY KEY (session_id, turn_index)
 );`,
     );
+    writeFileSync(
+      join(migrations, "007_session_events.sql"),
+      `CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER, event_type TEXT NOT NULL, item_id TEXT, payload TEXT NOT NULL, emitted_at_ms INTEGER NOT NULL);`,
+    );
     return new SessionStore(join(root, "data.db"), migrations);
   }
 
@@ -164,5 +170,28 @@ CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT
     expect(store.listDispatchPlans(id)).toHaveLength(1);
     expect(store.listDispatchPlans(id)[0]?.turnIndex).toBe(0);
     expect(store.listDispatchPlans(id)[0]?.intent).toBe("并行派活");
+  });
+
+  it("persists session events in sequence and truncates later turns", () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-eventdb-"));
+    const migrations = join(root, "migrations");
+    mkdirSync(migrations, { recursive: true });
+    writeFileSync(
+      join(migrations, "001_init.sql"),
+      `CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE workspace_checkpoints (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, sha TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE session_dispatch_plans (session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, turn_index));
+CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER, event_type TEXT NOT NULL, item_id TEXT, payload TEXT NOT NULL, emitted_at_ms INTEGER NOT NULL);`,
+    );
+    const store = new SessionStore(join(root, "data.db"), migrations);
+    const id = store.createSession("/tmp/p");
+    store.appendMessage(id, { role: "user", content: "u0" });
+    store.appendEvent(id, 0, { type: "status", phase: "model", message: "first" }, 10);
+    store.appendMessage(id, { role: "user", content: "u1" });
+    store.appendEvent(id, 1, { type: "status", phase: "model", message: "second" }, 20);
+    expect(store.listEvents(id).map((row) => row.emittedAtMs)).toEqual([10, 20]);
+    store.truncateAfterTurn(id, 1);
+    expect(store.listEvents(id)).toHaveLength(1);
   });
 });

@@ -7,6 +7,11 @@ import {
   type WebContents,
 } from "electron";
 import { killDaemonInDataDir } from "@forge/platform";
+import {
+  resolveDevelopmentNodeExecutable,
+  shouldReplaceConnectedDaemon,
+  waitForDaemonDisconnect,
+} from "./daemon-lifecycle.js";
 import { connectDaemon } from "@forge/bus";
 import {
   AGENT_EVENT_METHOD,
@@ -1312,10 +1317,10 @@ function resolveDaemonLaunch(): {
   const daemonJs = new URL("../../daemon/dist/main.js", import.meta.url);
   const daemonPath = fileURLToPath(daemonJs);
   return {
-    executable: process.execPath,
+    executable: resolveDevelopmentNodeExecutable(process.env),
     args: [daemonPath],
     cwd: dirname(dirname(daemonPath)),
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    env: { ...process.env },
   };
 }
 
@@ -1379,12 +1384,39 @@ async function pingDaemon(
 // running app — restarting again would loop forever. So restart at most once
 // per distinct observed build, then accept what's there.
 let buildMismatchRestartedFor: string | null = null;
+let developmentDaemonSynchronized = false;
+let daemonEnsureInFlight: Promise<void> | null = null;
 
 async function ensureDaemon(cfg: ForgeConfig): Promise<void> {
+  if (daemonEnsureInFlight) return daemonEnsureInFlight;
+  daemonEnsureInFlight = ensureDaemonOnce(cfg);
+  try {
+    await daemonEnsureInFlight;
+  } finally {
+    daemonEnsureInFlight = null;
+  }
+}
+
+async function ensureDaemonOnce(cfg: ForgeConfig): Promise<void> {
   try {
     const pong = await pingDaemon(cfg);
     const observed = pong.build ?? "?";
-    if (observed === FORGE_DAEMON_BUILD) {
+    const replace = shouldReplaceConnectedDaemon({
+      isPackaged: app.isPackaged,
+      developmentDaemonSynchronized,
+      observedBuild: observed,
+      expectedBuild: FORGE_DAEMON_BUILD,
+    });
+    if (!replace) {
+      buildMismatchRestartedFor = null;
+      return;
+    }
+    if (!app.isPackaged && !developmentDaemonSynchronized) {
+      console.log(
+        "[forge-desktop] development startup: replacing the shared daemon with this checkout",
+      );
+      await restartDaemon(cfg);
+      developmentDaemonSynchronized = true;
       buildMismatchRestartedFor = null;
       return;
     }
@@ -1411,12 +1443,13 @@ async function ensureDaemon(cfg: ForgeConfig): Promise<void> {
   } catch {
     await spawnDaemonProcess();
     await waitForDaemonReady(cfg);
+    if (!app.isPackaged) developmentDaemonSynchronized = true;
   }
 }
 
 async function restartDaemon(cfg: ForgeConfig): Promise<void> {
   killDaemonInDataDir(cfg.daemon.dataDir, cfg.daemon.socketPath);
-  await sleep(450);
+  await waitForDaemonDisconnect(() => pingDaemon(cfg), sleep);
   await spawnDaemonProcess();
   await waitForDaemonReady(cfg);
   resetDaemonEventSubscriber();

@@ -1,4 +1,4 @@
-import type { AgentEvent } from "@forge/protocol";
+import type { AgentEvent, RuntimeFileChange } from "@forge/protocol";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -26,12 +26,21 @@ export interface CodexActivityChipPayload {
   adds?: number;
   dels?: number;
   patch?: { path: string; unifiedDiff: string };
+  changes?: RuntimeFileChange[];
+  name?: string;
+  args?: unknown;
+  result?: string;
+  turnId?: string;
+  startedAtMs?: number;
+  completedAtMs?: number;
+  durationMs?: number;
+  emittedAtMs?: number;
 }
 
 export interface RuntimeActivityPayload {
   runtime: "codex" | "claude-code" | "cursor" | string;
   activityKind: "tool" | "command" | "file" | "mcp" | "search" | "read" | "think";
-  status: "running" | "done";
+  status: "running" | "done" | "failed" | "declined";
   callId?: string;
   label?: string;
   name?: string;
@@ -41,6 +50,12 @@ export interface RuntimeActivityPayload {
   adds?: number;
   dels?: number;
   patch?: { path: string; unifiedDiff: string };
+  changes?: RuntimeFileChange[];
+  turnId?: string;
+  startedAtMs?: number;
+  completedAtMs?: number;
+  durationMs?: number;
+  emittedAtMs?: number;
 }
 
 /** Codex thread item types rendered as Forge tool lines (non-chip). */
@@ -84,6 +99,36 @@ function diffStatsFromText(diff: string): { adds: number; dels: number } {
   return { adds, dels };
 }
 
+function isUnifiedDiff(diff: string): boolean {
+  return /^(?:diff --git|---\s|@@\s)/m.test(diff);
+}
+
+function contentLines(content: string): string[] {
+  if (!content) return [];
+  const normalized = content.endsWith("\n") ? content.slice(0, -1) : content;
+  return normalized ? normalized.split("\n") : [];
+}
+
+function normalizeCodexFileDiff(path: string, kind: RuntimeFileChange["kind"], diff: string): string {
+  if (!diff || isUnifiedDiff(diff) || kind === "update") return diff;
+  const lines = contentLines(diff);
+  const count = lines.length;
+  if (kind === "add") {
+    return [
+      "--- /dev/null",
+      `+++ ${path}`,
+      `@@ -0,0 +1,${count} @@`,
+      ...lines.map((line) => `+${line}`),
+    ].join("\n");
+  }
+  return [
+    `--- ${path}`,
+    "+++ /dev/null",
+    `@@ -1,${count} +0,0 @@`,
+    ...lines.map((line) => `-${line}`),
+  ].join("\n");
+}
+
 function basename(path: string): string {
   const slash = path.lastIndexOf("/");
   return slash >= 0 ? path.slice(slash + 1) : path;
@@ -107,6 +152,11 @@ export function buildCodexCommandChip(
   running: boolean,
 ): CodexActivityChipPayload {
   const callId = readString(item, ["id"]) ?? "command";
+  const command = readString(item, ["command"]) ?? "";
+  const cwd = readString(item, ["cwd"]) ?? "";
+  const result = readString(item, ["aggregatedOutput"]) ?? "";
+  const exitCode = typeof item.exitCode === "number" ? item.exitCode : null;
+  const durationMs = typeof item.durationMs === "number" ? item.durationMs : undefined;
   const actions = Array.isArray(item.commandActions) ? item.commandActions : [];
   let reads = 0;
   let lists = 0;
@@ -129,11 +179,21 @@ export function buildCodexCommandChip(
   if (cmdCount) {
     parts.push(running ? `正在运行 ${cmdCount} 条命令` : `已运行 ${cmdCount} 条命令`);
   }
-  const label =
-    parts.join("") ||
-    (running ? "正在运行命令" : readString(item, ["command"])?.slice(0, 72) ?? "已运行 1 条命令");
+  const commandSummary = command.replace(/\s+/g, " ").trim();
+  const label = commandSummary
+    ? `${running ? "正在运行" : "已运行"} ${commandSummary.slice(0, 140)}`
+    : parts.join("") || (running ? "正在运行命令" : "已运行 1 条命令");
   const icon: CodexActivityIcon = searches || lists ? "search" : reads ? "read" : "command";
-  return { callId, icon, label, status: running ? "running" : "done" };
+  return {
+    callId,
+    icon,
+    label,
+    status: running ? "running" : "done",
+    name: "run_command",
+    args: { command, cwd, commandActions: actions, exitCode },
+    result,
+    durationMs,
+  };
 }
 
 export function buildCodexFileChip(
@@ -142,16 +202,47 @@ export function buildCodexFileChip(
 ): CodexActivityChipPayload | null {
   const callId = readString(item, ["id"]) ?? "file";
   const changes = Array.isArray(item.changes) ? item.changes : [];
-  const first = changes.find((c) => isRecord(c));
-  const change = isRecord(first) ? first : item;
+  const records = changes.filter(isRecord);
+  const first = records[0];
+  const change = first ?? item;
   const path =
     readString(change, ["path", "filePath", "filepath", "filename", "file"]) ??
     readString(item, ["path", "filePath", "filepath", "filename", "file"]);
   if (!path) return null;
-  const diff = readString(change, ["diff", "unifiedDiff", "patch"]) ?? "";
-  const { adds, dels } = diffStatsFromText(diff);
+  const normalizedChanges: RuntimeFileChange[] = records
+    .map((record) => {
+      const changePath = readString(record, ["path", "filePath", "filepath", "filename", "file"]);
+      if (!changePath) return null;
+      const rawDiff = readString(record, ["diff", "unifiedDiff", "patch"]) ?? "";
+      const rawKind = isRecord(record.kind)
+        ? readString(record.kind, ["type", "kind", "name"])
+        : readString(record, ["kind", "type"]);
+      const kind: RuntimeFileChange["kind"] =
+        rawKind === "add" || rawKind === "create"
+          ? "add"
+          : rawKind === "delete" || rawKind === "remove"
+            ? "delete"
+            : "update";
+      const diff = normalizeCodexFileDiff(changePath, kind, rawDiff);
+      const stats = diffStatsFromText(diff);
+      return {
+        path: changePath,
+        kind,
+        ...(diff ? { unifiedDiff: diff } : {}),
+        ...stats,
+      };
+    })
+    .filter((entry): entry is RuntimeFileChange => Boolean(entry));
+  if (!normalizedChanges.length && path) {
+    normalizedChanges.push({ path, kind: "update", adds: 0, dels: 0 });
+  }
+  const adds = normalizedChanges.reduce((sum, entry) => sum + entry.adds, 0);
+  const dels = normalizedChanges.reduce((sum, entry) => sum + entry.dels, 0);
+  const diff = normalizedChanges[0]?.unifiedDiff ?? "";
   const base = basename(path);
-  const label = `${codexFileChangeVerb(change, running)} ${base}`;
+  const label = normalizedChanges.length > 1
+    ? `${running ? "正在修改" : "已修改"} ${normalizedChanges.length} 个文件`
+    : `${codexFileChangeVerb(change, running)} ${base}`;
   return {
     callId,
     icon: "file",
@@ -160,6 +251,7 @@ export function buildCodexFileChip(
     path,
     adds,
     dels,
+    changes: normalizedChanges,
     ...(diff ? { patch: { path, unifiedDiff: diff } } : {}),
   };
 }
@@ -235,6 +327,12 @@ export function emitRuntimeActivity(
   if (payload.adds !== undefined) event.adds = payload.adds;
   if (payload.dels !== undefined) event.dels = payload.dels;
   if (payload.patch !== undefined) event.patch = payload.patch;
+  if (payload.changes !== undefined) event.changes = payload.changes;
+  if (payload.turnId !== undefined) event.turnId = payload.turnId;
+  if (payload.startedAtMs !== undefined) event.startedAtMs = payload.startedAtMs;
+  if (payload.completedAtMs !== undefined) event.completedAtMs = payload.completedAtMs;
+  if (payload.durationMs !== undefined) event.durationMs = payload.durationMs;
+  if (payload.emittedAtMs !== undefined) event.emittedAtMs = payload.emittedAtMs;
   emit(event);
 }
 
@@ -249,10 +347,19 @@ export function emitCodexRuntimeActivityChip(
     status: payload.status,
     callId: payload.callId,
     label: payload.label,
+    name: payload.name,
+    args: payload.args,
+    result: payload.result,
     path: payload.path,
     adds: payload.adds,
     dels: payload.dels,
     patch: payload.patch,
+    changes: payload.changes,
+    turnId: payload.turnId,
+    startedAtMs: payload.startedAtMs,
+    completedAtMs: payload.completedAtMs,
+    durationMs: payload.durationMs,
+    emittedAtMs: payload.emittedAtMs,
   });
 }
 

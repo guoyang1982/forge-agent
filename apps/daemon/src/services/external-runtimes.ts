@@ -12,6 +12,10 @@ export function ensureExternalRuntimesRegistered(): void {
   registerExternalRuntime({
     id: "codex",
     label: "Codex",
+    capabilities: {
+      itemLifecycle: true, streamingText: true, streamingReasoning: true,
+      streamingPatch: true, commandOutput: true, permissions: true, subagents: true,
+    },
     run: (ctx) =>
       runCodexRuntime({
         cwd: ctx.cwd,
@@ -26,6 +30,10 @@ export function ensureExternalRuntimesRegistered(): void {
   registerExternalRuntime({
     id: "claude-code",
     label: "Claude Code",
+    capabilities: {
+      itemLifecycle: true, streamingText: true, streamingReasoning: true,
+      streamingPatch: false, commandOutput: true, permissions: true, subagents: false,
+    },
     run: (ctx) =>
       runClaudeRuntime({
         cwd: ctx.cwd,
@@ -40,6 +48,10 @@ export function ensureExternalRuntimesRegistered(): void {
   registerExternalRuntime({
     id: "cursor",
     label: "Cursor Agent",
+    capabilities: {
+      itemLifecycle: true, streamingText: true, streamingReasoning: true,
+      streamingPatch: false, commandOutput: true, permissions: true, subagents: false,
+    },
     run: (ctx) =>
       runCursorRuntime({
         cwd: ctx.cwd,

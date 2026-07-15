@@ -283,6 +283,8 @@ export interface GetSessionMessagesRequest {
 export interface GetSessionMessagesResult {
   sessionId: string;
   messages: ChatMessage[];
+  /** Durable UI event journal. Empty for sessions created before migration 007. */
+  events?: SessionEventRecord[];
   /** Pre-run worktree snapshots: turnIndex = 0-based ordinal among user messages. */
   checkpoints?: Array<{ turnIndex: number; sha: string }>;
   /** Latest persisted coordinator dispatch plans keyed by user-turn ordinal. */
@@ -306,6 +308,34 @@ export interface GetSessionMessagesResult {
       }>;
     }>;
   }>;
+}
+
+export interface SessionEventRecord {
+  sequence: number;
+  sessionId: string;
+  turnIndex: number | null;
+  eventType: AgentEvent["type"];
+  itemId?: string;
+  emittedAtMs: number;
+  event: AgentEvent;
+}
+
+export interface RuntimeFileChange {
+  path: string;
+  kind: "add" | "update" | "delete";
+  unifiedDiff?: string;
+  adds: number;
+  dels: number;
+}
+
+export interface RuntimeCapabilities {
+  itemLifecycle: boolean;
+  streamingText: boolean;
+  streamingReasoning: boolean;
+  streamingPatch: boolean;
+  commandOutput: boolean;
+  permissions: boolean;
+  subagents: boolean;
 }
 
 export interface ListPluginsRequest {
@@ -832,8 +862,13 @@ export type AgentEvent =
       sessionId?: string;
       runtime: "codex" | "claude-code" | "cursor" | string;
       activityKind: "tool" | "command" | "file" | "mcp" | "search" | "read" | "think";
-      status: "running" | "done";
+      status: "running" | "done" | "failed" | "declined";
       callId?: string;
+      turnId?: string;
+      startedAtMs?: number;
+      completedAtMs?: number;
+      durationMs?: number;
+      emittedAtMs?: number;
       label?: string;
       name?: string;
       args?: unknown;
@@ -842,6 +877,8 @@ export type AgentEvent =
       adds?: number;
       dels?: number;
       patch?: { path: string; unifiedDiff: string };
+      /** Canonical multi-file payload; legacy single-file fields remain during migration. */
+      changes?: RuntimeFileChange[];
       talent?: TalentEventInfo;
     }
   | {
