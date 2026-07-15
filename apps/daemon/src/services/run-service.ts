@@ -97,17 +97,27 @@ export async function handleRun(
   });
   const rt = await deps.getRuntime();
   const sessionId = req.sessionId ?? deps.sessions.createSession(absCwd);
+  const turnIndex = deps.sessions.countUserMessages(sessionId);
   const projectId = absCwd;
   // Set when a dispatch turn writes scratch artifacts; the outer `finally`
   // calls it so a mid-wave error/abort never leaks files into the workspace.
   let cleanupDispatchArtifacts: (() => void) | undefined;
 
   const runEmit = (event: AgentEvent) => {
-    if (event.type === "session_start" || event.type === "done") {
-      emit(event);
-      return;
+    const normalized =
+      event.type === "session_start" || event.type === "done"
+        ? event
+        : ({ ...event, sessionId } as AgentEvent);
+    try {
+      const emittedAtMs =
+        "emittedAtMs" in normalized && typeof normalized.emittedAtMs === "number"
+          ? normalized.emittedAtMs
+          : Date.now();
+      deps.sessions.appendEvent(sessionId, turnIndex, normalized, emittedAtMs);
+    } catch (error) {
+      console.warn("[forge] failed to persist session event", error);
     }
-    emit({ ...event, sessionId });
+    emit(normalized);
   };
 
   const runPreview = req.channelRun
@@ -124,7 +134,7 @@ export async function handleRun(
         ).slice(0, 120)
       : req.message.slice(0, 120);
 
-  emit({
+  runEmit({
     type: "session_start",
     sessionId,
     cwd: absCwd,

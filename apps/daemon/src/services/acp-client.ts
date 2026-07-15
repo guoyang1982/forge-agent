@@ -62,6 +62,12 @@ export interface AcpUpdate {
   toolCallId?: string;
   rawInput?: unknown;
   status?: string;
+  /** File path associated with the tool call (Cursor ACP may provide this). */
+  path?: string;
+  filePath?: string;
+  /** Unified diff for file edits. */
+  diff?: string;
+  unifiedDiff?: string;
 }
 
 export class AcpError extends Error {

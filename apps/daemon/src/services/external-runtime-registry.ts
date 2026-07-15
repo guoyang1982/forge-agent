@@ -1,4 +1,4 @@
-import type { AgentEvent, RunRequest, RunResult } from "@forge/protocol";
+import type { AgentEvent, RunRequest, RunResult, RuntimeCapabilities } from "@forge/protocol";
 
 export interface ExternalRuntimeContext {
   cwd: string;
@@ -12,6 +12,7 @@ export interface ExternalRuntimeContext {
 export interface ExternalRuntimeRunner {
   id: string;
   label: string;
+  capabilities: RuntimeCapabilities;
   run: (context: ExternalRuntimeContext) => Promise<RunResult>;
 }
 

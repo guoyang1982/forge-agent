@@ -479,6 +479,9 @@ const state = {
   runFinalText: "",
   /** sessionId -> in-flight tool line (tool calls run sequentially per session). */
   pendingToolLines: new Map(),
+  /** Tool calls represented by canonical runtime file activity instead of a duplicate tool row. */
+  normalizedFileActivityCallIds: new Set(),
+  normalizedFileActivityPaths: new Set(),
   runConclusionRendered: false,
   panelLeftWidth: PANEL_DEFAULT_LEFT,
   panelRightWidth: PANEL_DEFAULT_RIGHT,
@@ -1944,8 +1947,11 @@ function buildRunConclusionFilesHtml(files, patchSource) {
   return files
     .map((path) => {
       const item = map.get(path);
-      const status = item?.patch?.unifiedDiff
-        ? patchStatsHtml(item.patch.unifiedDiff)
+      const hasRuntimeStats = Number.isFinite(item?.adds) && Number.isFinite(item?.dels);
+      const status = hasRuntimeStats
+        ? diffStatsHtml(item.adds, item.dels)
+        : item?.patch?.unifiedDiff
+          ? patchStatsHtml(item.patch.unifiedDiff)
         : escapeHtml(item?.meta || "已编辑");
       const norm = normalizeWorkspaceRelPath(getActiveProject()?.cwd, path);
       const slash = norm.lastIndexOf("/");
@@ -2119,8 +2125,18 @@ function renderStructuredCodexActivityEntry(entry, container) {
   }
   const iconKey = String(entry.iconKey || entry.icon || "command");
   const stats = codexActivityStatsHtml(entry.adds, entry.dels, iconKey === "file");
+  let expand = "";
+  if (entry.forgeDetail) {
+    try {
+      if (JSON.parse(entry.forgeDetail)?.kind === "command") {
+        expand = '<span class="codex-activity-expand" aria-hidden="true">⌄</span>';
+      }
+    } catch {
+      /* ignore malformed command detail */
+    }
+  }
   wrap.dataset.codexStats = `${Number(entry.adds || 0)}:${Number(entry.dels || 0)}`;
-  wrap.innerHTML = `<span class="codex-activity-icon" aria-hidden="true">${codexActivityIconMarkup(iconKey)}</span><span class="codex-activity-label">${escapeHtml(entry.label || "")}</span>${stats}`;
+  wrap.innerHTML = `<span class="codex-activity-icon" aria-hidden="true">${codexActivityIconMarkup(iconKey)}</span><span class="codex-activity-label">${escapeHtml(entry.label || "")}</span>${stats}${expand}`;
   container.appendChild(wrap);
   return wrap;
 }
@@ -2575,6 +2591,8 @@ function resetRunActivityState() {
   state.activeSubagentMentions.clear();
   state.subagentStreamByMention.clear();
   state.pushEventMountOverride = null;
+  state.normalizedFileActivityCallIds.clear();
+  state.normalizedFileActivityPaths.clear();
   stopRunActivityTimer();
   stopAllCodexProvisionalFiles();
   state.codexCommentarySeenBySession.clear();
@@ -2668,6 +2686,26 @@ function codexActivityStatsHtml(adds, dels, force = false) {
   const d = Number(dels || 0);
   if (!force && !a && !d) return "";
   return `<span class="codex-activity-stats" aria-label="变更统计"><span class="codex-activity-add">+${a}</span> <span class="codex-activity-del">-${d}</span></span>`;
+}
+
+function animateCodexStatsCountUp(chip, targetAdds, targetDels) {
+  const addEl = chip.querySelector(".codex-activity-add");
+  const delEl = chip.querySelector(".codex-activity-del");
+  if (!addEl || !delEl) return;
+  const duration = 500;
+  const steps = 12;
+  const interval = duration / steps;
+  let step = 0;
+  const ease = (t) => 1 - Math.pow(1 - t, 3);
+  const tick = () => {
+    step++;
+    const progress = ease(Math.min(step / steps, 1));
+    addEl.textContent = `+${Math.round(targetAdds * progress)}`;
+    delEl.textContent = `-${Math.round(targetDels * progress)}`;
+    if (step < steps) setTimeout(tick, interval);
+    else chip.classList.remove("stats-counting");
+  };
+  tick();
 }
 
 function basename(path) {
@@ -2912,9 +2950,10 @@ function renderCodexActivityChip(payload) {
   ensureRunActivity();
   const body = state.runActivityBody;
   if (!body || !payload) return null;
-  setTimelineRuntime("codex");
+  const runtime = payload.runtime || "codex";
+  setTimelineRuntime(runtime);
   const sid = getActiveEventSessionId();
-  if (sid) state.runtimeBySession.set(sid, "codex");
+  if (sid) state.runtimeBySession.set(sid, runtime);
   const callId = String(payload.callId || "");
   const relPath = normalizeCodexActivityPath(payload.path);
   let line = callId
@@ -2941,13 +2980,38 @@ function renderCodexActivityChip(payload) {
   line.dataset.iconKey = String(payload.icon || "command");
   if (callId) line.dataset.codexActivityId = callId;
   if (relPath) line.dataset.codexActivityPath = relPath;
-  if (relPath && payload.patch?.unifiedDiff) {
+  const fileChanges = Array.isArray(payload.changes) ? payload.changes : [];
+  if (relPath && (payload.patch?.unifiedDiff || fileChanges.some((c) => c?.unifiedDiff))) {
     const map = codexProvisionalFilesForSession(sid, false);
     const provisional = map?.get(relPath);
     if (provisional) {
       stopCodexProvisionalFile(provisional);
       map.delete(relPath);
     }
+  }
+  let aggregateEntry = null;
+  if (fileChanges.length) {
+    for (const change of fileChanges) {
+      if (!change?.path) continue;
+      const recorded = recordRunModifiedFile(change.path, {
+        patch: change.unifiedDiff
+          ? { path: change.path, unifiedDiff: change.unifiedDiff, applied: payload.status === "done" }
+          : undefined,
+        statKey: callId,
+        adds: change.adds,
+        dels: change.dels,
+      });
+      if (!aggregateEntry || normalizeCodexActivityPath(change.path) === relPath) {
+        aggregateEntry = recorded;
+      }
+    }
+  } else if (relPath && payload.status === "done") {
+    aggregateEntry = recordRunModifiedFile(relPath, {
+      patch: payload.patch,
+      statKey: callId,
+      adds: payload.adds,
+      dels: payload.dels,
+    });
   }
   const previousAdds = Number(previousStats.split(":")[0] || 0);
   const previousDels = Number(previousStats.split(":")[1] || 0);
@@ -2959,32 +3023,71 @@ function renderCodexActivityChip(payload) {
     !payloadAdds &&
     !payloadDels &&
     (previousAdds || previousDels);
-  const displayAdds = shouldPreserveStats ? previousAdds : payloadAdds;
-  const displayDels = shouldPreserveStats ? previousDels : payloadDels;
+  const displayAdds = Number.isFinite(aggregateEntry?.adds)
+    ? aggregateEntry.adds
+    : shouldPreserveStats
+      ? previousAdds
+      : payloadAdds;
+  const displayDels = Number.isFinite(aggregateEntry?.dels)
+    ? aggregateEntry.dels
+    : shouldPreserveStats
+      ? previousDels
+      : payloadDels;
   const nextStats = `${displayAdds}:${displayDels}`;
   const stats = codexActivityStatsHtml(displayAdds, displayDels, payload.icon === "file");
-  line.innerHTML = `<span class="codex-activity-icon" aria-hidden="true">${codexActivityIconMarkup(payload.icon)}</span><span class="codex-activity-label">${escapeHtml(payload.label || "")}</span>${stats}`;
+  const command = String(payload.args?.command || "");
+  const commandDetail = command
+    ? serializeEventDetail({
+        kind: "command",
+        title: "Shell",
+        command,
+        cwd: payload.args?.cwd || "",
+        content: payload.result || "",
+        exitCode: payload.args?.exitCode,
+        durationMs: payload.durationMs,
+        status: payload.status,
+      })
+    : "";
+  const expand = commandDetail
+    ? '<span class="codex-activity-expand" aria-hidden="true">⌄</span>'
+    : "";
+  line.innerHTML = `<span class="codex-activity-icon" aria-hidden="true">${codexActivityIconMarkup(payload.icon)}</span><span class="codex-activity-label">${escapeHtml(payload.label || "")}</span>${stats}${expand}`;
+  if (commandDetail) {
+    line.dataset.forgeDetail = commandDetail;
+    line.classList.add("clickable", "has-command-detail");
+  }
+  const isNewStats = !previousStats && (displayAdds || displayDels);
   if (previousStats && previousStats !== nextStats) {
     line.classList.remove("stats-updated");
     void line.offsetWidth;
     line.classList.add("stats-updated");
   }
+  if (isNewStats && !running && (displayAdds > 5 || displayDels > 5)) {
+    line.classList.add("stats-counting");
+    animateCodexStatsCountUp(line, displayAdds, displayDels);
+  }
   line.dataset.codexStats = nextStats;
-  if (payload.patch?.unifiedDiff) {
+  const combinedDiff = fileChanges.length
+    ? fileChanges.map((change) => String(change?.unifiedDiff || "")).filter(Boolean).join("\n")
+    : payload.patch?.unifiedDiff;
+  if (combinedDiff) {
+    const detailPath = payload.path || fileChanges[0]?.path || "";
     const serialized = serializeEventDetail({
-      title: payload.path ? `Patch · ${payload.path}` : "Patch",
-      content: payload.patch.unifiedDiff,
-      patch: {
-        path: payload.path,
-        unifiedDiff: payload.patch.unifiedDiff,
-        applied: true,
-      },
+      title: fileChanges.length > 1 ? `Patch · ${fileChanges.length} 个文件` : detailPath ? `Patch · ${detailPath}` : "Patch",
+      content: combinedDiff,
+      ...(fileChanges.length <= 1
+        ? {
+            patch: {
+              path: detailPath,
+              unifiedDiff: combinedDiff,
+              applied: payload.status === "done",
+            },
+          }
+        : {}),
+      changes: fileChanges,
     });
     if (serialized) line.dataset.forgeDetail = serialized;
     line.classList.add("clickable");
-  }
-  if (relPath && payload.status === "done") {
-    recordRunModifiedFile(relPath, { patch: payload.patch });
   }
   if (state.runActivityStats && payload.label) {
     state.runActivityStats.lastStatus = String(payload.label);
@@ -2995,6 +3098,57 @@ function renderCodexActivityChip(payload) {
   maybeScrollActivityBody();
   if (sid) syncStructuredTimelineFromDom(sid);
   return line;
+}
+
+function isRuntimeUnifiedDiff(diff) {
+  return /^(?:diff --git|---\s|@@\s)/m.test(String(diff || ""));
+}
+
+function normalizeRuntimeFileChangeForDisplay(change) {
+  if (!change?.path) return change;
+  const kind = String(change.kind || "update");
+  const rawDiff = String(change.unifiedDiff || "");
+  if (!rawDiff || isRuntimeUnifiedDiff(rawDiff) || kind === "update") return change;
+  const content = rawDiff.endsWith("\n") ? rawDiff.slice(0, -1) : rawDiff;
+  const lines = content ? content.split("\n") : [];
+  const isAdd = kind === "add";
+  const unifiedDiff = isAdd
+    ? [
+        "--- /dev/null",
+        `+++ ${change.path}`,
+        `@@ -0,0 +1,${lines.length} @@`,
+        ...lines.map((line) => `+${line}`),
+      ].join("\n")
+    : [
+        `--- ${change.path}`,
+        "+++ /dev/null",
+        `@@ -1,${lines.length} +0,0 @@`,
+        ...lines.map((line) => `-${line}`),
+      ].join("\n");
+  return {
+    ...change,
+    unifiedDiff,
+    adds: isAdd ? lines.length : 0,
+    dels: isAdd ? 0 : lines.length,
+  };
+}
+
+function normalizeRuntimeFileActivityForDisplay(ev) {
+  const changes = Array.isArray(ev?.changes)
+    ? ev.changes.map(normalizeRuntimeFileChangeForDisplay)
+    : [];
+  const adds = changes.reduce((sum, change) => sum + Number(change?.adds || 0), 0);
+  const dels = changes.reduce((sum, change) => sum + Number(change?.dels || 0), 0);
+  const firstDiff = changes.find((change) => change?.unifiedDiff);
+  return {
+    ...ev,
+    changes,
+    adds: Number(ev?.adds || 0) || adds,
+    dels: Number(ev?.dels || 0) || dels,
+    patch: firstDiff
+      ? { path: firstDiff.path, unifiedDiff: firstDiff.unifiedDiff }
+      : ev?.patch,
+  };
 }
 
 function handleCodexActivityEvent(ev) {
@@ -3008,6 +3162,12 @@ function handleCodexActivityEvent(ev) {
     adds: ev.adds,
     dels: ev.dels,
     patch: ev.patch,
+    changes: ev.changes,
+    runtime: ev.runtime,
+    name: ev.name,
+    args: ev.args,
+    result: ev.result,
+    durationMs: ev.durationMs,
   });
 }
 
@@ -3039,21 +3199,89 @@ function handleRuntimeActivityEvent(ev) {
       beginToolLine(toolName, toolArgs, ev.callId, ev.talent);
       return;
     }
-    completeToolLine(ev.name || "runtime_tool", ev.result ?? "", ev.callId);
+    const doneName = ev.name || "runtime_tool";
+    if (ev.args && typeof ev.args === "object" && Object.keys(ev.args).length > 0) {
+      const key = toolLineKey(doneName, ev.callId);
+      const pending = state.pendingToolLines.get(key);
+      if (pending && (!pending.args || Object.keys(pending.args).length === 0)) {
+        pending.args = ev.args;
+      }
+    }
+    completeToolLine(doneName, ev.result ?? "", ev.callId);
+    if (ev.path && isFileEditRuntimeTool(doneName)) {
+      const relPath = normalizeWorkspaceRelPath(getActiveProject()?.cwd, ev.path);
+      if (relPath) {
+        recordRunModifiedFile(relPath, {
+          patch: ev.patch || undefined,
+        });
+      }
+    }
+    if (Array.isArray(ev.changes)) {
+      for (const change of ev.changes) {
+        const changePath = normalizeWorkspaceRelPath(getActiveProject()?.cwd, change?.path);
+        if (changePath) {
+          recordRunModifiedFile(changePath, {
+            patch: change.unifiedDiff ? { path: changePath, unifiedDiff: change.unifiedDiff, applied: true } : undefined,
+            statKey: "runtime",
+            adds: change.adds,
+            dels: change.dels,
+          });
+        }
+      }
+    }
     return;
   }
-  if (runtime === "codex") {
-    handleCodexActivityEvent({
-      callId: ev.callId,
-      icon: runtimeActivityIcon(ev),
-      label: ev.label,
-      status: ev.status,
-      path: ev.path,
-      adds: ev.adds,
-      dels: ev.dels,
-      patch: ev.patch,
-    });
+  if (ev.activityKind === "file" && ev.callId) {
+    const key = toolLineKey(ev.name || "", ev.callId);
+    const pending = state.pendingToolLines.get(key);
+    if (pending?.line?.isConnected) pending.line.remove();
+    state.pendingToolLines.delete(key);
+    state.normalizedFileActivityCallIds.add(String(ev.callId));
+    for (const change of ev.changes || []) {
+      const path = normalizeWorkspaceRelPath(getActiveProject()?.cwd, change?.path);
+      if (path) state.normalizedFileActivityPaths.add(path);
+    }
+    const path = normalizeWorkspaceRelPath(getActiveProject()?.cwd, ev.path);
+    if (path) state.normalizedFileActivityPaths.add(path);
   }
+  if (runtime === "codex" || ev.activityKind === "file") {
+    const displayEvent =
+      ev.activityKind === "file" ? normalizeRuntimeFileActivityForDisplay(ev) : ev;
+    handleCodexActivityEvent({
+      callId: displayEvent.callId,
+      icon: runtimeActivityIcon(displayEvent),
+      label: displayEvent.label,
+      status: displayEvent.status,
+      path: displayEvent.path,
+      adds: displayEvent.adds,
+      dels: displayEvent.dels,
+      patch: displayEvent.patch,
+      changes: displayEvent.changes,
+      runtime,
+      name: displayEvent.name,
+      args: displayEvent.args,
+      result: displayEvent.result,
+      durationMs: displayEvent.durationMs,
+    });
+    if (ev.activityKind === "file" && ev.status === "running" && ev.callId && !ev.path) {
+      scheduleCodexChipDiffPoll(ev.callId);
+    }
+  }
+}
+
+function terminalizePendingActivityChips(root = getTimelineMount()) {
+  root?.querySelectorAll?.(".codex-activity-chip.is-running").forEach((chip) => {
+    chip.classList.remove("is-running");
+    chip.classList.add("is-done");
+    const label = chip.querySelector(".codex-activity-label");
+    if (label) {
+      label.textContent = String(label.textContent || "")
+        .replace(/^正在运行/, "已运行")
+        .replace(/^正在编辑文件…$/, "已编辑")
+        .replace(/^正在编辑/, "已编辑")
+        .replace(/^正在修改/, "已修改");
+    }
+  });
 }
 
 function appendCodexCommentaryBlock(text) {
@@ -3643,6 +3871,12 @@ function serializeEventDetail(detail) {
       patch: detail.patch,
       filePath: detail.filePath || detail.patch?.path || "",
       toolFile: detail.toolFile || "",
+      kind: detail.kind || "",
+      command: detail.command || "",
+      cwd: detail.cwd || "",
+      exitCode: detail.exitCode,
+      durationMs: detail.durationMs,
+      status: detail.status || "",
     });
   } catch {
     return "";
@@ -3714,6 +3948,7 @@ function bindTimelineClickDelegation() {
     true,
   );
   tl.addEventListener("click", (e) => {
+    if (e.target.closest(".codex-command-detail")) return;
     const link = e.target.closest("a");
     if (link && tl.contains(link)) {
       const href = String(link.getAttribute("href") || "").trim();
@@ -3761,7 +3996,7 @@ function bindTimelineClickDelegation() {
     // The inline-diff header only toggles its <details>; don't open the right panel.
     const inlineHead = e.target.closest(".tool-inline-diff-head");
     if (inlineHead && tl.contains(inlineHead)) return;
-    const line = e.target.closest(".event.clickable");
+    const line = e.target.closest(".event.clickable, .codex-activity-chip.clickable");
     if (!line || !tl.contains(line)) return;
     // Clicking a specific inline diff line scrolls the right panel to that line.
     const diffLine = e.target.closest(".tool-inline-diff-body .diff-line");
@@ -3775,10 +4010,39 @@ function bindTimelineClickDelegation() {
       notifyUser("无法加载该行详情（可尝试重新打开该会话）", "warn");
       return;
     }
+    if (d.kind === "command") {
+      toggleCodexCommandDetail(line, d);
+      return;
+    }
     if (d?.patch?.path) void openModifiedFile(d.patch.path, d.patch);
     else if (d?.toolFile) void openToolFileDetail(d);
     else showCodeDetail({ ...d, filePath: d?.filePath || d?.patch?.path || "" });
   });
+}
+
+function toggleCodexCommandDetail(line, detail) {
+  const current = line.querySelector(":scope > .codex-command-detail");
+  if (current) {
+    current.remove();
+    line.classList.remove("is-expanded");
+    return;
+  }
+  const panel = document.createElement("div");
+  panel.className = "codex-command-detail";
+  const header = document.createElement("div");
+  header.className = "codex-command-detail-head";
+  const meta = [];
+  if (detail.cwd) meta.push(detail.cwd);
+  if (Number.isFinite(detail.exitCode)) meta.push(`退出码 ${detail.exitCode}`);
+  if (Number.isFinite(detail.durationMs)) meta.push(formatDurationMs(detail.durationMs));
+  header.innerHTML = `<span>Shell</span><span>${escapeHtml(meta.join(" · "))}</span>`;
+  const pre = document.createElement("pre");
+  pre.className = "codex-command-detail-output";
+  const output = String(detail.content || "").trimEnd();
+  pre.textContent = `$ ${detail.command}${output ? `\n\n${output}` : detail.status === "running" ? "\n\n运行中…" : ""}`;
+  panel.append(header, pre);
+  line.appendChild(panel);
+  line.classList.add("is-expanded");
 }
 
 /** Tool line click: show the real workspace file (with location breadcrumb) plus the tool args/result. */
@@ -4318,6 +4582,7 @@ function finalizeRunConclusionOnMount(finalText, sessionId) {
 function finalizeRunActivity() {
   const mount = getTimelineMount();
   if (!mount) return;
+  terminalizePendingActivityChips(mount);
   stopCodexProvisionalFiles(getActiveEventSessionId());
   clearAllWorkspaceTurnDiffPolls();
   removeRunFilesChangedBars(mount);
@@ -4377,7 +4642,9 @@ function finalizeRunActivity() {
 function recordRunPatch(ev) {
   const path = normalizeWorkspaceRelPath(getActiveProject()?.cwd, ev.path);
   const sid = state.eventRouteSessionId || state.liveRunSessionId;
+  const existing = state.runPatches.get(path) || {};
   state.runPatches.set(path, {
+    ...existing,
     filePath: path,
     title: `Patch · ${path}`,
     meta: ev.applied ? "已应用" : "待应用",
@@ -4391,9 +4658,16 @@ function recordRunPatch(ev) {
   if (sid) saveRunPatchesForSession(sid);
 }
 
+function accumulateRuntimeFileStats(contributions, key, adds, dels) {
+  const next = { ...(contributions || {}) };
+  next[String(key || "runtime")] = { adds: Math.max(0, Number(adds) || 0), dels: Math.max(0, Number(dels) || 0) };
+  const totals = Object.values(next).reduce((sum, item) => ({ adds: sum.adds + item.adds, dels: sum.dels + item.dels }), { adds: 0, dels: 0 });
+  return { contributions: next, ...totals };
+}
+
 function recordRunModifiedFile(path, options = {}) {
   const relPath = normalizeWorkspaceRelPath(getActiveProject()?.cwd, path);
-  if (!relPath) return;
+  if (!relPath) return null;
   const sid = state.eventRouteSessionId || state.liveRunSessionId;
   const existing = state.runPatches.get(relPath) || {};
   const patch = options.patch?.unifiedDiff
@@ -4403,18 +4677,31 @@ function recordRunModifiedFile(path, options = {}) {
         applied: options.patch.applied !== false,
       }
     : existing.patch;
-  state.runPatches.set(relPath, {
+  const hasRuntimeStats = options.statKey && (options.adds != null || options.dels != null);
+  const runtimeStats = hasRuntimeStats
+    ? accumulateRuntimeFileStats(existing.statContributions, options.statKey, options.adds, options.dels)
+    : null;
+  const nextEntry = {
     ...existing,
     filePath: relPath,
     title: existing.title || `File · ${relPath}`,
     meta: options.meta || existing.meta || (isImageFilePath(relPath) ? "已生成图片" : "已编辑"),
     content: existing.content || "",
     ...(patch ? { patch } : {}),
-  });
+    ...(runtimeStats
+      ? {
+          statContributions: runtimeStats.contributions,
+          adds: runtimeStats.adds,
+          dels: runtimeStats.dels,
+        }
+      : {}),
+  };
+  state.runPatches.set(relPath, nextEntry);
   if (sid) saveRunPatchesForSession(sid);
   syncFileEditLiveLabel(relPath, false);
   updateRunFilesChangedBar();
   updateRunActivitySummary();
+  return nextEntry;
 }
 
 const WORKSPACE_FILE_EXT_RE =
@@ -4499,6 +4786,44 @@ function scheduleWorkspaceTurnDiffPoll(pendingKey) {
   state.workspaceDiffPollTimers.set(pendingKey, setTimeout(() => void tick(), 700));
 }
 
+function scheduleCodexChipDiffPoll(callId) {
+  const pollKey = `chip:${callId}`;
+  if (state.workspaceDiffPollTimers.has(pollKey)) return;
+  const tick = async () => {
+    const body = state.runActivityBody;
+    const chip = body?.querySelector(`[data-codex-activity-id="${cssEscape(callId)}"]`);
+    if (!chip || chip.classList.contains("is-done")) {
+      clearWorkspaceTurnDiffPoll(pollKey);
+      return;
+    }
+    const sid = state.eventRouteSessionId || state.liveRunSessionId || "";
+    await reconcileRunPatchesFromWorkspace(sid);
+    const paths = [...state.runPatches.keys()];
+    const lastPath = paths[paths.length - 1];
+    if (lastPath) {
+      const entry = state.runPatches.get(lastPath);
+      const adds = Number(entry?.adds || 0);
+      const dels = Number(entry?.dels || 0);
+      renderCodexActivityChip({
+        callId,
+        icon: "file",
+        label: `正在编辑 ${basename(lastPath)}`,
+        status: "running",
+        path: lastPath,
+        adds,
+        dels,
+        runtime: "cursor",
+      });
+    }
+    if (chip.classList.contains("is-running")) {
+      state.workspaceDiffPollTimers.set(pollKey, setTimeout(() => void tick(), 800));
+    } else {
+      clearWorkspaceTurnDiffPoll(pollKey);
+    }
+  };
+  state.workspaceDiffPollTimers.set(pollKey, setTimeout(() => void tick(), 400));
+}
+
 function refreshPendingToolLineFromArgs(name, args, callId, talentOverride) {
   const key = toolLineKey(name, callId);
   const pending = state.pendingToolLines.get(key);
@@ -4556,7 +4881,20 @@ function updateRunFilesChangedBar() {
     return;
   }
   const files = [...state.runPatches.keys()];
-  let bar = details.querySelector(".run-files-changed-bar");
+  const mount = getTimelineMount();
+  const activityKey = details.dataset.timelineEntryId || details.dataset.streamId || "active";
+  const selector = `.run-files-changed-bar[data-run-activity-key="${cssEscape(activityKey)}"]`;
+  const keyedBars = [...(mount?.querySelectorAll?.(selector) || [])];
+  let bar = keyedBars.shift() || null;
+  keyedBars.forEach((duplicate) => duplicate.remove());
+  if (!bar) {
+    const legacyBars = [
+      ...details.querySelectorAll(".run-files-changed-bar:not([data-run-activity-key])"),
+      ...(mount?.querySelectorAll?.(":scope > .run-files-changed-bar:not([data-run-activity-key])") || []),
+    ];
+    bar = legacyBars.shift() || null;
+    legacyBars.forEach((duplicate) => duplicate.remove());
+  }
   if (!files.length) {
     bar?.remove();
     return;
@@ -4566,6 +4904,7 @@ function updateRunFilesChangedBar() {
     bar.className = "run-files-changed-bar";
     body.insertAdjacentElement("afterend", bar);
   }
+  bar.dataset.runActivityKey = activityKey;
   const filesHtml = buildRunConclusionFilesHtml(files, state.runPatches);
   bar.innerHTML = `
     <div class="run-files-changed-head">${files.length} 个文件已修改</div>
@@ -6322,6 +6661,25 @@ function renderRunConclusion(finalText, explicitSessionId) {
   if (sid) {
     const patches = state.runPatchesBySession.get(sid);
     if (patches?.size) state.runPatches = new Map(patches);
+  }
+
+  if (!state.runPatches.size && hadToolSteps) {
+    void reconcileRunPatchesFromWorkspace(sid).then(() => {
+      if (!state.runPatches.size) return;
+      const updatedFiles = [...state.runPatches.keys()];
+      const wrap = container?.querySelector(".run-conclusion");
+      if (!wrap) return;
+      const existingFilesSection = wrap.querySelector(".modified-files-list");
+      if (existingFilesSection) return;
+      const inner = wrap.querySelector(".run-conclusion-inner");
+      if (!inner) return;
+      const filesHtml = buildRunConclusionFilesHtml(updatedFiles, state.runPatches);
+      if (!filesHtml) return;
+      inner.insertAdjacentHTML("beforeend",
+        `<div class="run-conclusion-heading">${updatedFiles.length} 个文件已修改</div>
+         <div class="modified-files-list">${filesHtml}</div>`);
+      if (sid) saveRunPatchesForSession(sid);
+    });
   }
 
   const files = [...state.runPatches.keys()];
@@ -8818,6 +9176,10 @@ function patchStatsHtml(unifiedDiff) {
   return `<span class="inline-diff-stat inline-diff-add">+${adds}</span><span class="inline-diff-stat inline-diff-del">-${dels}</span>`;
 }
 
+function diffStatsHtml(adds, dels) {
+  return `<span class="inline-diff-stat inline-diff-add">+${Number(adds || 0)}</span><span class="inline-diff-stat inline-diff-del">-${Number(dels || 0)}</span>`;
+}
+
 /** Workspace file the tool touched (used to open the real file on click). */
 function toolCallFilePath(name, args) {
   const a = normalizeToolArgsEnvelope(args);
@@ -9900,6 +10262,42 @@ function renderRestoredSession(sessionId, messages, checkpoints = [], dispatchPl
   state.eventRouteSessionId = prevRoute;
 }
 
+/** Replay the durable daemon event journal. Legacy sessions fall back to message reconstruction. */
+function renderPersistedSessionEvents(sessionId, records) {
+  const events = (records || []).map((record) => record?.event).filter(Boolean);
+  if (!sessionId || !events.some((event) => event.type === "session_start")) return false;
+  const previousRoute = state.eventRouteSessionId;
+  const previousLive = state.liveRunSessionId;
+  state.eventRouteSessionId = sessionId;
+  state.liveRunSessionId = sessionId;
+  try {
+    for (const event of events) {
+      if (!event || typeof event.type !== "string") continue;
+      if (event.type === "session_start") {
+        beginSessionTurn(sessionId);
+        showChatEmpty(false);
+        if (event.preview) renderUserPromptOnce(event.preview);
+        continue;
+      }
+      if (event.type === "done") {
+        flushStreamText();
+        clearLiveStatusLine();
+        clearNetworkPermissionBanner();
+        renderRunConclusion(event.finalText || "", sessionId);
+        continue;
+      }
+      handleLiveAgentEvent({ ...event, sessionId });
+    }
+    flushStreamText();
+    syncStructuredTimelineFromDom(sessionId);
+    sanitizeStructuredTimelineCache(sessionId);
+    return true;
+  } finally {
+    state.eventRouteSessionId = previousRoute;
+    state.liveRunSessionId = previousLive;
+  }
+}
+
 async function restoreSessionTimeline(sessionId, switchGen, options = {}) {
   if (state.unreadDoneSessions.delete(sessionId)) renderProjects();
   const timeline = $("timeline");
@@ -9909,13 +10307,16 @@ async function restoreSessionTimeline(sessionId, switchGen, options = {}) {
     if (!isViewSwitchCurrent(switchGen)) return;
     if (sessionId !== state.viewingTimelineSessionId) return;
     const messages = Array.isArray(res?.messages) ? res.messages : [];
+    const persistedEvents = Array.isArray(res?.events) ? res.events : [];
     // An emptied session (e.g. after a full rewind truncation) shows the
     // new-chat state instead of a blank pane or a resurrected conclusion.
     if (!messages.length) {
-      clearTimeline();
-      forgetSessionRunCaches(sessionId);
-      showChatEmpty(true);
-      return;
+      if (!persistedEvents.length) {
+        clearTimeline();
+        forgetSessionRunCaches(sessionId);
+        showChatEmpty(true);
+        return;
+      }
     }
     // Snapshot AFTER the await: anything the user scrolled/toggled during the
     // daemon round-trip must win over what the view looked like before it.
@@ -9935,6 +10336,8 @@ async function restoreSessionTimeline(sessionId, switchGen, options = {}) {
     if (cacheOk) {
       loadSessionRunArtifacts(sessionId);
       renderTimelineFromState(sessionId, timeline);
+    } else if (renderPersistedSessionEvents(sessionId, persistedEvents)) {
+      ensureRestoredPromptFromPreview(sessionId, messages);
     } else {
       const activitySnapshot = snapshotRunActivitiesFromCache(sessionId);
       clearStructuredTimelineForRestore(sessionId);
@@ -16270,6 +16673,7 @@ function handleLiveAgentEventBody(ev, opts = {}) {
       finishStreamTextSegment();
       recordRunPatch(ev);
       const patchPath = normalizeWorkspaceRelPath(getActiveProject()?.cwd, ev.path);
+      if (state.normalizedFileActivityPaths.has(patchPath)) return;
       pushEvent(`补丁: ${patchPath}（${ev.applied ? "已应用" : "待应用"}）`, ev.applied ? "done" : "warn", {
         title: `Patch · ${patchPath}`,
         meta: ev.applied ? "已应用" : "待应用",
@@ -16415,6 +16819,7 @@ function handleLiveAgentEventBody(ev, opts = {}) {
     if (ev.type === "tool_end") {
       if (ev.name === "update_plan" || ev.name === "spawn_agent") return;
       if (isCodexRuntime(ev.sessionId)) return;
+      if (ev.callId && state.normalizedFileActivityCallIds.delete(String(ev.callId))) return;
       finishStreamTextSegment();
       completeToolLine(ev.name, ev.result ?? "", ev.callId);
       return;

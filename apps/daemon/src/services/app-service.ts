@@ -251,6 +251,7 @@ export function handleGetSessionMessages(
   return {
     sessionId: req.sessionId,
     messages: deps.sessions.loadMessages(req.sessionId, req.limit ?? 400),
+    events: deps.sessions.listEvents(req.sessionId),
     checkpoints: deps.sessions.listCheckpoints(req.sessionId),
     dispatchPlans: deps.sessions.listDispatchPlans(req.sessionId),
   };

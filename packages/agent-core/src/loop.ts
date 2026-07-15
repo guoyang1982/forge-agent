@@ -65,6 +65,37 @@ function truncate(s: string, max: number): string {
   return s.slice(0, max) + "\n...[truncated]";
 }
 
+function diffStats(unifiedDiff: string): { adds: number; dels: number } {
+  let adds = 0;
+  let dels = 0;
+  for (const line of unifiedDiff.split("\n")) {
+    if (line.startsWith("+") && !line.startsWith("+++")) adds++;
+    else if (line.startsWith("-") && !line.startsWith("---")) dels++;
+  }
+  return { adds, dels };
+}
+
+function forgeFileActivity(call: ToolCall, status: "running" | "done", diff?: string): AgentEvent | null {
+  if (call.name !== "write_patch" && call.name !== "write_file") return null;
+  const args = call.arguments as Record<string, unknown>;
+  const path = typeof args.path === "string" ? args.path : "";
+  if (!path) return null;
+  const unifiedDiff = diff ?? (typeof args.unified_diff === "string" ? args.unified_diff : "");
+  const stats = diffStats(unifiedDiff);
+  return {
+    type: "runtime_activity",
+    runtime: "forge",
+    activityKind: "file",
+    status,
+    callId: call.id,
+    label: `${status === "running" ? "正在编辑" : "已编辑"} ${path.split("/").pop() || path}`,
+    path,
+    ...stats,
+    ...(unifiedDiff ? { patch: { path, unifiedDiff } } : {}),
+    changes: [{ path, kind: "update", ...(unifiedDiff ? { unifiedDiff } : {}), ...stats }],
+  };
+}
+
 // ── Concurrency: two separate concerns ──────────────────────────────────────
 // 1. SAFETY (a tool property): may this tool run concurrently without breaking
 //    correctness? Read-only tools have no side effects; spawn_agent is isolated
@@ -344,6 +375,8 @@ export async function runReActLoop(
         args: call.arguments,
         step: stepNum,
       });
+      const startingFileActivity = forgeFileActivity(call, "running");
+      if (startingFileActivity) onEvent?.(startingFileActivity);
       const toolStarted = Date.now();
       let toolActive = false;
       const toolHeartbeat = setInterval(() => {
@@ -358,7 +391,15 @@ export async function runReActLoop(
       }, 1500);
       let result: string;
       try {
-        result = await tools.execute(call, ctx);
+        result = await tools.execute(call, {
+          ...ctx,
+          emit: (event) => {
+            ctx.emit(event);
+            if (event.type !== "patch_proposed") return;
+            const completed = forgeFileActivity(call, "done", event.unifiedDiff);
+            if (completed) onEvent?.(completed);
+          },
+        });
         toolActive = true;
       } catch (e) {
         if (isAbortError(e)) throw new RunCancelledError(messages);

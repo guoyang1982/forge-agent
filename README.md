@@ -136,6 +136,7 @@ forge review --cwd /path/to/project
 | [桌面端指南](docs/desktop-guide.md) | 下载、项目、Runtime、变更审查与回滚 |
 | [人才中心与团队派活](docs/talent-center.md) | 浏览人才市场、租用专家、绑定能力与多人协作 |
 | [移动端与消息渠道](docs/mobile-access.md) | Channel Gateway、渠道接入、项目绑定、运行条件与安全边界 |
+| [移动端 Relay 实施计划](docs/superpowers/plans/2026-07-15-mobile-relay.md) | Channel Gateway 内的 Mobile Adapter、Go Relay 独立部署、E2EE、设备配对与分阶段执行清单 |
 | [操作手册](docs/user-guide.md) | CLI、会话、Skills、插件、MCP 和常用工作流 |
 | [配置参考](docs/configuration.md) | 模型 Profile、环境变量、权限和配置优先级 |
 | [自动化指南](docs/automations-guide.md) | 定时任务、模板、运行记录与排障 |

@@ -86,6 +86,7 @@ Channel Gateway 按多渠道架构设计。新增平台只需要实现对应的�
 
 ## 相关文档
 
+- [移动端 Relay 实施计划](superpowers/plans/2026-07-15-mobile-relay.md)
 - [桌面端指南](desktop-guide.md)
 - [配置参考](configuration.md)
 - [操作手册](user-guide.md)

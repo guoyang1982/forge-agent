@@ -118,10 +118,11 @@ function codexItemResultText(item: Record<string, unknown>): string {
 interface CodexStreamState {
   itemPhaseById: Map<string, string>;
   activeReasoningId: string | null;
+  activeChipItems: Map<string, Record<string, unknown>>;
 }
 
 function createCodexStreamState(): CodexStreamState {
-  return { itemPhaseById: new Map(), activeReasoningId: null };
+  return { itemPhaseById: new Map(), activeReasoningId: null, activeChipItems: new Map() };
 }
 
 function emitCodexChipFromItem(
@@ -129,6 +130,13 @@ function emitCodexChipFromItem(
   sessionId: string,
   item: Record<string, unknown>,
   running: boolean,
+  lifecycle: {
+    turnId?: string;
+    startedAtMs?: number;
+    completedAtMs?: number;
+    durationMs?: number;
+    emittedAtMs?: number;
+  } = {},
 ): void {
   const type = readString(item, ["type"]) ?? "";
   if (type === "commandExecution") {
@@ -137,7 +145,7 @@ function emitCodexChipFromItem(
   }
   if (type === "fileChange") {
     const chip = buildCodexFileChip(item, running);
-    if (chip) emitCodexRuntimeActivityChip(emit, sessionId, chip);
+    if (chip) emitCodexRuntimeActivityChip(emit, sessionId, { ...chip, ...lifecycle });
     return;
   }
   if (type === "mcpToolCall") {
@@ -498,6 +506,14 @@ function mapCodexNotification(
   streamAcc: { value: string },
   streamState: CodexStreamState,
 ): void {
+  if (message.method.includes("turn/completed")) {
+    for (const item of streamState.activeChipItems.values()) {
+      emitCodexChipFromItem(emit, sessionId, item, false);
+    }
+    streamState.activeChipItems.clear();
+    return;
+  }
+
   if (message.method === "warning") {
     const params = isRecord(message.params) ? message.params : {};
     const warning = readString(params, ["message"]);
@@ -514,6 +530,26 @@ function mapCodexNotification(
       sessionId,
       message: `Codex: ${JSON.stringify(params.error ?? params)}`,
     });
+    return;
+  }
+
+  if (message.method === "item/fileChange/patchUpdated") {
+    const params = isRecord(message.params) ? message.params : {};
+    const itemId = readString(params, ["itemId"]) ?? "file-change";
+    const changes = Array.isArray(params.changes) ? params.changes : [];
+    const item = { type: "fileChange", id: itemId, changes };
+    streamState.activeChipItems.set(itemId, item);
+    const chip = buildCodexFileChip(item, true);
+    if (chip) {
+      emitCodexRuntimeActivityChip(emit, sessionId, {
+        ...chip,
+        turnId: readString(params, ["turnId"]) ?? undefined,
+        emittedAtMs:
+          typeof (message as unknown as Record<string, unknown>).emittedAtMs === "number"
+            ? ((message as unknown as Record<string, unknown>).emittedAtMs as number)
+            : undefined,
+      });
+    }
     return;
   }
 
@@ -536,7 +572,15 @@ function mapCodexNotification(
       return;
     }
     if (isCodexChipItemType(type) || type === "mcpToolCall") {
-      emitCodexChipFromItem(emit, sessionId, item, true);
+      if (itemId) streamState.activeChipItems.set(itemId, item);
+      emitCodexChipFromItem(emit, sessionId, item, true, {
+        turnId: readString(params, ["turnId"]) ?? undefined,
+        startedAtMs: typeof params.startedAtMs === "number" ? params.startedAtMs : undefined,
+        emittedAtMs:
+          typeof (message as unknown as Record<string, unknown>).emittedAtMs === "number"
+            ? ((message as unknown as Record<string, unknown>).emittedAtMs as number)
+            : undefined,
+      });
       return;
     }
     if (isCodexToolItemType(type)) {
@@ -556,6 +600,8 @@ function mapCodexNotification(
     const item = readCodexItem(params);
     const type = readString(item, ["type"]) ?? "item";
     if (isCodexChipItemType(type) || type === "mcpToolCall") {
+      const itemId = readString(item, ["id"]);
+      if (itemId) streamState.activeChipItems.set(itemId, item);
       emitCodexChipFromItem(emit, sessionId, item, true);
       return;
     }
@@ -579,7 +625,17 @@ function mapCodexNotification(
       return;
     }
     if (isCodexChipItemType(type) || type === "mcpToolCall") {
-      emitCodexChipFromItem(emit, sessionId, item, false);
+      if (itemId) streamState.activeChipItems.delete(itemId);
+      emitCodexChipFromItem(emit, sessionId, item, false, {
+        turnId: readString(params, ["turnId"]) ?? undefined,
+        completedAtMs:
+          typeof params.completedAtMs === "number" ? params.completedAtMs : undefined,
+        durationMs: typeof item.durationMs === "number" ? item.durationMs : undefined,
+        emittedAtMs:
+          typeof (message as unknown as Record<string, unknown>).emittedAtMs === "number"
+            ? ((message as unknown as Record<string, unknown>).emittedAtMs as number)
+            : undefined,
+      });
       if (type === "fileChange") {
         const chip = buildCodexFileChip(item, false);
         if (chip?.patch) {

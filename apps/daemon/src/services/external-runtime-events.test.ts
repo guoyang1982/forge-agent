@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import {
   buildCodexCommandChip,
   buildCodexFileChip,
@@ -10,6 +13,8 @@ import {
   normalizeCodexToolName,
 } from "./external-runtime-events.js";
 import type { AgentEvent } from "@forge/protocol";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 describe("external-runtime-events", () => {
   it("recognizes codex chip and tool item types", () => {
@@ -40,6 +45,30 @@ describe("external-runtime-events", () => {
     expect(chip.label).toContain("已列出文件");
     expect(chip.label).toContain("已读取 1 个文件");
     expect(chip.status).toBe("done");
+  });
+
+  it("preserves the exact command, output, exit code, cwd, and duration", () => {
+    const chip = buildCodexCommandChip(
+      {
+        type: "commandExecution",
+        id: "exec_1",
+        command: "pnpm test -- --run app.test.ts",
+        cwd: "/workspace/forge",
+        aggregatedOutput: "12 tests passed\n",
+        exitCode: 0,
+        durationMs: 1250,
+        commandActions: [{ type: "unknown", command: "pnpm test" }],
+      },
+      false,
+    );
+    expect(chip.label).toBe("已运行 pnpm test -- --run app.test.ts");
+    expect(chip.args).toMatchObject({
+      command: "pnpm test -- --run app.test.ts",
+      cwd: "/workspace/forge",
+      exitCode: 0,
+    });
+    expect(chip.result).toBe("12 tests passed\n");
+    expect(chip.durationMs).toBe(1250);
   });
 
   it("builds codex file activity labels with diff stats", () => {
@@ -97,6 +126,47 @@ describe("external-runtime-events", () => {
     expect(chip?.dels).toBe(0);
   });
 
+  it("converts full content from a newly added file into a counted unified diff", () => {
+    const chip = buildCodexFileChip(
+      {
+        type: "fileChange",
+        id: "call_add_content",
+        changes: [
+          {
+            path: "/tmp/new.html",
+            kind: { type: "add" },
+            diff: "<html>\n<body>hello</body>\n</html>\n",
+          },
+        ],
+      },
+      false,
+    );
+
+    expect(chip?.adds).toBe(3);
+    expect(chip?.dels).toBe(0);
+    expect(chip?.patch?.unifiedDiff).toContain("--- /dev/null");
+    expect(chip?.patch?.unifiedDiff).toContain("@@ -0,0 +1,3 @@");
+    expect(chip?.patch?.unifiedDiff).toContain("+<body>hello</body>");
+  });
+
+  it("keeps all files and aggregates stats for streaming multi-file changes", () => {
+    const chip = buildCodexFileChip(
+      {
+        type: "fileChange",
+        id: "multi",
+        changes: [
+          { path: "src/a.ts", kind: { type: "update" }, diff: "--- a\n+++ b\n-old\n+new" },
+          { path: "src/b.ts", kind: { type: "add" }, diff: "--- /dev/null\n+++ b\n+one\n+two" },
+        ],
+      },
+      true,
+    );
+    expect(chip?.label).toBe("正在修改 2 个文件");
+    expect(chip?.adds).toBe(3);
+    expect(chip?.dels).toBe(1);
+    expect(chip?.changes?.map((change) => change.path)).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
   it("accepts file path aliases and rejects pathless file changes", () => {
     expect(
       buildCodexFileChip(
@@ -152,5 +222,15 @@ describe("external-runtime-events", () => {
         content: [{ text: "Parse game script" }, { text: "Playtest in Chromium" }],
       }),
     ).toBe("Parse game script\nPlaytest in Chromium");
+  });
+
+  it("terminalizes orphaned Codex activity when the turn completes", () => {
+    const source = readFileSync(join(here, "codex-runtime.ts"), "utf8");
+    expect(source).toContain("activeChipItems");
+    const completed = source.match(
+      /if \(message\.method\.includes\("turn\/completed"\)\)[\s\S]*?\n  }/,
+    )?.[0] ?? "";
+    expect(completed).toContain("emitCodexChipFromItem");
+    expect(completed).toContain("activeChipItems.clear()");
   });
 });

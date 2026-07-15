@@ -192,6 +192,15 @@ const api = {
         }>;
         tool_call_id?: string;
       }>;
+      events?: Array<{
+        sequence: number;
+        sessionId: string;
+        turnIndex: number | null;
+        eventType: string;
+        itemId?: string;
+        emittedAtMs: number;
+        event: Record<string, unknown>;
+      }>;
     }>,
   openExternal: (url: string) =>
     ipcRenderer.invoke("forge:open-external", url) as Promise<{ ok?: boolean }>,

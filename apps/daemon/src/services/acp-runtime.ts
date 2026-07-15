@@ -32,8 +32,123 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readText(content: unknown): string | null {
   if (typeof content === "string") return content;
-  if (!isRecord(content)) return null;
-  return typeof content.text === "string" ? content.text : null;
+  if (isRecord(content) && typeof content.text === "string") return content.text;
+  if (Array.isArray(content)) {
+    for (const item of content) {
+      if (isRecord(item) && typeof item.text === "string") return item.text;
+    }
+  }
+  return null;
+}
+
+function readString(obj: unknown, keys: string[]): string | null {
+  if (!isRecord(obj)) return null;
+  for (const key of keys) {
+    const v = obj[key];
+    if (typeof v === "string" && v.length > 0) return v;
+  }
+  return null;
+}
+
+/** Normalize rawInput: parse JSON strings, ensure Record output. */
+function normalizeRawInput(raw: unknown): Record<string, unknown> {
+  if (isRecord(raw)) return raw;
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (isRecord(parsed)) return parsed;
+    } catch { /* not JSON */ }
+  }
+  return {};
+}
+
+/** Extract file path from ACP update fields + normalized args. */
+function extractAcpFilePath(
+  update: AcpUpdate,
+  args: Record<string, unknown>,
+): string | undefined {
+  return (
+    readString(update, ["path", "filePath"]) ??
+    readString(args, [
+      "path", "file_path", "filePath", "target_file", "targetFile",
+      "relative_path", "relativePath", "filename", "file",
+    ]) ??
+    undefined
+  );
+}
+
+interface AcpDiffEntry {
+  path: string;
+  unifiedDiff: string;
+  adds: number;
+  dels: number;
+  kind: "add" | "update" | "delete";
+}
+
+function buildUnifiedDiffFromOldNew(path: string, oldText: string, newText: string): string {
+  const cleanOld = oldText.replace(/^--\s*\/dev\/null\s*\n?/, "");
+  const cleanNew = newText.replace(/^\+\+\s*b?\/\/?\S+\s*\n?/, "");
+  const oldLines = cleanOld ? cleanOld.split("\n") : [];
+  const newLines = cleanNew ? cleanNew.split("\n") : [];
+  const isNew = !cleanOld || oldText.includes("/dev/null");
+  const header = isNew
+    ? `--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${newLines.length} @@\n`
+    : `--- a/${path}\n+++ b/${path}\n@@ -1,${oldLines.length} +1,${newLines.length} @@\n`;
+  const body = isNew
+    ? newLines.map((line) => `+${line}`).join("\n")
+    : [
+        ...oldLines.map((line) => `-${line}`),
+        ...newLines.map((line) => `+${line}`),
+      ].join("\n");
+  return header + body;
+}
+
+function diffStatsFromText(diff: string): { adds: number; dels: number } {
+  let adds = 0;
+  let dels = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+") && !line.startsWith("+++")) adds++;
+    else if (line.startsWith("-") && !line.startsWith("---")) dels++;
+  }
+  return { adds, dels };
+}
+
+/** Extract diff entries from Cursor ACP content arrays like [{ type: "diff", path, oldText, newText }]. */
+function extractAcpDiffEntries(content: unknown): AcpDiffEntry[] {
+  if (!Array.isArray(content)) return [];
+  const results: AcpDiffEntry[] = [];
+  for (const item of content) {
+    if (!isRecord(item)) continue;
+    if (item.type !== "diff") continue;
+    const path = readString(item, ["path", "filePath", "file"]);
+    if (!path) continue;
+    const oldText = typeof item.oldText === "string" ? item.oldText : "";
+    const newText = typeof item.newText === "string" ? item.newText : "";
+    const unifiedDiff = buildUnifiedDiffFromOldNew(path, oldText, newText);
+    const stats = diffStatsFromText(unifiedDiff);
+    const isNew = !oldText || oldText.includes("/dev/null");
+    const isDelete = !newText || newText.includes("/dev/null");
+    results.push({
+      path,
+      unifiedDiff,
+      adds: stats.adds,
+      dels: stats.dels,
+      kind: isDelete ? "delete" : isNew ? "add" : "update",
+    });
+  }
+  return results;
+}
+
+const FILE_EDIT_TITLES = new Set([
+  "edit", "editfile", "edit_file", "strreplace", "str_replace",
+  "searchreplace", "search_replace", "applypatch", "apply_patch",
+  "write", "writefile", "write_file", "createfile", "create_file",
+  "write_patch", "writepatch",
+]);
+
+function isFileEditTitle(title: string | undefined): boolean {
+  if (!title) return false;
+  return FILE_EDIT_TITLES.has(title.toLowerCase().replace(/[\s_-]+/g, ""));
 }
 
 function emitStatus(
@@ -66,13 +181,19 @@ export function mapAcpUpdate(
 
   if (kind === "tool_call") {
     const name = update.title ?? update.kind ?? "acp_tool";
+    const args = normalizeRawInput(update.rawInput);
+    const filePath = extractAcpFilePath(update, args);
+    if (filePath && !args.path) args.path = filePath;
+    const isEdit = update.kind === "edit" || isFileEditTitle(name);
     emitRuntimeActivity(emit, sessionId, {
       runtime: "cursor",
-      activityKind: "tool",
+      activityKind: isEdit ? "file" : "tool",
       status: "running",
       callId: update.toolCallId,
+      label: isEdit ? "正在编辑文件…" : undefined,
       name,
-      args: isRecord(update.rawInput) ? update.rawInput : {},
+      args,
+      path: filePath,
     });
     return;
   }
@@ -80,7 +201,6 @@ export function mapAcpUpdate(
   if (
     kind === "tool_call_update" &&
     update.toolCallId &&
-    isRecord(update.rawInput) &&
     update.status &&
     update.status !== "completed" &&
     update.status !== "failed" &&
@@ -88,13 +208,19 @@ export function mapAcpUpdate(
     update.status !== "canceled"
   ) {
     const name = update.title ?? update.kind ?? "acp_tool";
+    const args = normalizeRawInput(update.rawInput);
+    const filePath = extractAcpFilePath(update, args);
+    if (filePath && !args.path) args.path = filePath;
+    const isEdit = update.kind === "edit" || isFileEditTitle(name);
     emitRuntimeActivity(emit, sessionId, {
       runtime: "cursor",
-      activityKind: "tool",
+      activityKind: isEdit ? "file" : "tool",
       status: "running",
       callId: update.toolCallId,
+      label: isEdit ? "正在编辑文件…" : undefined,
       name,
-      args: update.rawInput,
+      args,
+      path: filePath,
     });
     return;
   }
@@ -107,13 +233,56 @@ export function mapAcpUpdate(
       update.status === "canceled")
   ) {
     const name = update.title ?? "acp_tool";
+    const args = normalizeRawInput(update.rawInput);
+    const resultText = readText(update.content) ?? "";
+    const diffEntries = extractAcpDiffEntries(update.content);
+
+    if (diffEntries.length > 0) {
+      const first = diffEntries[0];
+      const filePath = first.path;
+      const changes = diffEntries.map((entry) => ({
+        path: entry.path,
+        kind: entry.kind,
+        unifiedDiff: entry.unifiedDiff,
+        adds: entry.adds,
+        dels: entry.dels,
+      }));
+      const totalAdds = diffEntries.reduce((sum, e) => sum + e.adds, 0);
+      const totalDels = diffEntries.reduce((sum, e) => sum + e.dels, 0);
+      emitRuntimeActivity(emit, sessionId, {
+        runtime: "cursor",
+        activityKind: "file",
+        status: "done",
+        callId: update.toolCallId,
+        label: diffEntries.length > 1
+          ? `已编辑 ${diffEntries.length} 个文件`
+          : `已编辑 ${filePath.split("/").pop() ?? filePath}`,
+        name,
+        args: Object.keys(args).length > 0 ? args : undefined,
+        result: resultText,
+        path: filePath,
+        adds: totalAdds,
+        dels: totalDels,
+        patch: { path: filePath, unifiedDiff: first.unifiedDiff },
+        changes,
+      });
+      return;
+    }
+
+    const filePath = extractAcpFilePath(update, args);
+    const diff = readString(update, ["diff", "unifiedDiff"]) ?? undefined;
+    const isEdit = isFileEditTitle(name) || isFileEditTitle(update.kind);
     emitRuntimeActivity(emit, sessionId, {
       runtime: "cursor",
       activityKind: "tool",
       status: "done",
       callId: update.toolCallId,
       name,
-      result: readText(update.content) ?? "",
+      args: Object.keys(args).length > 0 ? args : undefined,
+      result: resultText,
+      path: filePath,
+      ...(diff && filePath ? { patch: { path: filePath, unifiedDiff: diff } } : {}),
+      ...(isEdit && filePath ? { changes: [{ path: filePath, kind: "update" as const, adds: 0, dels: 0 }] } : {}),
     });
     return;
   }

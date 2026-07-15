@@ -3,7 +3,7 @@ export type { Database } from "better-sqlite3";
 import { readFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { ChatMessage } from "@forge/protocol";
+import type { AgentEvent, ChatMessage, SessionEventRecord } from "@forge/protocol";
 import { plainTextFromChatContent } from "@forge/protocol";
 import { applyTokenBudget, type LoadHistoryResult } from "./tokens.js";
 
@@ -262,6 +262,9 @@ export class SessionStore {
           `DELETE FROM session_dispatch_plans WHERE session_id = ? AND turn_index >= ?`,
         )
         .run(sessionId, turnIndex);
+      this.db
+        .prepare(`DELETE FROM session_events WHERE session_id = ? AND turn_index >= ?`)
+        .run(sessionId, turnIndex);
       return info.changes;
     });
     return { removed: tx() as number };
@@ -274,6 +277,61 @@ export class SessionStore {
         "INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
       )
       .run(sessionId, message.role, JSON.stringify(message), now);
+  }
+
+  appendEvent(
+    sessionId: string,
+    turnIndex: number | null,
+    event: AgentEvent,
+    emittedAtMs = Date.now(),
+  ): number {
+    const itemId =
+      "callId" in event && typeof event.callId === "string" ? event.callId : null;
+    const result = this.db
+      .prepare(
+        `INSERT INTO session_events
+          (session_id, turn_index, event_type, item_id, payload, emitted_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        sessionId,
+        turnIndex,
+        event.type,
+        itemId,
+        JSON.stringify(event),
+        emittedAtMs,
+      );
+    return Number(result.lastInsertRowid);
+  }
+
+  listEvents(sessionId: string, limit = 10_000): SessionEventRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id AS sequence, session_id AS sessionId, turn_index AS turnIndex,
+                event_type AS eventType, item_id AS itemId, payload,
+                emitted_at_ms AS emittedAtMs
+         FROM session_events WHERE session_id = ? ORDER BY id ASC LIMIT ?`,
+      )
+      .all(sessionId, limit) as Array<{
+        sequence: number;
+        sessionId: string;
+        turnIndex: number | null;
+        eventType: AgentEvent["type"];
+        itemId: string | null;
+        payload: string;
+        emittedAtMs: number;
+      }>;
+    return rows.flatMap(({ payload, itemId, ...row }) => {
+      try {
+        return [{
+          ...row,
+          ...(itemId ? { itemId } : {}),
+          event: JSON.parse(payload) as AgentEvent,
+        }];
+      } catch {
+        return [];
+      }
+    });
   }
 
   loadMessages(sessionId: string, limit = 50): ChatMessage[] {
@@ -361,6 +419,7 @@ export class SessionStore {
       this.db
         .prepare("DELETE FROM session_dispatch_plans WHERE session_id = ?")
         .run(sessionId);
+      this.db.prepare("DELETE FROM session_events WHERE session_id = ?").run(sessionId);
       this.db
         .prepare(
           "INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
