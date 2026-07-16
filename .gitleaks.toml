@@ -20,9 +20,10 @@ regexes = [
 ]
 
 [[allowlists]]
-description = "Published deterministic mobile crypto v1 golden-vector values"
-regexTarget = "match"
+description = "Published deterministic mobile test and crypto golden-vector lines"
+regexTarget = "line"
 regexes = [
-  '''c9ea6a3f79a000b60b076d4afc990b272f3f0b5aaa3f0b8713c209273e363863''',
-  '''e1c595a59242020bd8e4413ee71acbac51a9e73f934c219422dafc49b6b154e7''',
+  '''inviteToken:\s*"invite_12345678901234567890123456789012"''',
+  '''"sharedSecret":\s*"c9ea6a3f79a000b60b076d4afc990b272f3f0b5aaa3f0b8713c209273e363863"''',
+  '''"phoneToHostKey":\s*"e1c595a59242020bd8e4413ee71acbac51a9e73f934c219422dafc49b6b154e7"''',
 ]
