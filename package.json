@@ -25,7 +25,7 @@
     "pack:desktop:dir": "pnpm --filter @forge/desktop pack:dir",
     "pack:desktop:mac": "pnpm --filter @forge/desktop pack:mac",
     "pack:desktop:win": "pnpm --filter @forge/desktop pack:win",
-    "test": "pnpm --filter @forge/workspace --filter @forge/tools --filter @forge/session --filter @forge/session-manager --filter @forge/project-rules --filter @forge/plugin-registry --filter @forge/hooks --filter @forge/skill-registry --filter @forge/marketplace --filter @forge/workflows --filter @forge/agent-core --filter @forge/tool-mcp --filter @forge/tool-network --filter @forge/automation --filter @forge/talent-registry --filter @forge/run-orchestrator --filter @forge/channel --filter @forge/cli --filter @forge/config --filter @forge/daemon --filter @forge/desktop --filter @forge/document-extract --filter @forge/llm run test",
+    "test": "pnpm --filter @forge/workspace --filter @forge/tools --filter @forge/session --filter @forge/session-manager --filter @forge/project-rules --filter @forge/plugin-registry --filter @forge/hooks --filter @forge/skill-registry --filter @forge/marketplace --filter @forge/workflows --filter @forge/agent-core --filter @forge/tool-mcp --filter @forge/tool-network --filter @forge/automation --filter @forge/talent-registry --filter @forge/run-orchestrator --filter @forge/channel --filter @forge/bus --filter @forge/daemon-client --filter @forge/mobile-protocol --filter @forge/mobile-crypto --filter @forge/channel-gateway --filter @forge/cli --filter @forge/config --filter @forge/daemon --filter @forge/desktop --filter @forge/document-extract --filter @forge/llm run test",
     "eval": "node scripts/eval.mjs"
   },
   "engines": {

@@ -1,7 +1,8 @@
-export type ChannelKind = "ilink" | "feishu" | "dingtalk" | "http";
+export type ChannelKind = "ilink" | "feishu" | "dingtalk" | "http" | "mobile";
 
 export type ChannelAdapterRuntimeStatus =
   | "connected"
+  | "connecting"
   | "disconnected"
   | "error"
   | "disabled"

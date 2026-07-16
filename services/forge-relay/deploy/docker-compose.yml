@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: forge_relay
+      POSTGRES_USER: forge_relay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - relay-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forge_relay -d forge_relay"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [backend]
+
+  migrate:
+    build:
+      context: ..
+    command: ["migrate", "up"]
+    environment:
+      FORGE_RELAY_DATABASE_URL: postgresql://forge_relay:${POSTGRES_PASSWORD}@postgres:5432/forge_relay
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+    restart: "no"
+
+  relay:
+    build:
+      context: ..
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      FORGE_RELAY_LISTEN_ADDRESS: :8080
+      FORGE_RELAY_PUBLIC_ORIGIN: https://${FORGE_RELAY_DOMAIN:?set FORGE_RELAY_DOMAIN}
+      FORGE_RELAY_DATABASE_URL: postgresql://forge_relay:${POSTGRES_PASSWORD}@postgres:5432/forge_relay
+      FORGE_RELAY_ENROLL_TOKEN: ${FORGE_RELAY_ENROLL_TOKEN:?set FORGE_RELAY_ENROLL_TOKEN}
+      FORGE_RELAY_JWT_PRIVATE_KEY_FILE: /run/secrets/relay-jwt-private.pem
+    volumes:
+      - ./secrets/relay-jwt-private.pem:/run/secrets/relay-jwt-private.pem:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      FORGE_RELAY_DOMAIN: ${FORGE_RELAY_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [relay]
+    networks: [backend]
+
+networks:
+  backend:
+
+volumes:
+  relay-postgres:
+  caddy-data:
+  caddy-config:

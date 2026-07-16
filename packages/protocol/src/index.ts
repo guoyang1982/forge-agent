@@ -16,6 +16,7 @@ export {
   type BrowserPermissions,
   type FileSystemPermissions,
   type MemoryPermissions,
+  type MobilePermissions,
   type NetworkPermissions,
   type NetworkSearchMode,
   type NotificationsPermissions,
@@ -33,6 +34,7 @@ export {
 
 export * from "./automation.js";
 export * from "./channel.js";
+export * from "./mobile.js";
 
 export type JsonRpcId = number | string;
 
@@ -54,6 +56,12 @@ export interface JsonRpcNotification {
   jsonrpc: "2.0";
   method: string;
   params?: unknown;
+}
+
+/** Request-scoped daemon event notification payload. */
+export interface AgentEventNotificationParams {
+  requestId: JsonRpcId;
+  event: AgentEvent;
 }
 
 /** User attachment from desktop composer (images → vision API; documents → extracted text inlined). */
@@ -1228,6 +1236,12 @@ export interface ForgeConfig {
   /** Web search provider settings (API keys, cache TTL). */
   network?: NetworkServiceConfig;
   ui?: {
+    /** Projects shared by Desktop and trusted remote channels. */
+    projects?: Array<{
+      id: string;
+      name: string;
+      cwd: string;
+    }>;
     /** REPL: apply write_file/write_patch immediately without end-of-turn confirm */
     autoApplyPatches?: boolean;
     /** Desktop: ask before each run_command (with a per-session "always allow"). */
@@ -1271,7 +1285,7 @@ export const DEFAULT_CONFIG: ForgeConfig = {
 };
 
 /** Bump when daemon/workspace path logic changes; desktop restarts stale daemons. */
-export const FORGE_DAEMON_BUILD = "2026-07-06-codex-activity-ui-v1";
+export const FORGE_DAEMON_BUILD = "2026-07-16-shared-projects-v1";
 
 export const DAEMON_METHODS = {
   PING: "ping",
@@ -1292,6 +1306,8 @@ export const DAEMON_METHODS = {
   COMPACT_SESSION: "compact_session",
   STATUS: "status",
   LIST_SESSIONS: "list_sessions",
+  LIST_PROJECTS: "project.list",
+  REGISTER_PROJECT: "project.register",
   SEARCH_SESSIONS: "search_sessions",
   GET_SESSION_MESSAGES: "get_session_messages",
   LIST_PLUGINS: "list_plugins",
@@ -1342,6 +1358,10 @@ export const DAEMON_METHODS = {
   STOP_CHANNEL_GATEWAY: "stop_channel_gateway",
   CHANNEL_START_LOGIN: "channel_start_login",
   CHANNEL_POLL_LOGIN: "channel_poll_login",
+  MOBILE_CREATE_PAIRING: "mobile.create_pairing",
+  MOBILE_LIST_DEVICES: "mobile.list_devices",
+  MOBILE_REVOKE_DEVICE: "mobile.revoke_device",
+  MOBILE_UPDATE_DEVICE_PROJECTS: "mobile.update_device_projects",
   PERMISSION_RESPONSE: "permission_response",
 } as const;
 

@@ -10,3 +10,13 @@ updates:
     schedule:
       interval: weekly
     versioning-strategy: increase-if-necessary
+
+  - package-ecosystem: gomod
+    directory: /services/forge-relay
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /services/forge-relay
+    schedule:
+      interval: weekly

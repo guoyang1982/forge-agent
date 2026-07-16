@@ -275,7 +275,7 @@ async function parseStream(
       await reader.cancel();
       throw new DOMException("Aborted", "AbortError");
     }
-    const { done, value } = await reader.read();
+    const { done, value } = await readStreamChunk(reader, signal);
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split(/\r?\n/);
@@ -291,4 +291,32 @@ async function parseStream(
   if (tail) applySseChunk(state, tail, streamCallbacks);
 
   return finalizeSseParseState(state, streamCallbacks);
+}
+
+function readStreamChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal?: AbortSignal,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (!signal) return reader.read();
+  if (signal.aborted) {
+    void reader.cancel();
+    return Promise.reject(new DOMException("Aborted", "AbortError"));
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      void reader.cancel();
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    reader.read().then(
+      (result) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(result);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }

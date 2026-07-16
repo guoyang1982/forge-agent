@@ -90,7 +90,9 @@ function automationRunContext(auto: AutomationRecord): AutomationRunContext {
         ? { cron: auto.trigger.cron, timezone: auto.trigger.timezone }
         : undefined,
     notification:
-      auto.notify?.enabled && auto.notify.channelKind
+      auto.notify?.enabled &&
+      auto.notify.channelKind &&
+      auto.notify.channelKind !== "mobile"
         ? { channelKind: auto.notify.channelKind }
         : undefined,
   };

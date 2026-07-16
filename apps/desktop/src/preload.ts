@@ -8,6 +8,14 @@ import type {
   HubListResult,
   HubMutationResult,
   HubSyncResult,
+  MobileCreatePairingRequest,
+  MobileCreatePairingResult,
+  MobileListDevicesRequest,
+  MobileListDevicesResult,
+  MobileRevokeDeviceRequest,
+  MobileRevokeDeviceResult,
+  MobileUpdateDeviceProjectsRequest,
+  MobileUpdateDeviceProjectsResult,
   RunAttachment,
   RunRequest,
   SessionHookSource,
@@ -743,6 +751,14 @@ const api = {
       ok: true;
       status: { running: boolean };
     }>,
+  createMobilePairing: (payload: MobileCreatePairingRequest) =>
+    ipcRenderer.invoke("forge:mobile-create-pairing", payload) as Promise<MobileCreatePairingResult>,
+  listMobileDevices: (payload: MobileListDevicesRequest) =>
+    ipcRenderer.invoke("forge:mobile-list-devices", payload) as Promise<MobileListDevicesResult>,
+  revokeMobileDevice: (payload: MobileRevokeDeviceRequest) =>
+    ipcRenderer.invoke("forge:mobile-revoke-device", payload) as Promise<MobileRevokeDeviceResult>,
+  updateMobileDeviceProjects: (payload: MobileUpdateDeviceProjectsRequest) =>
+    ipcRenderer.invoke("forge:mobile-update-device-projects", payload) as Promise<MobileUpdateDeviceProjectsResult>,
   channelStartLogin: (payload: { adapterId: string }) =>
     ipcRenderer.invoke("forge:channel-start-login", payload) as Promise<{
       login: {

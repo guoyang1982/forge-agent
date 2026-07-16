@@ -1,0 +1,106 @@
+name: Relay
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - services/forge-relay/**
+      - protocol/relay/**
+      - .github/workflows/relay.yml
+  pull_request:
+    paths:
+      - services/forge-relay/**
+      - protocol/relay/**
+      - .github/workflows/relay.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: relay-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typescript-contract:
+    name: TypeScript protocol contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Validate shared Relay fixtures
+        run: pnpm --filter @forge/mobile-protocol test
+
+  test:
+    name: Go tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: forge_relay_test
+          POSTGRES_USER: forge_relay
+          POSTGRES_PASSWORD: forge_relay_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U forge_relay -d forge_relay_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      FORGE_RELAY_TEST_DATABASE_URL: postgresql://forge_relay:forge_relay_test_password@127.0.0.1:5432/forge_relay_test
+    defaults:
+      run:
+        working-directory: services/forge-relay
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
+        with:
+          go-version-file: services/forge-relay/go.mod
+          cache-dependency-path: services/forge-relay/go.sum
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Test with race detector
+        run: go test -race ./...
+      - name: Build Linux binaries
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/forge-relay-amd64 ./cmd/relay
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /tmp/forge-relay-arm64 ./cmd/relay
+      - name: Build container
+        working-directory: services/forge-relay
+        run: docker build -t forge-relay:ci .
+      - name: Exercise image upgrade and rollback
+        run: ./scripts/upgrade-rollback-test.sh
+      # Pin the post-incident v0.36.0 commit. Do not replace this with a mutable
+      # tag: older trivy-action tags were force-pushed during GHSA-69fq-xp46-6x23.
+      - name: Scan container vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: forge-relay:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+          vuln-type: os,library
+      - name: Generate container SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: forge-relay:ci
+          format: cyclonedx
+          output: services/forge-relay/relay.cdx.json
+      - name: Upload container SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: forge-relay-sbom
+          path: services/forge-relay/relay.cdx.json
+          if-no-files-found: error

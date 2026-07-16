@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "phoneSecretKey": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+  "phonePublicKey": "07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c",
+  "hostSecretKey": "65666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f8081828384",
+  "hostPublicKey": "5714769d116bf76436ae74bc793d2c30ad1903c59ac5273805c7e2698b410c36",
+  "sharedSecret": "c9ea6a3f79a000b60b076d4afc990b272f3f0b5aaa3f0b8713c209273e363863",
+  "clientNonce": "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+  "serverNonce": "4142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+  "transcript": {
+    "protocolVersion": 1,
+    "phoneEphemeralPublicKey": "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw",
+    "hostE2eePublicKey": "VxR2nRFr92Q2rnS8eT0sMK0ZA8WaxSc4BcfiaYtBDDY",
+    "clientNonce": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+    "serverNonce": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+    "hostId": "host_00000001",
+    "deviceId": "device_000001",
+    "relayOrigin": "https://relay.example.com",
+    "transport": "relay",
+    "selectedFraming": "secretbox-v1",
+    "capabilities": ["rpc", "binary"]
+  },
+  "canonicalTranscript": "{\"capabilities\":[\"binary\",\"rpc\"],\"clientNonce\":\"ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A\",\"deviceId\":\"device_000001\",\"hostE2eePublicKey\":\"VxR2nRFr92Q2rnS8eT0sMK0ZA8WaxSc4BcfiaYtBDDY\",\"hostId\":\"host_00000001\",\"phoneEphemeralPublicKey\":\"B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw\",\"protocolVersion\":1,\"relayOrigin\":\"https://relay.example.com\",\"selectedFraming\":\"secretbox-v1\",\"serverNonce\":\"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A\",\"transport\":\"relay\"}",
+  "transcriptHash": "a96b809e17bc4ad16f49ec09980653f0e98dce34f6520755e7d9aa0dc25700e5",
+  "phoneToHostKey": "e1c595a59242020bd8e4413ee71acbac51a9e73f934c219422dafc49b6b154e7",
+  "hostToPhoneKey": "4ea18d29625cd8bec08c77fb419ca407c47d5940edd92347336543ae8906feed",
+  "sessionId": "dda8a887f0a0b03813d26d0a432d2b4675d9dc3fa80113e71bfc755ecdea5072",
+  "payloadUtf8": "forge-mobile-vector-v1",
+  "sealedTextFrame": "dda8a887f0a0b03813d26d0a430101010000000000000000b195f91db44652b8017af8f96a72c7ed5db5ebbf303b9a24581f4ccba9a4dd66a58959da1b915e3338c33fb70e63a33f4295b6435b12b4e1efd3e0802117dbae3380a59f78b6b880625201ab87b85e7440"
+}

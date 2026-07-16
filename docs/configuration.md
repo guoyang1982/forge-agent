@@ -146,6 +146,34 @@ Forge 对文件、命令、网络、软件、自动化和渠道分别控制。�
 
 个人目录的批量移动、文件删除、网络 API、下载和软件安装建议保留 `confirm`。无人值守自动化只应开放完成任务所需的最小权限。
 
+### 渠道与 Forge Mobile
+
+公网 Mobile Relay 默认关闭。至少同时配置渠道权限和 Mobile 权限：
+
+```json
+{
+  "permissions": {
+    "channels": {
+      "enabled": true,
+      "create": "confirm",
+      "start": "allow",
+      "delete": "confirm"
+    },
+    "mobile": {
+      "enabled": true,
+      "pair": "confirm",
+      "run": "confirm",
+      "approve": "confirm",
+      "allowedProjects": ["/absolute/path/to/project"],
+      "maxDevices": 3,
+      "maxConcurrentRunsPerDevice": 1
+    }
+  }
+}
+```
+
+`allowedProjects` 使用绝对路径并遵循最小授权。Relay Origin 与 Enrollment Token 在桌面端“渠道 → 添加渠道 → Forge Mobile”中录入；读取渠道配置时 secret 字段只返回“已配置”占位，不返回原文。
+
 ## 项目配置
 
 项目配置适合约束单个仓库：

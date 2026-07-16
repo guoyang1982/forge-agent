@@ -38,6 +38,16 @@ describe("project sidebar density", () => {
     );
   });
 
+  it("merges shared projects into the Desktop sidebar", () => {
+    const source = appSource();
+
+    expect(source).toContain("sharedProjectsFromConfig");
+    expect(source).toContain("hydrateSharedProjects(shared, cached)");
+    expect(source).toContain("syncProjectsFromConfig(cfg)");
+    expect(source).toContain("projects: state.projects.map(({ id, name, cwd })");
+    expect(source).not.toContain("discoverProjectsFromSessions");
+  });
+
   it("uses compact row styling instead of nested heavy cards", () => {
     const styles = stylesSource();
     const sessionBlock =

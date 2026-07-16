@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "codes": [
+    { "code": "bad_request", "retryable": false },
+    { "code": "unauthorized", "retryable": false },
+    { "code": "forbidden", "retryable": false },
+    { "code": "not_found", "retryable": false },
+    { "code": "conflict", "retryable": false },
+    { "code": "rate_limited", "retryable": true },
+    { "code": "timeout", "retryable": true },
+    { "code": "internal", "retryable": true },
+    { "code": "unsupported_version", "retryable": false }
+  ]
+}

@@ -1,4 +1,4 @@
-import { connectDaemon } from "@forge/bus";
+import { connectDaemon } from "@forge/daemon-client";
 import type { AgentEvent, RunRequest, RunResult } from "@forge/protocol";
 import { DAEMON_METHODS } from "@forge/protocol";
 
@@ -20,13 +20,21 @@ export class ForgeBridge {
     req: RunRequest,
     onEvent?: (event: AgentEvent) => void,
   ): Promise<RunResult> {
-    await this.connect();
-    if (!this.client) throw new Error("forge daemon not connected");
-    return (await this.client.request(
+    return (await this.request(
       DAEMON_METHODS.RUN,
       req,
-      onEvent,
+      onEvent as ((event: unknown) => void) | undefined,
     )) as RunResult;
+  }
+
+  async request(
+    method: string,
+    params?: unknown,
+    onEvent?: (event: unknown) => void,
+  ): Promise<unknown> {
+    await this.connect();
+    if (!this.client) throw new Error("forge daemon not connected");
+    return this.client.request(method, params, onEvent);
   }
 
   close(): void {

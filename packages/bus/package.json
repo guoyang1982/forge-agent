@@ -11,9 +11,14 @@
     }
   },
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "test": "vitest run"
   },
   "dependencies": {
+    "@forge/daemon-client": "workspace:*",
     "@forge/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.9"
   }
 }

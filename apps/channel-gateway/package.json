@@ -8,19 +8,23 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/main.ts",
-    "start": "node dist/main.js"
+    "start": "node dist/main.js",
+    "test": "vitest run"
   },
   "dependencies": {
-    "@forge/bus": "workspace:*",
     "@forge/channel": "workspace:*",
     "@forge/channel-core": "workspace:*",
     "@forge/channel-ilink": "workspace:*",
+    "@forge/channel-mobile": "workspace:*",
     "@forge/config": "workspace:*",
+    "@forge/daemon-client": "workspace:*",
     "@forge/protocol": "workspace:*",
     "@forge/session": "workspace:*"
   },
   "devDependencies": {
+    "@forge/bus": "workspace:*",
     "tsx": "^4.19.3",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^3.0.9"
   }
 }

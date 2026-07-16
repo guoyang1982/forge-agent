@@ -1,0 +1,32 @@
+{
+  "name": "@forge/channel-mobile",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forge/channel-core": "workspace:*",
+    "@forge/mobile-crypto": "workspace:*",
+    "@forge/mobile-protocol": "workspace:*",
+    "@forge/protocol": "workspace:*",
+    "better-sqlite3": "^11.8.1",
+    "tweetnacl": "1.0.3",
+    "ws": "^8.18.3",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/ws": "^8.18.1",
+    "vitest": "^3.0.9"
+  }
+}

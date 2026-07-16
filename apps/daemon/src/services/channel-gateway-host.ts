@@ -17,6 +17,9 @@ const GATEWAY_ENTRY = join(
 export class ChannelGatewayHost {
   private child: ChildProcess | null = null;
   private startedAt: string | null = null;
+  private desiredRunning = false;
+  private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private crashTimes: number[] = [];
 
   constructor(
     private readonly deps: {
@@ -24,6 +27,12 @@ export class ChannelGatewayHost {
       pidFile: string;
       listenHost?: string;
       listenPort?: number;
+      gatewayEntry?: string;
+      healthTimeoutMs?: number;
+      restartBaseDelayMs?: number;
+      restartMaxDelayMs?: number;
+      restartWindowMs?: number;
+      maxRestarts?: number;
     },
   ) {}
 
@@ -47,6 +56,8 @@ export class ChannelGatewayHost {
   }
 
   async start(): Promise<ChannelGatewayStatus> {
+    if (!this.desiredRunning) this.crashTimes = [];
+    this.desiredRunning = true;
     const remote = await this.fetchStatus();
     if (remote?.running) {
       this.adoptDiscoveredGateway(remote);
@@ -55,9 +66,10 @@ export class ChannelGatewayHost {
     if (this.isRunning()) {
       return (await this.fetchStatus()) ?? this.fallbackStatus(true);
     }
-    if (!existsSync(GATEWAY_ENTRY)) {
+    const gatewayEntry = this.deps.gatewayEntry ?? GATEWAY_ENTRY;
+    if (!existsSync(gatewayEntry)) {
       throw new Error(
-        `channel-gateway not built: ${GATEWAY_ENTRY}. Run pnpm build first.`,
+        `channel-gateway not built: ${gatewayEntry}. Run pnpm build first.`,
       );
     }
 
@@ -68,33 +80,51 @@ export class ChannelGatewayHost {
       FORGE_CHANNEL_GATEWAY_PORT: String(this.deps.listenPort ?? 8787),
     };
 
-    this.child = spawn(process.execPath, [GATEWAY_ENTRY], {
+    const child = spawn(process.execPath, [gatewayEntry], {
       env,
       stdio: ["ignore", "pipe", "pipe"],
       detached: false,
     });
+    this.child = child;
     this.startedAt = new Date().toISOString();
     if (this.child.pid) {
       this.writePidFile(this.child.pid);
     }
 
-    this.child.stdout?.on("data", (chunk) => {
+    child.stdout?.on("data", (chunk) => {
       process.stdout.write(`[channel-gateway] ${chunk}`);
     });
-    this.child.stderr?.on("data", (chunk) => {
+    child.stderr?.on("data", (chunk) => {
       process.stderr.write(`[channel-gateway] ${chunk}`);
     });
-    this.child.on("exit", () => {
-      this.child = null;
-      this.startedAt = null;
-      this.clearPidFile();
+    child.on("exit", (code, signal) => {
+      const wasCurrentChild = this.child === child;
+      if (wasCurrentChild) {
+        this.child = null;
+        this.startedAt = null;
+        this.clearPidFile();
+      }
+      if (wasCurrentChild && this.desiredRunning) {
+        console.error(
+          `[channel-gateway] exited unexpectedly (code=${String(code)}, signal=${String(signal)})`,
+        );
+        this.scheduleRestart();
+      }
     });
 
-    await this.waitForHealth(15_000);
+    try {
+      await this.waitForHealth(this.deps.healthTimeoutMs ?? 15_000);
+    } catch (error) {
+      if (this.child === child) child.kill("SIGTERM");
+      throw error;
+    }
     return (await this.fetchStatus()) ?? this.fallbackStatus(true);
   }
 
   async stop(): Promise<ChannelGatewayStatus> {
+    this.desiredRunning = false;
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    this.restartTimer = null;
     let pid = this.child?.pid ?? this.readPidFile() ?? undefined;
     if (!pid) {
       const remote = await this.fetchStatus();
@@ -115,9 +145,51 @@ export class ChannelGatewayHost {
     return this.fallbackStatus(false);
   }
 
+  private scheduleRestart(): void {
+    if (!this.desiredRunning || this.restartTimer) return;
+    const now = Date.now();
+    const restartWindowMs = this.deps.restartWindowMs ?? 2 * 60_000;
+    this.crashTimes = this.crashTimes.filter((time) => now - time < restartWindowMs);
+    if (this.crashTimes.length >= (this.deps.maxRestarts ?? 5)) {
+      this.desiredRunning = false;
+      console.error("[channel-gateway] restart budget exhausted; waiting for explicit start");
+      return;
+    }
+    this.crashTimes.push(now);
+    const attempt = this.crashTimes.length;
+    const base = Math.min(
+      this.deps.restartMaxDelayMs ?? 30_000,
+      (this.deps.restartBaseDelayMs ?? 500) * 2 ** (attempt - 1),
+    );
+    const delay = base + Math.floor(Math.random() * Math.max(100, base / 3));
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      if (!this.desiredRunning) return;
+      void this.start().catch((error) => {
+        console.error(`[channel-gateway] restart failed: ${String(error)}`);
+        this.scheduleRestart();
+      });
+    }, delay);
+  }
+
   async reload(): Promise<void> {
     const base = `http://${this.deps.listenHost ?? "127.0.0.1"}:${this.deps.listenPort ?? 8787}`;
     await fetch(`${base}/reload`, { method: "POST" }).catch(() => {});
+  }
+
+  async requestMobile<T>(
+    path: "pairing" | "devices" | "revoke" | "projects",
+    body: Record<string, unknown>,
+  ): Promise<T> {
+    const base = `http://${this.deps.listenHost ?? "127.0.0.1"}:${this.deps.listenPort ?? 8787}`;
+    const response = await fetch(`${base}/mobile/${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const value = (await response.json()) as T & { error?: string };
+    if (!response.ok) throw new Error(value.error ?? "Mobile Gateway request failed");
+    return value;
   }
 
   async getStatus(): Promise<ChannelGatewayStatus> {

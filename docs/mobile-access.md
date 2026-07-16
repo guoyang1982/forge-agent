@@ -2,7 +2,7 @@
 
 Forge Agent 通过 Channel Gateway 连接移动端和外部消息平台。在不搬走本地代码与工作区的前提下，用户可以从外部渠道向电脑上的 Agent 派发任务并接收结果。
 
-Channel Gateway 是统一的渠道层，不绑定某个特定平台。微信 iLink 是当前首个落地渠道，后续平台可以复用相同的项目绑定、会话、Agent、工具和权限体系。
+Channel Gateway 是统一的渠道层，不绑定某个特定平台。微信 iLink 与 Forge Mobile 都运行在同一个 Gateway 进程和 PID 中；Forge Mobile 通过公网 Relay 连接，Relay 只转发端到端加密后的数据。
 
 ## 当前支持范围
 
@@ -12,10 +12,12 @@ Channel Gateway 是统一的渠道层，不绑定某个特定平台。微信 iLi
 | 渠道绑定到指定本地项目 | 已支持 |
 | 桌面端同步显示渠道会话 | 已支持 |
 | 微信 iLink 文字消息入站与回复 | 已接入 |
+| Forge Mobile Relay、配对与设备撤销 | 已接入（测试客户端可用） |
+| Forge Mobile iOS / Android App | 开发中 |
 | 微信图片、语音和文件消息 | 暂未支持 |
-| 飞书、钉钉及自定义平台等适配器 | 后续扩展 |
+| 飞书、钉钉、自研 App HTTP Webhook | 自动化通知渠道 |
 
-桌面端可能展示不同渠道类型或适配入口。各渠道的实际可用性和消息类型取决于对应适配器；当前可以直接使用的是微信 iLink 文字消息能力。
+“自研 App (HTTP)”是单向 Webhook/自动化通知渠道，不是 Forge Mobile，也不提供远程交互会话。
 
 ## 工作方式
 
@@ -50,9 +52,20 @@ Channel Gateway
 
 选择 **微信 iLink** 后，使用微信扫描二维码并确认授权，再启用渠道和 Gateway。首次使用时需要从微信给 Bot 发送一条文字消息；当前图片、语音和文件消息会被跳过。
 
+### Forge Mobile 公网 Relay
+
+1. 在权限中同时启用 `channels` 与 `mobile`，并设置 `mobile.allowedProjects`。
+2. 添加 **Forge Mobile** 渠道，填写 HTTPS Relay Origin 和 Enrollment Token。渠道默认关闭。
+3. 启用渠道并启动页面顶部唯一的 Channel Gateway；不要另起 Mobile Gateway。
+4. 打开 **配对与设备**，生成一次性二维码。重新生成会立即撤销旧邀请。
+5. 配对后可查看设备名称、配对时间、最后在线与允许项目，可收缩/切换单设备项目权限，也可立即撤销设备。设备权限不能超出渠道 `permissions.mobile.allowedProjects`。
+
+Enrollment Token、host 私钥和设备 token 不会返回 Desktop renderer。二维码自身包含短期一次性秘密，截图泄漏时应立即点击“重新生成”。
+
 ## 使用条件与边界
 
 - 电脑需要保持开机，Forge Daemon 与 Channel Gateway 需要持续运行。
+- 公司电脑与手机都只需出站连接公网 Relay，不要求同一局域网，也不要求公司路由器开放入站端口。
 - 每个渠道支持的消息类型和认证方式由对应适配器决定。
 - 微信 iLink 当前仅处理文字消息，且 Bot 不能主动发起首次对话。
 - 渠道与项目绑定。发送任务前确认桌面端选择的是正确项目。
@@ -68,7 +81,7 @@ Channel Gateway
 
 ## 渠道扩展
 
-Channel Gateway 按多渠道架构设计。新增平台只需要实现对应的认证、消息接收、回复和状态管理适配器，即可复用本地项目、Agent、会话与权限能力。微信 iLink 是当前首个实现，后续将继续扩展飞书、钉钉及自定义平台等渠道。
+Channel Gateway 按多渠道架构设计。消息 Adapter（微信等）、交互 Adapter（Forge Mobile）和通知 Webhook（飞书、钉钉、自研 App HTTP）共享进程管理，但保持独立连接和错误状态；Mobile Relay 故障不会重启其他 Adapter。
 
 ## 排障
 
@@ -83,6 +96,13 @@ Channel Gateway 按多渠道架构设计。新增平台只需要实现对应的�
 ### 外部渠道没有收到回复
 
 先确认该适配器支持当前消息类型，并保持电脑、Daemon 和 Gateway 在线。若任务需要敏感权限，回到桌面端检查是否正在等待确认。
+
+### Forge Mobile 显示未连接或错误
+
+- “无法连接 Relay”：检查公司公网、代理、防火墙和 Relay Origin。
+- “Relay 拒绝凭证”：检查 Enrollment Token；首次注册凭证错误时删除并重新添加渠道。
+- “认证时间校验失败”：同步公司电脑系统时间。
+- 关闭 Forge Mobile 只会断开手机；微信等其他渠道会继续运行。
 
 ## 相关文档
 

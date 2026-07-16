@@ -1,6 +1,8 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { DEFAULT_PERMISSIONS } from "@forge/protocol";
 import type {
+  ChannelAdapterRecord,
   ChannelGatewayControlResult,
   ChannelGatewayStatus,
   ChannelLoginState,
@@ -26,6 +28,7 @@ export interface ChannelServiceDeps {
 }
 
 const loginSessions = new Map<string, ChannelLoginState & { qrcode: string }>();
+const CONFIGURED_SECRET = "[configured]";
 
 function resolveCwd(cwd: string | undefined, fallback?: string): string {
   return resolve(cwd ?? fallback ?? process.cwd());
@@ -61,7 +64,12 @@ export async function handleListChannels(
 ): Promise<ListChannelsResult> {
   const req = params as { cwd?: string } | undefined;
   const cwd = req?.cwd ? resolveCwd(req.cwd) : undefined;
-  return { channels: deps.getStore().list(cwd ? { cwd } : undefined) };
+  return {
+    channels: deps
+      .getStore()
+      .list(cwd ? { cwd } : undefined)
+      .map(redactChannelRecord),
+  };
 }
 
 export async function handleGetChannel(
@@ -71,7 +79,7 @@ export async function handleGetChannel(
   const req = params as { id: string };
   const channel = deps.getStore().get(req.id);
   if (!channel) throw new Error("channel not found");
-  return { channel };
+  return { channel: redactChannelRecord(channel) };
 }
 
 export async function handleCreateChannel(
@@ -93,6 +101,12 @@ export async function handleCreateChannel(
   assertCwdExists(absCwd);
   const cfg = loadConfig({ cwd: absCwd });
   assertChannelPermission(cfg, "create", { skipConfirm: req.skipConfirm });
+  if (
+    req.draft.kind === "mobile" &&
+    !(cfg.permissions?.mobile ?? DEFAULT_PERMISSIONS.mobile).enabled
+  ) {
+    throw new Error("mobile disabled in permissions");
+  }
 
   const schema = CHANNEL_KIND_SCHEMAS.find((s) => s.kind === req.draft.kind);
   if (!schema) throw new Error(`unknown channel kind: ${req.draft.kind}`);
@@ -109,7 +123,7 @@ export async function handleCreateChannel(
     },
     absCwd,
   );
-  return { channel };
+  return { channel: redactChannelRecord(channel) };
 }
 
 export async function handleUpdateChannel(
@@ -142,7 +156,24 @@ export async function handleUpdateChannel(
   if (deps.getGatewayHost().isRunning()) {
     await deps.getGatewayHost().reload();
   }
-  return { channel };
+  return { channel: redactChannelRecord(channel) };
+}
+
+export function redactChannelRecord(record: ChannelAdapterRecord): ChannelAdapterRecord {
+  const secretKeys = new Set(
+    CHANNEL_KIND_SCHEMAS.find((schema) => schema.kind === record.kind)?.fields
+      .filter((field) => field.type === "secret")
+      .map((field) => field.key) ?? [],
+  );
+  // iLink receives this credential through its login flow instead of a schema field.
+  secretKeys.add("botToken");
+  const config = { ...record.config };
+  for (const key of secretKeys) {
+    if (config[key] !== undefined && config[key] !== null && config[key] !== "") {
+      config[key] = CONFIGURED_SECRET;
+    }
+  }
+  return { ...record, config };
 }
 
 export async function handleDeleteChannel(

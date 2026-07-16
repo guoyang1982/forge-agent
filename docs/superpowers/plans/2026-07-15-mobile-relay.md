@@ -313,7 +313,7 @@ interface ForgeMobilePairingOfferV1 {
 约束：
 
 - QR 使用 `forge://pair?code=<base64url-json>`。
-- `relayOrigin` 必须是无 path/query/hash 的 `https://` origin。
+- `relayOrigin` 必须是无 path/query/hash 的 `https://` origin；仅自动化端到端测试允许 `http://localhost`、`http://127.0.0.1` 或 `http://[::1]`。
 - `inviteToken` 和 `pairingSecret` 只可成功消费一次。
 - 重新生成二维码必须立即使旧邀请失效。
 - 配对 journal 必须先落盘再发起网络请求，崩溃恢复后能判断“未安装、已安装、需回滚”。
@@ -396,6 +396,11 @@ frame  = nonce | secretbox(header | payload)
 | `/v1/host/data/:connId` | Channel Gateway / Mobile Adapter | 使用一次性 ticket 接入某个手机数据通道 |
 | `/v1/connect/:hostId` | Mobile | 邀请或 resume credential 鉴权后建立数据通道 |
 
+WebSocket 凭证统一通过 `Authorization: Bearer` 传递，不放 query：host control
+使用短期 host JWT，host data 使用一次性 `connTicket`，phone connect 使用 invite
+或 resume token。Phone connect 另带 `X-Forge-Credential-Kind: invite|resume`；resume
+连接必须带 `X-Forge-Device-ID`，invite 的 deviceId 只以 Relay 已消费的邀请记录为准。
+
 ### 10.3 Host control 消息
 
 至少定义以下带版本的 schema：
@@ -455,6 +460,7 @@ type MobileRpcFrame =
 | `run.start` | `run` | `autoApply=false`；cwd 必须在允许项目中 |
 | `run.cancel` | `cancel_run` | 只能取消该设备发起或显式接管的 run |
 | `run.subscribe` | request-scoped events | 只订阅一个授权 session |
+| `permission.pending` | MobileAdapter 本地 pending registry | 只返回本设备拥有的未处理请求 |
 | `permission.respond` | `permission_response` | 绑定 deviceId/sessionId/requestId；首版禁止 remember |
 
 首版禁止映射：
@@ -733,30 +739,31 @@ mobile_rpc_requests_total{method,result}
 - Create: `packages/daemon-client/`
 - Create: `protocol/relay/v1/schemas/`
 - Create: `protocol/relay/v1/testdata/`
+- Create: `protocol/mobile-crypto/v1/test-vector.json`
 - Modify: `packages/bus/src/index.ts`
 - Modify: `packages/protocol/src/index.ts`
 - Modify: `apps/channel-gateway/src/forge-bridge.ts`
-- Modify: `package.json`, `pnpm-workspace.yaml`
+- Modify: `package.json`, `pnpm-lock.yaml`
 
-- [ ] 以语言无关 JSON Schema 定义 Relay HTTP/WSS 外层协议、错误码和版本字段。
-- [ ] 为 Relay 外层协议提交成功与失败 golden fixtures，Go 和 TypeScript 实现必须共用。
-- [ ] 在 `packages/mobile-protocol` 定义 pairing、E2EE 和 Mobile RPC Zod schemas；Relay 不解析这些内层结构。
-- [ ] 实现 X25519、HKDF-SHA256、双向 key schedule 和 secretbox frames。
-- [ ] 固定 canonical transcript 编码，提交跨 Node/React Native 测试向量。
-- [ ] 把 Daemon event 改为 request-scoped，不再广播 run event。
-- [ ] 实现并发安全的 `DaemonClient`，每个 request 独立事件 handler。
-- [ ] Channel Gateway 迁移到 `DaemonClient`，保证现有微信渠道不回归。
-- [ ] 增加两个并发 run 不串事件的集成测试。
-- [ ] 增加解密失败、重放、乱序、错误 transport/hostId transcript 的负向测试。
+- [x] 以语言无关 JSON Schema 定义 Relay HTTP/WSS 外层协议、错误码和版本字段。
+- [x] 为 Relay 外层协议提交成功与失败 golden fixtures，Go 和 TypeScript 实现必须共用。
+- [x] 在 `packages/mobile-protocol` 定义 pairing、E2EE 和 Mobile RPC Zod schemas；Relay 不解析这些内层结构。
+- [x] 实现 X25519、HKDF-SHA256、双向 key schedule 和 secretbox frames。
+- [x] 固定 canonical transcript 编码，提交跨 Node/React Native 测试向量。
+- [x] 把 Daemon event 改为 request-scoped，不再广播 run event。
+- [x] 实现并发安全的 `DaemonClient`，每个 request 独立事件 handler。
+- [x] Channel Gateway 迁移到 `DaemonClient`，保证现有微信渠道不回归。
+- [x] 增加两个并发 run 不串事件的集成测试。
+- [x] 增加解密失败、重放、乱序、错误 transport/hostId transcript 的负向测试。
 
 **Gate 0：**
 
-- [ ] `pnpm --filter @forge/mobile-protocol test`
-- [ ] `pnpm --filter @forge/mobile-crypto test`
-- [ ] `pnpm --filter @forge/daemon-client test`
-- [ ] `pnpm --filter @forge/channel-gateway test`
-- [ ] `pnpm --filter @forge/daemon test`
-- [ ] 证明连接 A 无法观察连接 B 的 `AgentEvent`。
+- [x] `pnpm --filter @forge/mobile-protocol test`
+- [x] `pnpm --filter @forge/mobile-crypto test`
+- [x] `pnpm --filter @forge/daemon-client test`
+- [x] `pnpm --filter @forge/channel-gateway test`
+- [x] `pnpm --filter @forge/daemon test`
+- [x] 证明连接 A 无法观察连接 B 的 `AgentEvent`。
 
 ### Phase 1：单节点 Relay
 
@@ -781,30 +788,30 @@ mobile_rpc_requests_total{method,result}
 - Create: `.github/workflows/relay.yml`
 - Modify: `.github/dependabot.yml` (add Go module and Relay image dependency updates)
 
-- [ ] 实现 host enroll、短期 JWT 和 refresh。
-- [ ] 实现 host challenge/proof，challenge 绑定 origin、hostId、epoch 和 expiry。
-- [ ] 实现 host control 状态机和租约。
-- [ ] 实现一次性邀请、消费、过期和撤销。
-- [ ] 实现 resume token hash、current/grace 版本轮换。
-- [ ] 实现 phone connect、host data attach 和一次性 ticket。
-- [ ] 实现双向背压、大小限制和联动关闭。
-- [ ] 实现健康检查、结构化审计和 Prometheus 指标。
-- [ ] 实现 `relay migrate up` 或等价的独立迁移命令，服务启动不默认执行未审核迁移。
-- [ ] Go 服务端和 TypeScript 测试客户端共同通过 `protocol/relay/v1` 契约测试。
-- [ ] 提供 Docker Compose + PostgreSQL + Caddy 的本地部署方式。
-- [ ] 产出 Linux `amd64`/`arm64` 单二进制和独立 OCI 镜像，无 pnpm/Node 运行时依赖。
+- [x] 实现 host enroll、短期 JWT 和 refresh。
+- [x] 实现 host challenge/proof，challenge 绑定 origin、hostId、epoch 和 expiry。
+- [x] 实现 host control 状态机和租约。
+- [x] 实现一次性邀请、消费、过期和撤销。
+- [x] 实现 resume token hash、current/grace 版本轮换。
+- [x] 实现 phone connect、host data attach 和一次性 ticket。
+- [x] 实现双向背压、大小限制和联动关闭。
+- [x] 实现健康检查、结构化审计和 Prometheus 指标。
+- [x] 实现 `relay migrate up` 或等价的独立迁移命令，服务启动不默认执行未审核迁移。
+- [x] Go 服务端和 TypeScript 测试客户端共同通过 `protocol/relay/v1` 契约测试。
+- [x] 提供 Docker Compose + PostgreSQL + Caddy 的本地部署方式。
+- [x] 产出 Linux `amd64`/`arm64` 单二进制和独立 OCI 镜像，无 pnpm/Node 运行时依赖。
 
 **Gate 1：**
 
-- [ ] 未授权手机不能触发 `connection.open`。
-- [ ] ticket 重放失败。
-- [ ] invite 第二次消费失败。
-- [ ] 被撤销设备现有 splice 立即关闭。
-- [ ] Relay 进程和数据库中搜索不到测试 payload 明文。
-- [ ] 1 MiB 上限和慢消费者背压测试通过。
-- [ ] Relay 重启后 current/grace credential 可以恢复连接。
-- [ ] `go test -race ./...`、协议契约测试、迁移测试和镜像扫描进入 Relay 独立 CI。
-- [ ] 更换 Relay 镜像后 host 和手机能按 resume 语义重连；回退上一版 digest 仍可读取升级后数据库。
+- [x] 未授权手机不能触发 `connection.open`。
+- [x] ticket 重放失败。
+- [x] invite 第二次消费失败。
+- [x] 被撤销设备现有 splice 立即关闭。
+- [x] Relay 进程日志和数据库中搜索不到测试 payload 明文；Relay 只接触测试 secretbox 密文。
+- [x] 1 MiB 上限和慢消费者背压测试通过。
+- [x] Relay 重启后 current/grace credential 可以恢复连接。
+- [x] `go test -race ./...`、协议契约测试、迁移测试和镜像扫描进入 Relay 独立 CI。
+- [x] 更换 Relay 镜像后 host 和手机能按 resume 语义重连；回退上一版 digest 仍可读取升级后数据库。
 
 ### Phase 2：Channel Gateway Mobile Adapter
 
@@ -817,6 +824,7 @@ mobile_rpc_requests_total{method,result}
 - Create: `packages/channel-mobile/src/relay-transport.ts`
 - Create: `packages/channel-mobile/src/device-registry.ts`
 - Create: `packages/channel-mobile/src/mobile-rpc-router.ts`
+- Create: `packages/mobile-test-client/`（协议客户端、CLI 和真实 Relay E2E）
 - Create: `apps/daemon/src/services/mobile-service.ts`
 - Create: `packages/protocol/src/mobile.ts`
 - Create: DB migration for `mobile_devices`, `mobile_pairing_journal`
@@ -830,37 +838,39 @@ mobile_rpc_requests_total{method,result}
 - Modify: `packages/config/src/permissions.ts`
 - Modify: `package.json`, `pnpm-workspace.yaml`
 
-- [ ] 定义 `ChannelAdapter` 共同生命周期，以及 `MessageChannelAdapter` / `InteractiveChannelAdapter` 分类能力。
-- [ ] 在 `packages/channel-core` 和 `packages/protocol/src/channel.ts` 中将 `mobile` 加入 `ChannelKind`。
-- [ ] 在 `apps/channel-gateway/src/gateway.ts#createAdapter()` 中注册 `MobileAdapter`，不注册为 HTTP Webhook。
-- [ ] 将 `reloadAdapters()` 改为按 adapterId 差量 reconcile；单个 Adapter 启停失败只记录到该渠道状态。
-- [ ] 生成并安全保存 host Ed25519/X25519 密钥。
-- [ ] 实现 enrollment、host JWT 刷新和 control reconnect。
-- [ ] 实现二维码邀请创建、轮换和 crash-safe journal。
-- [ ] 实现 host data attach 与 E2EE server state machine。
-- [ ] 实现本地 device registry、token hash 和 constant-time 验证。
-- [ ] 实现 Mobile RPC 白名单、Zod 参数校验和错误脱敏。
-- [ ] 实现 allowed project realpath 检查。
-- [ ] 实现 run event subscription、取消和 pending permission 查询。
-- [ ] 强制手机 `permission.respond.remember=false`。
-- [ ] 手机发起的 run 不设置 `channelRun`、`automationRun` 或 `skipConfirm`。
-- [ ] 实现设备撤销、本地立即断连和 Relay durable revoke outbox。
-- [ ] Channel Gateway 启停时统一启停已启用 Adapter；Mobile Adapter 连接失败时只重连自身。
-- [ ] Mobile Adapter 未配置、鉴权失败或连接异常不得阻断微信、飞书、钉钉等其他 Adapter。
-- [ ] 状态接口同时返回 Gateway 总体状态和每个 Adapter 的独立状态。
-- [ ] `ChannelGatewayHost` 增加带抖动的有界重启，区分“用户主动停止”与“异常退出”，避免无限崩溃循环。
+- [x] 定义 `ChannelAdapter` 共同生命周期，以及 `MessageChannelAdapter` / `InteractiveChannelAdapter` 分类能力。
+- [x] 在 `packages/channel-core` 和 `packages/protocol/src/channel.ts` 中将 `mobile` 加入 `ChannelKind`。
+- [x] 在 `apps/channel-gateway/src/gateway.ts#createAdapter()` 中注册 `MobileAdapter`，不注册为 HTTP Webhook。
+- [x] 将 `reloadAdapters()` 改为按 adapterId 差量 reconcile；单个 Adapter 启停失败只记录到该渠道状态。
+- [x] 生成并以 `0700` 目录、`0600` 原子文件安全保存 host Ed25519/X25519 密钥。
+- [x] 实现 enrollment、host JWT 刷新、lease renew 和带抖动的 control reconnect。
+- [x] 实现二维码邀请创建、旧邀请轮换撤销和先落盘的 pairing journal。
+- [x] 实现 host data attach 与 E2EE server state machine。
+- [x] 实现本地 device registry、token hash 和 constant-time 验证。
+- [x] 实现 Mobile RPC 白名单、Zod 参数校验和错误脱敏。
+- [x] 实现 allowed project realpath 检查。
+- [x] 实现 run event subscription、取消和 pending permission 查询。
+- [x] 强制手机 `permission.respond.remember=false`。
+- [x] 手机发起的 run 不设置 `channelRun`、`automationRun` 或 `skipConfirm`。
+- [x] 实现设备撤销、本地立即断连和 Relay durable revoke outbox。
+- [x] Channel Gateway 启停时统一启停已启用 Adapter；Mobile Adapter 连接失败时只重连自身。
+- [x] Mobile Adapter 未配置、鉴权失败或连接异常不得阻断微信、飞书、钉钉等其他 Adapter。
+- [x] 状态接口同时返回 Gateway 总体状态和每个 Adapter 的独立状态。
+- [x] `ChannelGatewayHost` 增加带抖动的有界重启，区分“用户主动停止”与“异常退出”，避免无限崩溃循环。
 
 **Gate 2：**
 
-- [ ] 手机测试客户端能 list session、读取历史、启动 run、接收事件和取消。
-- [ ] Channel Gateway 只有一个进程和 PID，可同时运行微信渠道与 Forge Mobile。
-- [ ] 断开 Relay 或提供错误凭证后，现有消息渠道仍可正常收发。
-- [ ] 启用、停用或重连 Forge Mobile 时，微信等无关 Adapter 的连接不重建。
-- [ ] 强制终止 Channel Gateway 后能受控恢复；用户点击“停止 Gateway”后不会被自动拉起。
-- [ ] 不允许项目、symlink 逃逸和未知 RPC 全部失败关闭或返回 forbidden。
-- [ ] 手机不能读取 `get_config` 或调用安装/删除方法。
-- [ ] 一个设备不能审批另一个设备未授权的 session request。
-- [ ] 撤销设备后本地和 Relay 恢复凭证都失效。
+- [x] 手机测试客户端能 list session、读取历史、启动 run、接收事件和取消（真实 Go Relay/PostgreSQL + Daemon/Gateway E2E）。
+- [x] Channel Gateway 只有一个进程和 PID，可同时运行微信渠道与 Forge Mobile（同进程双 Adapter 集成测试断言唯一 Gateway PID）。
+- [x] 断开 Relay 或提供错误凭证后，现有消息渠道仍可正常收发（真实 Mobile Adapter enrollment 网络失败时，健康消息 Adapter 保持连接且不重启）。
+- [x] 启用、停用或重连 Forge Mobile 时，微信等无关 Adapter 的连接不重建（差量 reconcile 自动化测试覆盖）。
+- [x] 强制终止 Channel Gateway 后能受控恢复；用户点击“停止 Gateway”后不会被自动拉起（真实子进程 `SIGKILL`、新 PID 恢复及显式停止测试覆盖）。
+- [x] 不允许项目、symlink 逃逸和未知 RPC 全部失败关闭或返回 forbidden。
+- [x] 手机不能读取 `get_config` 或调用安装/删除方法。
+- [x] 一个设备不能审批另一个设备未授权的 session request（pending 查询与 respond 均按 deviceId/sessionId 绑定测试）。
+- [x] 撤销设备后本地和 Relay 恢复凭证都失效（E2E 断言 resume 返回 HTTP 401）。
+
+**2026-07-16 实现进度：** Phase 2 主链路与 Gate 2 已落地并通过 `@forge/channel-mobile` 6 个密钥/安全/路由测试、Mobile Protocol 6 个协议测试、Mobile Test Client 1 个 E2EE/RPC 集成测试、Channel Gateway 4 个回归测试、Daemon 25 个回归测试、LLM 7 个流式/取消测试、全 workspace 编译和 Relay 全量 Go 测试。`pnpm --filter @forge/mobile-test-client test:e2e` 已使用隔离的真实 Go Relay、PostgreSQL、Daemon、Gateway 和 mock 流模型验证配对、E2EE、会话列表/历史、run 事件、即时取消、resume、设备撤销及撤销后 401。额外的进程级测试已验证同一 Gateway PID 承载多 Adapter、真实 Mobile Relay enrollment 网络失败不重启健康消息 Adapter，以及 Gateway 被 `SIGKILL` 后换新 PID 受控恢复、显式停止后不再拉起。
 
 ### Phase 3：Desktop 管理面
 
@@ -875,23 +885,25 @@ mobile_rpc_requests_total{method,result}
 - Modify: `docs/configuration.md`
 - Modify: `docs/mobile-access.md`
 
-- [ ] 在现有“添加渠道”列表新增 `Forge Mobile`，类型为 `mobile`，默认关闭。
-- [ ] 保留独立的“自研系统 (HTTP API)”渠道类型，明确其只用于 Webhook/API，不代表 Forge Mobile。
-- [ ] Gateway 顶部仍只显示一个进程 PID，渠道卡片分别显示连接和错误状态。
-- [ ] 配置 Relay origin 和 enrollment credential，不在 renderer 暴露原文。
-- [ ] 显示 disconnected / connecting / registered / error 状态。
-- [ ] 生成、复制和重新生成 QR；重新生成立即撤销旧 invite。
-- [ ] 显示设备名称、配对时间、最后在线和允许项目。
-- [ ] 支持撤销设备和修改项目授权。
-- [ ] 显示最近安全事件，不显示业务内容。
-- [ ] 关闭 Forge Mobile 渠道时明确说明现有手机连接会断开，但其他渠道继续运行。
+- [x] 在现有“添加渠道”列表新增 `Forge Mobile`，类型为 `mobile`，默认关闭。
+- [x] 保留独立的“自研系统 (HTTP API)”渠道类型，明确其只用于 Webhook/API，不代表 Forge Mobile。
+- [x] Gateway 顶部仍只显示一个进程 PID，渠道卡片分别显示连接和错误状态。
+- [x] 配置 Relay origin 和 enrollment credential，不在 renderer 暴露原文。
+- [x] 显示 disconnected / connecting / registered / error 状态。
+- [x] 生成、复制和重新生成 QR；重新生成立即撤销旧 invite。
+- [x] 显示设备名称、配对时间、最后在线和允许项目。
+- [x] 支持撤销设备和修改项目授权；设备授权只能是渠道 `allowedProjects` 的子集。
+- [x] 显示最近安全事件，不显示业务内容。
+- [x] 关闭 Forge Mobile 渠道时明确说明现有手机连接会断开，但其他渠道继续运行。
 
 **Gate 3：**
 
-- [ ] Desktop renderer 无法通过 IPC 读取 enrollment credential 或私钥。
-- [ ] Relay 未配置、网络失败、token 失效和时钟偏差都有可操作错误提示。
-- [ ] QR 截图泄漏后，用户能通过“重新生成”使旧码立即失效。
-- [ ] 界面不会将 Forge Mobile 误标成 HTTP Webhook，也不要求用户启动第二个 Gateway。
+- [x] Desktop renderer 无法通过 IPC 读取 enrollment credential 或私钥（渠道 CRUD 响应统一 secret redaction 测试覆盖）。
+- [x] Relay 未配置、网络失败、token 失效和时钟偏差都有可操作错误提示。
+- [x] QR 截图泄漏后，用户能通过“重新生成”使旧码立即失效。
+- [x] 界面不会将 Forge Mobile 误标成 HTTP Webhook，也不要求用户启动第二个 Gateway。
+
+**2026-07-16 实现进度：** Phase 3 与 Gate 3 已完成。统一渠道管理面已接入 Mobile 创建、共享 Gateway 状态、Relay 连接诊断、一次性二维码、设备列表/撤销、按设备项目授权和安全事件；所有渠道读取接口会脱敏 secret 字段。项目授权在 Mobile Adapter 服务端校验，renderer 只能将设备授权设置为渠道 `permissions.mobile.allowedProjects` 的子集，不能自行扩权。
 
 ### Phase 4：Expo Mobile MVP
 
@@ -905,16 +917,23 @@ mobile_rpc_requests_total{method,result}
 - Create: `apps/mobile/src/screens/`
 - Create: `apps/mobile/src/session/`
 
-- [ ] 扫码、粘贴 pairing code 和 schema 校验。
-- [ ] 实现 Relay outer auth 和 E2EE client state machine。
-- [ ] device/relay credential 只写 SecureStore。
-- [ ] 实现 host 列表、连接状态和移除 host。
-- [ ] 实现 session 列表、搜索、消息历史和下拉刷新。
-- [ ] 实现新建/续接 run、流式文本、工具状态和完成状态。
-- [ ] 实现取消 run。
-- [ ] 实现 permission request 卡片，支持允许一次/拒绝。
-- [ ] 实现前后台重连、指数退避和 activity probe。
-- [ ] 实现连接诊断页，日志自动脱敏。
+- [x] 扫码、粘贴 pairing code、Base64URL/schema/expiry 校验。
+- [x] 实现 Relay outer auth 和 E2EE client state machine（React Native WebSocket headers、host key/transcript pinning、secretbox 双向帧和加密 RPC）。
+- [x] device/relay credential 只写 SecureStore；只有收到 `e2ee.authenticated` 后才持久化。
+- [x] 实现 host 列表、连接状态、resume 重连和移除 host。
+- [x] 实现 session 列表、搜索、消息历史和下拉刷新；Mobile 端对白名单字段做二次清洗。
+- [x] 实现授权工作区/项目选择、在授权根目录下创建项目，以及无历史会话时直接创建会话并启动 Agent。
+- [x] 实现新建/续接 run、流式文本、工具状态和完成状态。
+- [x] 实现取消 run；收到 `session_start` 后才开放取消按钮。
+- [x] 实现 permission request 卡片，支持允许一次/拒绝；强制 `remember=false` 由 Host 端执行。
+- [x] 实现前后台重连、指数退避和 activity probe。
+- [x] 实现连接诊断页，日志自动脱敏。
+
+**2026-07-16 实现进度：** Phase 4 代码项已完成。`apps/mobile` 基于 Expo SDK 57，已实现 Camera 扫码/粘贴、严格 pairing URI 校验、Host 列表、SecureStore、Relay invite/resume outer auth、E2EE handshake、加密 RPC client、session 列表/搜索/历史/刷新，以及新建/续接 run、流式文本、工具状态、取消和单次权限响应。应用进入后台时受控关闭连接，回到前台后自动 resume；网络故障使用 500ms–30s 带 jitter 的指数退避，每 30s 通过 E2EE `status.get` 做 activity probe，凭证失效或 E2EE 完整性错误会停止重试并要求重新配对。诊断页最多保留 100 条连接事件，对 Bearer、device/resume/invite token、URL secret 参数、长不透明串和 Host ID 统一脱敏，不记录 Prompt、回复、Webhook 或 Bot Token。`deviceToken` / `resumeToken` 只在收到 `e2ee.authenticated` 后以 `WHEN_UNLOCKED_THIS_DEVICE_ONLY` 写入 SecureStore；完整 pairing offer 仅保存在短生命周期 ref，握手开始即清空，React UI state 只保留非敏感 Host 摘要。启动及前台恢复时会对账 Host 摘要与 SecureStore 凭证，凭证缺失或损坏时自动移除旧 Host、清理连接状态并明确提示重新配对，不降级为明文存储。Daemon 返回的 session/message/run event 在 Mobile 端再次按渲染字段白名单清洗，工具参数、工具结果、未知事件与权限 detail 不直接进入 UI。Mobile TypeScript、10 个解析/脱敏/恢复/安全存储测试和真实 Metro iOS Hermes export（626 modules）均已通过。Gate 4 仍需在跨网络 iOS/Android 真机上验证。
+
+**2026-07-16 项目工作流补充：** E2EE Mobile RPC 已增加 `project.list` / `project.create`，只列出设备授权工作区及其直接子目录；新项目只能在显式授权的工作区根下创建，目录名使用严格白名单，拒绝 `..`、符号链接逃逸和已存在路径。手机端已改为“电脑项目 → 项目会话 → Agent 运行”三层导航，项目无历史会话时也能直接输入任务创建会话。Mobile 12 个测试、Mobile RPC 10 个测试、全 workspace 编译及 Android Hermes export（634 modules）已通过。
+
+**2026-07-16 真机超时修复：** 真机证明 Agent run 可在公司端正常完成，但原客户端对所有 RPC 统一使用 30s 请求超时，会将耗时 40s 以上的 `run.start` 误报失败。现在普通列表/状态 RPC 仍保留 30s 上限，`run.start` 由 E2EE 连接生命周期、完成事件和用户取消控制，不再使用固定墙钟超时。真实 `MobileRelayClient` 假时钟回归测试已验证 30.001s 后仍保持等待并能在 Host 响应后正常完成；Mobile 15/15 测试通过。
 
 **Gate 4：**
 
@@ -923,6 +942,8 @@ mobile_rpc_requests_total{method,result}
 - [ ] 公司电脑休眠恢复后手机可自动恢复。
 - [ ] 手机 SecureStore 清除后旧 host profile 自动失效，不静默降级。
 - [ ] Android 和 iOS 都通过真机测试。
+
+**2026-07-16 自动化进度：** 已通过 SecureStore mock 测试验证凭证清除后旧 Host profile 会自动失效，但本 Gate 保持未勾选，等待 iOS Keychain / Android Keystore 真机行为和跨网络验收。
 
 ### Phase 5：生产加固和灰度
 
@@ -935,6 +956,8 @@ mobile_rpc_requests_total{method,result}
 - [ ] enrollment、host key、JWT key 和数据库恢复演练。
 - [ ] 先对一个测试项目和一个设备灰度，不默认对所有项目开放。
 - [ ] 完成运维手册、事故撤销流程和版本兼容矩阵。
+
+**2026-07-16 故障测试进度：** 真实 Go Relay/PostgreSQL/Daemon/Channel Gateway/Mobile Test Client 链路已新增 Relay 容器重启演练，验证 Host control 使用原身份自动回连、手机使用原 resume credential 恢复且无需重新 enrollment/配对；恢复后设备撤销仍会使旧凭证返回 401。网络抖动、代理断连和数据库短暂不可用尚未验证，因此不提前勾选整个 fault-test 条目。
 
 **Release Gate：**
 
