@@ -14694,63 +14694,100 @@ function renderChannelsGatewayBar(gw) {
   </section>`;
 }
 
-function renderChannelsSetupSteps() {
-  const steps = [
-    { n: "1", title: "添加渠道", desc: "选择微信、Forge Mobile 或自有 HTTP 渠道" },
-    { n: "2", title: "完成授权", desc: "微信扫码登录；Mobile 配置 Relay 后配对设备" },
-    { n: "3", title: "启动 Gateway", desc: "所有渠道共用一个 Gateway 进程与 PID" },
-  ];
-  return `<ol class="channels-setup-steps">
-    ${steps
-      .map(
-        (s) => `<li class="channels-setup-step">
-          <span class="channels-setup-step-num">${s.n}</span>
-          <div>
-            <strong>${escapeHtml(s.title)}</strong>
-            <p>${escapeHtml(s.desc)}</p>
-          </div>
-        </li>`,
-      )
-      .join("")}
-  </ol>`;
-}
-
-function renderChannelKindCards(kinds) {
-  const list = Array.isArray(kinds) ? kinds : [];
+function renderChannelKindCards(kinds, options = {}) {
+  const hiddenKinds = new Set(options.hiddenKinds || []);
+  const list = (Array.isArray(kinds) ? kinds : []).filter(
+    (kind) => !hiddenKinds.has(kind.kind),
+  );
   const cards = list
     .map((k) => {
       const featured = k.kind === "ilink";
+      const buttonLabel = k.kind === "mobile" ? "配置全局连接" : "立即添加";
       return `<article class="channel-kind-card${featured ? " is-featured" : ""}" data-channel-kind="${escapeHtml(k.kind)}">
         ${channelKindIconHtml(k.kind)}
         <div class="channel-kind-card-body">
           <strong>${escapeHtml(k.label)}</strong>
           <p>${escapeHtml(k.description || "")}</p>
         </div>
-        <button type="button" class="btn ${featured ? "primary" : "secondary"} btn-sm channel-kind-add-btn" data-channel-kind="${escapeHtml(k.kind)}">立即添加</button>
+        <button type="button" class="btn ${featured ? "primary" : "secondary"} btn-sm channel-kind-add-btn" data-channel-kind="${escapeHtml(k.kind)}">${buttonLabel}</button>
       </article>`;
     })
     .join("");
   return `<div class="channels-kind-grid">${cards}</div>`;
 }
 
-function renderChannelsEmptyState(kinds) {
-  return `<section class="channels-empty">
-    <div class="channels-empty-hero">
-      <div class="channels-empty-glow" aria-hidden="true"></div>
-      <div class="channels-empty-icon" aria-hidden="true">
-        <span class="channels-empty-icon-sat">📡</span>
+function renderGlobalMobileSection(mobileChannels, kindLabels, runtimeById, gw, daemonOk) {
+  const channels = Array.isArray(mobileChannels) ? mobileChannels : [];
+  const conflict =
+    channels.length > 1
+      ? `<div class="event warn channels-global-mobile-conflict">检测到 ${channels.length} 个历史 Mobile 配置。请保留正在使用的一个，并删除其余配置。</div>`
+      : "";
+  const body = channels.length
+    ? channels
+        .map((channel) =>
+          renderChannelCard(channel, kindLabels, runtimeById, gw, daemonOk, {
+            globalMobile: true,
+          }),
+        )
+        .join("")
+    : `<article class="channels-global-mobile-setup">
+        ${channelKindIconHtml("mobile")}
+        <div>
+          <strong>建立这台电脑的移动连接</strong>
+          <p>只需配置一次 Relay。之后所有项目的访问范围都在设备授权中管理，不必为每个项目重复添加。</p>
+        </div>
+        <button type="button" class="btn primary btn-sm channel-kind-add-btn" data-channel-kind="mobile">配置全局连接</button>
+      </article>`;
+  return `<section class="channels-global-mobile-section">
+    <div class="channels-global-mobile-head">
+      <div>
+        <span class="channels-section-eyebrow">HOST CONNECTION</span>
+        <h4>Forge Mobile</h4>
       </div>
-      <h3>连接第一个外部渠道</h3>
-      <p>添加 Forge Mobile 可通过公网 Relay 在家连接公司 PC；它与微信等渠道共用同一个 Gateway。</p>
+      <span class="channels-global-scope-pill">电脑级 · 全局唯一</span>
     </div>
-    ${renderChannelsSetupSteps()}
-    ${renderChannelKindCards(kinds)}
-    <button type="button" class="btn primary channels-empty-cta" id="channelAddEmptyBtn">添加 iLink 渠道</button>
+    <p class="channels-global-mobile-intro">手机、公司电脑与公网 Relay 的端到端连接。Gateway 启动后会自动恢复，无需重复添加。</p>
+    ${conflict}
+    <div class="channels-card-list">${body}</div>
   </section>`;
 }
 
-function renderChannelCard(c, kindLabels, runtimeById, gw, daemonOk) {
+function renderProjectChannelsSection(channels, kinds, kindLabels, runtimeById, gw, daemonOk) {
+  const list = Array.isArray(channels) ? channels : [];
+  if (!list.length) {
+    return `<section class="channels-list-section channels-project-empty">
+      <div class="channels-list-head">
+        <div>
+          <span class="channels-section-eyebrow">CURRENT PROJECT</span>
+          <h4>项目消息渠道</h4>
+        </div>
+        <span class="channels-list-count">0 个</span>
+      </div>
+      <div class="channels-project-empty-copy">
+        <strong>当前项目还没有消息渠道</strong>
+        <p>微信、飞书、钉钉和 HTTP 通知仍按项目隔离；它们不会影响上面的全局 Mobile 连接。</p>
+      </div>
+      ${renderChannelKindCards(kinds, { hiddenKinds: ["mobile"] })}
+    </section>`;
+  }
+  const cards = list
+    .map((channel) => renderChannelCard(channel, kindLabels, runtimeById, gw, daemonOk))
+    .join("");
+  return `<section class="channels-list-section">
+    <div class="channels-list-head">
+      <div>
+        <span class="channels-section-eyebrow">CURRENT PROJECT</span>
+        <h4>项目消息渠道</h4>
+      </div>
+      <span class="channels-list-count">${list.length} 个 · 每 3 秒自动刷新</span>
+    </div>
+    <div class="channels-card-list">${cards}</div>
+  </section>`;
+}
+
+function renderChannelCard(c, kindLabels, runtimeById, gw, daemonOk, options = {}) {
   const rt = runtimeById[c.id];
+  const globalMobile = Boolean(options.globalMobile && c.kind === "mobile");
   const status =
     c.kind === "ilink" || c.kind === "mobile"
       ? rt?.status ?? (c.enabled ? "disconnected" : "disabled")
@@ -14762,14 +14799,18 @@ function renderChannelCard(c, kindLabels, runtimeById, gw, daemonOk) {
   const hasToken = Boolean(c.config?.botToken);
   const showLogin = c.kind === "ilink" && !hasToken;
   const kindLabel = kindLabels[c.kind] || c.kind;
-  return `<article class="channel-card${rt?.processing ? " is-processing" : ""}" data-channel-id="${escapeHtml(c.id)}">
+  const meta = globalMobile
+    ? `电脑级全局连接 · 权限配置源 <code>${escapeHtml(c.cwd)}</code>`
+    : `${escapeHtml(kindLabel)} · 项目 <code>${escapeHtml(c.cwd)}</code>`;
+  return `<article class="channel-card${rt?.processing ? " is-processing" : ""}${globalMobile ? " is-global-mobile" : ""}" data-channel-id="${escapeHtml(c.id)}">
     ${channelKindIconHtml(c.kind)}
     <div class="channel-card-body">
       <div class="channel-card-title-row">
         <strong>${escapeHtml(c.name)}</strong>
+        ${globalMobile ? `<span class="channel-scope-badge">全局</span>` : ""}
         ${renderChannelStatusBadge(status, c.kind)}
       </div>
-      <p class="channel-card-meta">${escapeHtml(kindLabel)} · 项目 <code>${escapeHtml(c.cwd)}</code>${
+      <p class="channel-card-meta">${meta}${
         c.lastMessageAt ? ` · 最近消息 ${escapeHtml(formatRelativeTime(c.lastMessageAt))}` : ""
       }</p>
       ${c.lastError ? `<p class="channel-card-error">${escapeHtml(c.lastError)}</p>` : ""}
@@ -14792,7 +14833,7 @@ function renderChannelCard(c, kindLabels, runtimeById, gw, daemonOk) {
       <div class="channel-card-actions">
         ${showLogin ? `<button type="button" class="btn primary btn-sm channel-login-btn" data-channel-id="${escapeHtml(c.id)}">扫码登录</button>` : ""}
         ${c.kind === "mobile" ? `<button type="button" class="btn primary btn-sm mobile-manage-btn" data-channel-id="${escapeHtml(c.id)}" ${c.enabled ? "" : "disabled"}>配对与设备</button>` : ""}
-        <button type="button" class="btn secondary btn-sm channel-delete-btn" data-channel-id="${escapeHtml(c.id)}">删除</button>
+        <button type="button" class="btn secondary btn-sm channel-delete-btn" data-channel-id="${escapeHtml(c.id)}">${globalMobile ? "删除全局连接" : "删除"}</button>
       </div>
     </div>
   </article>`;
@@ -14894,8 +14935,20 @@ async function openChannelEditorModal(prefillKind) {
     alert("请先为项目设置有效工作目录。");
     return;
   }
-  const kindsRes = await requireBridge().listChannelKinds();
-  const kinds = kindsRes?.kinds ?? [];
+  const [kindsRes, channelsRes] = await Promise.all([
+    requireBridge().listChannelKinds(),
+    requireBridge().listChannels(),
+  ]);
+  const hasGlobalMobile = (channelsRes?.channels ?? []).some(
+    (channel) => channel.kind === "mobile",
+  );
+  if (prefillKind === "mobile" && hasGlobalMobile) {
+    notifyUser("Forge Mobile 已作为电脑级全局连接存在，请直接使用「配对与设备」管理。", "warn");
+    return;
+  }
+  const kinds = (kindsRes?.kinds ?? []).filter(
+    (kind) => kind.kind !== "mobile" || !hasGlobalMobile,
+  );
   const sel = $("channelKindSelect");
   if (sel) {
     sel.innerHTML = kinds
@@ -15209,9 +15262,6 @@ function bindChannelsView(root, channels, gw) {
   });
   const openAdd = () => void openChannelEditorModal();
   root.querySelector("#channelAddBtn")?.addEventListener("click", openAdd);
-  root.querySelector("#channelAddEmptyBtn")?.addEventListener("click", () => {
-    void openChannelEditorModal("ilink");
-  });
   root.querySelectorAll(".channel-kind-add-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       const kind = btn.getAttribute("data-channel-kind") || "ilink";
@@ -15259,8 +15309,13 @@ function bindChannelsView(root, channels, gw) {
   root.querySelectorAll(".channel-delete-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       const id = btn.getAttribute("data-channel-id");
-      const name = channels.find((c) => c.id === id)?.name || id?.slice(0, 8);
-      if (!id || !confirm(`删除渠道「${name}」？`)) return;
+      const channel = channels.find((candidate) => candidate.id === id);
+      const name = channel?.name || id?.slice(0, 8);
+      const message =
+        channel?.kind === "mobile"
+          ? `删除电脑级连接「${name}」？所有已配对手机会立即断开，设备凭证和 Relay 注册将无法继续使用。`
+          : `删除渠道「${name}」？`;
+      if (!id || !confirm(message)) return;
       void requireBridge()
         .deleteChannel({ id, skipConfirm: true })
         .then(() => renderChannelsView())
@@ -15297,11 +15352,13 @@ async function renderChannelsView(options = {}) {
     }
 
     const [listRes, gwRes, kindsRes] = await Promise.all([
-      requireBridge().listChannels({ cwd }),
+      requireBridge().listChannels({ cwd, includeGlobalMobile: true }),
       requireBridge().getChannelGatewayStatus(),
       requireBridge().listChannelKinds(),
     ]);
     const channels = Array.isArray(listRes?.channels) ? listRes.channels : [];
+    const mobileChannels = channels.filter((channel) => channel.kind === "mobile");
+    const projectChannels = channels.filter((channel) => channel.kind !== "mobile");
     const gw = gwRes ?? { running: false, adapters: [] };
     const kindLabels = Object.fromEntries(
       (kindsRes?.kinds ?? []).map((k) => [k.kind, k.label]),
@@ -15323,34 +15380,14 @@ async function renderChannelsView(options = {}) {
     }
     channelsLastRenderKey = nextRenderKey;
 
-    if (!channels.length) {
-      root.innerHTML = wrapChannelsPage(`${
-        daemonOk
-          ? ""
-          : `<div class="channels-daemon-banner event warn">需保持 Daemon 运行，Gateway 才能转发消息。</div>`
-      }${renderChannelsPermissionsBanner()}${renderChannelsGatewayBar(gw)}${renderChannelsEmptyState(kinds)}`);
-      bindChannelsView(root, channels, gw);
-      startChannelsPoll();
-      return;
-    }
-
-    const cards = channels
-      .map((c) => renderChannelCard(c, kindLabels, runtimeById, gw, daemonOk))
-      .join("");
-
     root.innerHTML = wrapChannelsPage(`${
       daemonOk
         ? ""
         : `<div class="channels-daemon-banner event warn">需保持 Daemon 运行，Gateway 才能转发消息。</div>`
     }${renderChannelsPermissionsBanner()}${renderChannelsGatewayBar(gw)}
       ${renderChannelsTroubleshooting(cwd)}
-      <section class="channels-list-section">
-        <div class="channels-list-head">
-          <h4>已配置渠道</h4>
-          <span class="channels-list-count">${channels.length} 个 · 每 3 秒自动刷新</span>
-        </div>
-        <div class="channels-card-list">${cards}</div>
-      </section>`);
+      ${renderGlobalMobileSection(mobileChannels, kindLabels, runtimeById, gw, daemonOk)}
+      ${renderProjectChannelsSection(projectChannels, kinds, kindLabels, runtimeById, gw, daemonOk)}`);
     bindChannelsView(root, channels, gw);
     startChannelsPoll();
   } catch (e) {

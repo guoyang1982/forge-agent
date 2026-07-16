@@ -86,6 +86,8 @@ export interface ChannelLoginState {
 
 export interface ListChannelsRequest {
   cwd?: string;
+  /** Include the computer-level Forge Mobile channel even when it belongs to another cwd. */
+  includeGlobalMobile?: boolean;
 }
 export interface ListChannelsResult {
   channels: ChannelAdapterRecord[];
