@@ -8,7 +8,7 @@ const offer = {
   hostE2eePublicKey: "A".repeat(43),
   deviceId: "device_12345678",
   pairingSecret: "B".repeat(43),
-  inviteToken: "invite_12345678901234567890123456789012",
+  inviteToken: `invite_${"x".repeat(32)}`,
   expiresAt: 2_000_000_000_000,
   protocolVersion: 1,
 };
