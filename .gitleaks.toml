@@ -3,26 +3,14 @@ title = "Forge Agent secret scanning configuration"
 [extend]
 useDefault = true
 
-[[allowlists]]
-description = "Documented placeholder API keys"
-regexTarget = "match"
+[allowlist]
+description = "Documented placeholders, generated assets, and published deterministic test vectors"
+regexTarget = "line"
 regexes = [
   '''sk-your-[a-z0-9-]+''',
   '''tvly-your-[a-z0-9-]+''',
   '''<YOUR_API_KEY>''',
-]
-
-[[allowlists]]
-description = "Generated xterm map export misidentified as a generic API key"
-regexTarget = "line"
-regexes = [
   '''FourKeyMap\s*=\s*[^;]+TwoKeyMap\s*=\s*void 0''',
-]
-
-[[allowlists]]
-description = "Published deterministic mobile test and crypto golden-vector lines"
-regexTarget = "line"
-regexes = [
   '''inviteToken:\s*"invite_12345678901234567890123456789012"''',
   '''"sharedSecret":\s*"c9ea6a3f79a000b60b076d4afc990b272f3f0b5aaa3f0b8713c209273e363863"''',
   '''"phoneToHostKey":\s*"e1c595a59242020bd8e4413ee71acbac51a9e73f934c219422dafc49b6b154e7"''',
