@@ -1090,6 +1090,44 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(
+    "forge:mobile-create-pairing",
+    async (
+      _event,
+      payload: { adapterId: string; deviceName?: string; skipConfirm?: boolean },
+    ) => {
+      const cfg = loadConfig();
+      return requestDaemonMethod(cfg, DAEMON_METHODS.MOBILE_CREATE_PAIRING, payload);
+    },
+  );
+
+  ipcMain.handle(
+    "forge:mobile-list-devices",
+    async (_event, payload: { adapterId: string }) => {
+      const cfg = loadConfig();
+      return requestDaemonMethod(cfg, DAEMON_METHODS.MOBILE_LIST_DEVICES, payload);
+    },
+  );
+
+  ipcMain.handle(
+    "forge:mobile-revoke-device",
+    async (_event, payload: { adapterId: string; deviceId: string }) => {
+      const cfg = loadConfig();
+      return requestDaemonMethod(cfg, DAEMON_METHODS.MOBILE_REVOKE_DEVICE, payload);
+    },
+  );
+
+  ipcMain.handle(
+    "forge:mobile-update-device-projects",
+    async (
+      _event,
+      payload: { adapterId: string; deviceId: string; allowedProjects: string[] },
+    ) => {
+      const cfg = loadConfig();
+      return requestDaemonMethod(cfg, DAEMON_METHODS.MOBILE_UPDATE_DEVICE_PROJECTS, payload);
+    },
+  );
+
+  ipcMain.handle(
     "forge:channel-start-login",
     async (_event, payload: { adapterId: string }) => {
       const cfg = loadConfig();

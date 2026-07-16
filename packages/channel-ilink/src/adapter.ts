@@ -12,6 +12,7 @@ const DEFAULT_BASE = "https://ilinkai.weixin.qq.com";
 
 export class IlinkChannelAdapter implements ChannelAdapter {
   readonly kind = "ilink" as const;
+  readonly capability = "message" as const;
 
   private ctx: AdapterContext | null = null;
   private client = new IlinkClient(DEFAULT_BASE);

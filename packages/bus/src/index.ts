@@ -1,7 +1,8 @@
-import { connect as netConnect, createServer, type Server, type Socket } from "node:net";
+import { createServer, type Server, type Socket } from "node:net";
 import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import type {
   AgentEvent,
+  AgentEventNotificationParams,
   JsonRpcId,
   JsonRpcNotification,
   JsonRpcRequest,
@@ -9,17 +10,20 @@ import type {
 } from "@forge/protocol";
 import { AGENT_EVENT_METHOD } from "@forge/protocol";
 
+export { connectDaemon, type DaemonClient } from "@forge/daemon-client";
+
 export type RpcHandler = (
   method: string,
   params: unknown,
   emit: (event: AgentEvent) => void,
 ) => Promise<unknown>;
 
-function serializeAgentEvent(event: AgentEvent): string {
+function serializeAgentEvent(requestId: JsonRpcId, event: AgentEvent): string {
+  const params: AgentEventNotificationParams = { requestId, event };
   const note: JsonRpcNotification = {
     jsonrpc: "2.0",
     method: AGENT_EVENT_METHOD,
-    params: event,
+    params,
   };
   return JSON.stringify(note) + "\n";
 }
@@ -50,19 +54,9 @@ export class DaemonServer {
 
   stop(): void {
     this.server?.close();
+    for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
     unlinkSyncSafe(this.socketPath);
-  }
-
-  private broadcast(event: AgentEvent): void {
-    const frame = serializeAgentEvent(event);
-    for (const socket of this.sockets) {
-      try {
-        socket.write(frame);
-      } catch {
-        this.sockets.delete(socket);
-      }
-    }
   }
 
   private handleConnection(socket: Socket): void {
@@ -71,11 +65,7 @@ export class DaemonServer {
     socket.on("close", () => this.sockets.delete(socket));
     socket.on("error", () => this.sockets.delete(socket));
 
-    const emit = (event: AgentEvent) => {
-      this.broadcast(event);
-    };
-
-    socket.on("data", async (chunk) => {
+    socket.on("data", (chunk) => {
       buffer += chunk.toString();
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
@@ -85,122 +75,37 @@ export class DaemonServer {
         try {
           const req = JSON.parse(line) as JsonRpcRequest;
           if (req.id === undefined) continue;
-
-          const respond = (res: JsonRpcResponse) => {
-            socket.write(JSON.stringify(res) + "\n");
-          };
-
-          try {
-            const result = await this.handler(req.method, req.params, emit);
-            respond({ jsonrpc: "2.0", id: req.id, result });
-          } catch (e) {
-            respond({
-              jsonrpc: "2.0",
-              id: req.id,
-              error: { code: -32000, message: String(e) },
-            });
-          }
+          void this.handleRequest(socket, req);
         } catch {
           /* ignore bad json */
         }
       }
     });
   }
-}
 
-export function connectDaemon(
-  socketPath: string,
-): Promise<{
-  onEvent: (handler: (e: AgentEvent) => void) => void;
-  onClose: (handler: () => void) => void;
-  request: (
-    method: string,
-    params?: unknown,
-    onEvent?: (e: AgentEvent) => void,
-  ) => Promise<unknown>;
-  close: () => void;
-}> {
-  return new Promise((resolve, reject) => {
-    const socket = netConnect(socketPath);
-    let buffer = "";
-    let nextId = 1;
-    let eventHandler: ((e: AgentEvent) => void) | undefined;
-    let closeHandler: (() => void) | undefined;
-    const pending = new Map<
-      JsonRpcId,
-      { resolve: (value: unknown) => void; reject: (err: Error) => void }
-    >();
-
-    const onData = (chunk: Buffer) => {
-      buffer += chunk.toString();
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const msg = JSON.parse(line) as JsonRpcResponse & JsonRpcNotification;
-          if (msg.method === AGENT_EVENT_METHOD && msg.params) {
-            eventHandler?.(msg.params as AgentEvent);
-            continue;
-          }
-          if (msg.id === undefined) continue;
-          const entry = pending.get(msg.id);
-          if (!entry) continue;
-          pending.delete(msg.id);
-          if (msg.error) {
-            const m = msg.error.message ?? "Unknown RPC error";
-            entry.reject(
-              new Error(m.startsWith("Error:") ? m.slice(6).trim() : m),
-            );
-          } else {
-            entry.resolve(msg.result);
-          }
-        } catch (e) {
-          /* ignore malformed daemon frames */
-        }
+  private async handleRequest(socket: Socket, req: JsonRpcRequest): Promise<void> {
+    if (req.id === undefined) return;
+    const requestId = req.id;
+    const emit = (event: AgentEvent) => {
+      if (!socket.destroyed) {
+        socket.write(serializeAgentEvent(requestId, event));
       }
     };
-
-    const rejectAll = (err: Error) => {
-      for (const entry of pending.values()) entry.reject(err);
-      pending.clear();
+    const respond = (response: JsonRpcResponse) => {
+      if (!socket.destroyed) socket.write(JSON.stringify(response) + "\n");
     };
 
-    socket.on("connect", () => {
-      socket.on("data", onData);
-      resolve({
-        onEvent: (handler: (e: AgentEvent) => void) => {
-          eventHandler = handler;
-        },
-        onClose: (handler: () => void) => {
-          closeHandler = handler;
-        },
-        request: (method, params, onEvent) => {
-          if (onEvent) eventHandler = onEvent;
-          const id = nextId++;
-          const req: JsonRpcRequest = {
-            jsonrpc: "2.0",
-            id,
-            method,
-            params,
-          };
-          return new Promise((res, rej) => {
-            pending.set(id, { resolve: res, reject: rej });
-            socket.write(JSON.stringify(req) + "\n");
-          });
-        },
-        close: () => socket.end(),
+    try {
+      const result = await this.handler(req.method, req.params, emit);
+      respond({ jsonrpc: "2.0", id: requestId, result });
+    } catch (error) {
+      respond({
+        jsonrpc: "2.0",
+        id: requestId,
+        error: { code: -32000, message: String(error) },
       });
-    });
-    socket.on("error", (e) => {
-      rejectAll(e);
-      reject(e);
-    });
-    socket.on("close", () => {
-      rejectAll(new Error("Daemon connection closed"));
-      closeHandler?.();
-    });
-  });
+    }
+  }
 }
 
 function unlinkSyncSafe(p: string): void {

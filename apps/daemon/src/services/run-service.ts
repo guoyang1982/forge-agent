@@ -119,6 +119,9 @@ export async function handleRun(
     }
     emit(normalized);
   };
+  // Register before publishing session_start so clients can immediately cancel
+  // the run using the sessionId from that first event without racing setup.
+  const abort = deps.cancelService.registerRun(sessionId);
 
   const runPreview = req.channelRun
     ? (req.channelRun.preview
@@ -144,10 +147,13 @@ export async function handleRun(
 
   const maxContext =
     config.limits.maxContextTokens ?? DEFAULT_CONFIG.limits.maxContextTokens;
-  const historyPack = deps.sessions.loadMessagesWithBudget(
-    sessionId,
-    maxContext,
-  );
+  let historyPack: ReturnType<SessionStore["loadMessagesWithBudget"]>;
+  try {
+    historyPack = deps.sessions.loadMessagesWithBudget(sessionId, maxContext);
+  } catch (error) {
+    deps.cancelService.clearRun(sessionId, abort);
+    throw error;
+  }
   runEmit({
     type: "context_usage",
     estimatedTokens: historyPack.estimatedTokens,
@@ -193,8 +199,6 @@ export async function handleRun(
   let hookBindings: HookBinding[] = [];
   let hookCtx: HookRunContext | undefined;
   let stopHookSkills: SkillDoc[] = [];
-  const abort = deps.cancelService.registerRun(sessionId);
-
   const finishRun = async (options: {
     finalText: string;
     reason: StopReason;
@@ -358,6 +362,10 @@ export async function handleRun(
     }
 
     const initial = assembleRunMessages(freshMessages, historyPack.messages);
+    // The current user message is persisted just below. Establish the replay
+    // baseline now so cancellation during intent planning cannot append the
+    // entire initial prompt (and duplicate that user message) in the catch path.
+    initialLen = initial.length;
     const turnUser = initial[initial.length - 1];
     const sentImages = countImagesInUserContent(turnUser?.content ?? null);
     if (sentImages > 0) {
@@ -438,6 +446,7 @@ export async function handleRun(
     }));
     const intentPlan = await buildRunIntentPlan({
       config,
+      signal: abort.signal,
       message: req.message,
       cwd: absCwd,
       runKind: intentRunKind(mentionedTalents.length),
@@ -449,6 +458,7 @@ export async function handleRun(
       dispatchAssignments: dispatchAssignmentInputs,
       unknownMentions,
     });
+    if (abort.signal.aborted) throw new RunCancelledError(initial);
     runEmit({
       type: "intent_plan",
       summary: intentPlan.summary,
@@ -891,6 +901,7 @@ function intentRunKind(talentCount: number): IntentPlanRunKind {
 
 async function buildRunIntentPlan(options: {
   config: ForgeConfig;
+  signal?: AbortSignal;
   message: string;
   cwd: string;
   runKind: IntentPlanRunKind;
@@ -909,6 +920,7 @@ async function buildRunIntentPlan(options: {
         },
       ],
       tools: [],
+      signal: options.signal,
     });
     const parsed = parseIntentPlanText(
       res.text ?? "",

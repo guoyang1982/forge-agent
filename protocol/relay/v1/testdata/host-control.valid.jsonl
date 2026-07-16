@@ -1,0 +1,5 @@
+{"v":1,"type":"host.hello","requestId":"request_0001","hostId":"host_00000001","credentialVersion":1}
+{"v":1,"type":"invite.create","requestId":"request_0002","deviceId":"device_000001","expiresInSeconds":600}
+{"v":1,"type":"connection.open","connId":"connection_001","connTicket":"ticket_ticket_ticket_ticket_ticket_01","deviceId":"device_000001","credentialKind":"invite","attachDeadline":1800000000000}
+{"v":1,"type":"lease.renew","requestId":"request_0003","leaseId":"lease_000001"}
+{"v":1,"type":"error","requestId":"request_0004","code":"unauthorized","message":"credential rejected","retryable":false}

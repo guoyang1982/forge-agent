@@ -452,6 +452,30 @@
       </div>
     </div>
 
+    <div id="mobileChannelModal" class="modal hidden">
+      <div class="modal-mask"></div>
+      <div class="modal-card modal-card-md channel-login-modal">
+        <header class="modal-head">
+          <h3>Forge Mobile 设备</h3>
+          <button type="button" id="mobileChannelCloseBtn" class="icon-btn subtle">✕</button>
+        </header>
+        <p class="channel-login-lead">二维码包含一次性配对凭证。重新生成后旧二维码立即失效，请勿通过不可信渠道转发截图。</p>
+        <div id="mobilePairingQrHost" class="channel-login-qr-host hidden"></div>
+        <p id="mobilePairingStatus" class="channel-login-status">尚未生成配对码</p>
+        <div class="mobile-channel-actions">
+          <button type="button" id="mobilePairingGenerateBtn" class="btn primary">生成配对二维码</button>
+          <button type="button" id="mobilePairingCopyBtn" class="btn secondary hidden">复制配对链接</button>
+        </div>
+        <div class="mobile-device-section">
+          <h4>已配对设备</h4>
+          <div id="mobileDeviceList" class="mobile-device-list"><p class="tiny">正在加载…</p></div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" id="mobileChannelCancelBtn" class="btn secondary">关闭</button>
+        </div>
+      </div>
+    </div>
+
     <div id="automationEditorModal" class="modal hidden">
       <div class="modal-mask"></div>
       <div class="modal-card modal-card-md">

@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forge.local/protocol/relay/v1/host-control.schema.json",
+  "title": "Forge Relay host control message v1",
+  "oneOf": [
+    { "$ref": "#/$defs/hostHello" },
+    { "$ref": "#/$defs/hostChallenge" },
+    { "$ref": "#/$defs/hostProof" },
+    { "$ref": "#/$defs/hostReady" },
+    { "$ref": "#/$defs/authRefresh" },
+    { "$ref": "#/$defs/inviteCreate" },
+    { "$ref": "#/$defs/inviteCreated" },
+    { "$ref": "#/$defs/inviteRevoke" },
+    { "$ref": "#/$defs/deviceInstall" },
+    { "$ref": "#/$defs/deviceInstalled" },
+    { "$ref": "#/$defs/deviceRevoke" },
+    { "$ref": "#/$defs/deviceRevoked" },
+    { "$ref": "#/$defs/connectionOpen" },
+    { "$ref": "#/$defs/connectionClosed" },
+    { "$ref": "#/$defs/leaseRenew" },
+    { "$ref": "#/$defs/leaseRenewed" },
+    { "$ref": "#/$defs/ping" },
+    { "$ref": "#/$defs/pong" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "token": { "type": "string", "minLength": 32, "maxLength": 4096 },
+    "hash": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+    "timestamp": { "type": "integer", "minimum": 1 },
+    "hostHello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "requestId", "hostId", "credentialVersion"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "host.hello" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "hostId": { "$ref": "#/$defs/id" },
+        "credentialVersion": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "hostChallenge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "requestId", "challenge", "expiresAt"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "host.challenge" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "challenge": { "$ref": "#/$defs/token" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "hostProof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "requestId", "signature"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "host.proof" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "signature": { "$ref": "#/$defs/token" }
+      }
+    },
+    "hostReady": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "requestId", "leaseId", "leaseExpiresAt"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "host.ready" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "leaseId": { "$ref": "#/$defs/id" },
+        "leaseExpiresAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "authRefresh": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "requestId", "jwt"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "auth.refresh" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "jwt": { "$ref": "#/$defs/token" }
+      }
+    },
+    "inviteCreate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "requestId", "deviceId", "expiresInSeconds"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "invite.create" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "deviceId": { "$ref": "#/$defs/id" },
+        "expiresInSeconds": { "type": "integer", "minimum": 30, "maximum": 600 }
+      }
+    },
+    "inviteCreated": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "requestId", "inviteId", "inviteToken", "expiresAt"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "invite.created" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "inviteId": { "$ref": "#/$defs/id" },
+        "inviteToken": { "$ref": "#/$defs/token" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "inviteRevoke": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "requestId", "inviteId"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "invite.revoke" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "inviteId": { "$ref": "#/$defs/id" }
+      }
+    },
+    "deviceInstall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "requestId", "deviceId", "resumeTokenHash", "credentialVersion"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "device.install" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "deviceId": { "$ref": "#/$defs/id" },
+        "resumeTokenHash": { "$ref": "#/$defs/hash" },
+        "credentialVersion": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "deviceInstalled": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "requestId", "deviceId"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "device.installed" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "deviceId": { "$ref": "#/$defs/id" }
+      }
+    },
+    "deviceRevoke": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "requestId", "deviceId"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "device.revoke" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "deviceId": { "$ref": "#/$defs/id" }
+      }
+    },
+    "deviceRevoked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "requestId", "deviceId"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "device.revoked" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "deviceId": { "$ref": "#/$defs/id" }
+      }
+    },
+    "connectionOpen": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "connId", "connTicket", "deviceId", "credentialKind", "attachDeadline"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "connection.open" },
+        "connId": { "$ref": "#/$defs/id" },
+        "connTicket": { "$ref": "#/$defs/token" },
+        "deviceId": { "$ref": "#/$defs/id" },
+        "credentialKind": { "enum": ["invite", "resume"] },
+        "attachDeadline": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "connectionClosed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "connId", "reason"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "connection.closed" },
+        "connId": { "$ref": "#/$defs/id" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "leaseRenew": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "requestId", "leaseId"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "lease.renew" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "leaseId": { "$ref": "#/$defs/id" }
+      }
+    },
+    "leaseRenewed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "requestId", "leaseId", "leaseExpiresAt"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "lease.renewed" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "leaseId": { "$ref": "#/$defs/id" },
+        "leaseExpiresAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "ping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "timestamp"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "ping" },
+        "timestamp": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "pong": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "timestamp"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "pong" },
+        "timestamp": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "code", "message", "retryable"],
+      "properties": {
+        "v": { "const": 1 },
+        "type": { "const": "error" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "code": {
+          "enum": [
+            "bad_request",
+            "unauthorized",
+            "forbidden",
+            "not_found",
+            "conflict",
+            "rate_limited",
+            "timeout",
+            "internal",
+            "unsupported_version"
+          ]
+        },
+        "message": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "retryable": { "type": "boolean" }
+      }
+    }
+  }
+}

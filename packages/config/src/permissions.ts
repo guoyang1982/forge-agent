@@ -41,6 +41,7 @@ export function resolvePermissions(
     memory: mergeLevel(base.memory, patch?.memory),
     automation: mergeLevel(base.automation, patch?.automation),
     channels: mergeLevel(base.channels, patch?.channels),
+    mobile: mergeLevel(base.mobile, patch?.mobile),
     notifications: mergeLevel(base.notifications, patch?.notifications),
     browser: mergeLevel(base.browser, patch?.browser),
     apps: mergeLevel(base.apps, patch?.apps),
@@ -56,6 +57,12 @@ export function resolvePermissions(
   merged.software = {
     ...merged.software,
     managers: patch?.software?.managers ?? defaultPackageManagers(),
+  };
+  merged.mobile = {
+    ...merged.mobile,
+    allowedProjects: expandAllowedRoots(
+      patch?.mobile?.allowedProjects ?? base.mobile.allowedProjects,
+    ),
   };
   return merged;
 }

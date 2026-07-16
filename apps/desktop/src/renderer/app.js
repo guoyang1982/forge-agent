@@ -2489,15 +2489,23 @@ async function createDefaultProject() {
 }
 
 async function loadProjects() {
+  let cached = [];
   try {
     const raw = JSON.parse(localStorage.getItem(LS_PROJECTS_KEY) || "[]");
     if (Array.isArray(raw) && raw.length) {
-      return raw.filter((p) => p && typeof p.id === "string" && p.id);
+      cached = raw.filter((p) => p && typeof p.id === "string" && p.id);
     }
   } catch {
     /* ignore */
   }
-  return [await createDefaultProject()];
+  try {
+    const cfg = await getBridge()?.getConfig?.();
+    const shared = sharedProjectsFromConfig(cfg);
+    if (shared.length) return hydrateSharedProjects(shared, cached);
+  } catch {
+    /* cached projects remain a safe offline fallback */
+  }
+  return cached.length ? cached : [await createDefaultProject()];
 }
 
 function saveProjects() {
@@ -2507,6 +2515,72 @@ function saveProjects() {
     LS_PROJECT_EXPANDED_KEY,
     JSON.stringify([...state.expandedProjectIds]),
   );
+  const bridge = getBridge();
+  if (bridge?.saveConfig) {
+    void bridge
+      .saveConfig({
+        ui: {
+          projects: state.projects.map(({ id, name, cwd }) => ({ id, name, cwd })),
+        },
+      })
+      .catch(() => {
+        /* local cache keeps the Desktop usable while Daemon/config is unavailable */
+      });
+  }
+}
+
+function normalizedProjectCwd(cwd) {
+  return String(cwd || "").replace(/[\\/]+$/, "");
+}
+
+function sharedProjectsFromConfig(cfg) {
+  const projects = cfg?.ui?.projects;
+  if (!Array.isArray(projects)) return [];
+  return projects.filter(
+    (project) =>
+      project &&
+      typeof project.id === "string" &&
+      project.id &&
+      typeof project.name === "string" &&
+      project.name &&
+      typeof project.cwd === "string" &&
+      project.cwd,
+  );
+}
+
+function mergeProjectLists(primary, secondary) {
+  const merged = [];
+  const byCwd = new Map();
+  for (const project of [...primary, ...secondary]) {
+    const cwdKey = normalizedProjectCwd(project?.cwd);
+    if (!project?.id || !cwdKey) continue;
+    const existing = byCwd.get(cwdKey);
+    if (existing) {
+      Object.assign(existing, { ...project, ...existing });
+      continue;
+    }
+    const next = { ...project, cwd: project.cwd };
+    byCwd.set(cwdKey, next);
+    merged.push(next);
+  }
+  return merged;
+}
+
+function hydrateSharedProjects(shared, cached) {
+  return shared.map((project) => {
+    const cachedProject = cached.find(
+      (item) => normalizedProjectCwd(item?.cwd) === normalizedProjectCwd(project.cwd),
+    );
+    return cachedProject ? { ...cachedProject, ...project } : { ...project };
+  });
+}
+
+function syncProjectsFromConfig(cfg) {
+  const shared = sharedProjectsFromConfig(cfg);
+  if (!shared.length) return false;
+  const before = state.projects.length;
+  state.projects = mergeProjectLists(state.projects, shared);
+  return state.projects.length !== before;
 }
 
 function loadSessionUiPrefs() {
@@ -11210,6 +11284,7 @@ function renderChannelsPermissionsBanner() {
 }
 
 const CHANNEL_KIND_ICONS = {
+  mobile: { glyph: "M", tone: "mobile" },
   ilink: { glyph: "微", tone: "ilink" },
   feishu: { glyph: "飞", tone: "feishu" },
   dingtalk: { glyph: "钉", tone: "dingtalk" },
@@ -11332,24 +11407,38 @@ function sessionRowVersion(s) {
 
 async function refreshViewedSessionFromDaemonIfChanged() {
   if (state.externalSessionRefreshInFlight) return;
-  if (state.activeNav !== "chat") return;
-  const sessionId = sessionRuns?.getViewingSessionId();
-  if (!sessionId || state.running || state.runningSessions.has(sessionId)) return;
   const bridge = getBridge();
   if (!bridge?.listSessions) return;
 
   state.externalSessionRefreshInFlight = true;
   try {
-    const res = await bridge.listSessions(80);
+    const [cfg, res] = await Promise.all([
+      typeof bridge.getConfig === "function"
+        ? bridge.getConfig().catch(() => null)
+        : Promise.resolve(null),
+      bridge.listSessions(80),
+    ]);
+    if (cfg && syncProjectsFromConfig(cfg)) {
+      saveProjects();
+      renderComposerProjectSelect();
+    }
     const sessions = Array.isArray(res)
       ? res
       : Array.isArray(res?.sessions)
         ? res.sessions
         : [];
+    const sessionId = sessionRuns?.getViewingSessionId();
     const incoming = sessions.find((s) => s.id === sessionId);
     const current = state.sessionsAll.find((s) => s.id === sessionId);
     renderSessions(res);
-    if (!incoming || sessionRuns?.getViewingSessionId() !== sessionId) return;
+    if (
+      state.activeNav !== "chat" ||
+      !sessionId ||
+      state.running ||
+      state.runningSessions.has(sessionId) ||
+      !incoming ||
+      sessionRuns?.getViewingSessionId() !== sessionId
+    ) return;
     // Compare against the last DAEMON version we synced to — the merged local row
     // keeps a local-clock updatedAt that never converges, which used to trigger a
     // full timeline rebuild every poll tick after each run.
@@ -14320,6 +14409,8 @@ function bindAutomationsPageUi() {
 
 let channelLoginPollTimer = null;
 let channelLoginAdapterId = null;
+let mobileManagerAdapterId = null;
+let mobilePairingUriValue = "";
 let channelsPollTimer = null;
 let channelsRefreshInFlight = false;
 let channelsLastRenderKey = "";
@@ -14341,24 +14432,71 @@ function startChannelsPoll() {
     }
     const loginOpen = !$("channelLoginModal")?.classList.contains("hidden");
     const editorOpen = !$("channelEditorModal")?.classList.contains("hidden");
-    if (loginOpen || editorOpen) return;
+    const mobileOpen = !$("mobileChannelModal")?.classList.contains("hidden");
+    if (loginOpen || editorOpen || mobileOpen) return;
     void renderChannelsView({ quiet: true });
   }, 3000);
 }
 
-function renderChannelStatusBadge(status) {
+function renderChannelStatusBadge(status, kind) {
   const map = {
     connected: ["已连接", "ok"],
+    connecting: ["连接中", "warn"],
     disconnected: ["未连接", "warn"],
     error: ["错误", "err"],
     disabled: ["已停用", "muted"],
     login_required: ["需登录", "warn"],
   };
-  const [label, cls] = map[status] ?? [status || "—", "muted"];
+  const [defaultLabel, cls] = map[status] ?? [status || "—", "muted"];
+  const label = kind === "mobile" && status === "connected" ? "已注册" : defaultLabel;
   return `<span class="channel-status-badge channel-status-${cls}">${escapeHtml(label)}</span>`;
 }
 
+function mobileConnectionHint(error) {
+  const text = String(error || "");
+  if (/401|403|unauthor|forbidden|credential|token/i.test(text)) {
+    return "Relay 拒绝凭证：检查 Enrollment Token，必要时新建渠道重新注册";
+  }
+  if (/clock|time|expir|challenge/i.test(text)) {
+    return "认证时间校验失败：同步公司电脑系统时间后重试";
+  }
+  if (/fetch|connect|network|ECONN|socket|dns/i.test(text)) {
+    return "无法连接 Relay：检查公网、代理、防火墙和 Relay Origin";
+  }
+  return text || "检查公网连接、Enrollment Token 和本机时间";
+}
+
 function renderChannelReadinessChecks(c, rt, gw, daemonOk) {
+  if (c.kind === "mobile") {
+    const checks = [
+      {
+        ok: daemonOk,
+        label: "Daemon 已连接",
+        hint: "请保持 Forge Desktop 或后台 Daemon 运行",
+      },
+      {
+        ok: Boolean(gw?.running && gw?.daemonConnected),
+        label: "共享 Gateway 运行中",
+        hint: "点击上方「启动 Gateway」；不需要启动第二个 Mobile Gateway",
+      },
+      {
+        ok: Boolean(c.enabled),
+        label: "Forge Mobile 已启用",
+        hint: "打开渠道卡片右侧开关；关闭会断开手机，但不影响其他渠道",
+      },
+      {
+        ok: typeof c.config?.relayOrigin === "string" && /^https?:\/\//i.test(c.config.relayOrigin),
+        label: "Relay 已配置",
+        hint: "重新添加渠道并填写有效的 Relay Origin",
+      },
+      {
+        ok: rt?.status === "connected",
+        label: rt?.status === "connecting" ? "正在注册 Relay" : "Relay 已注册",
+        hint: mobileConnectionHint(rt?.lastError),
+      },
+    ];
+    return renderChannelCheckList(checks);
+  }
   if (c.kind !== "ilink") {
     const checks = [
       {
@@ -14377,17 +14515,7 @@ function renderChannelReadinessChecks(c, rt, gw, daemonOk) {
         hint: "编辑渠道并填写有效的 Webhook URL",
       },
     ];
-    return `<ul class="channel-readiness-list">
-      ${checks
-        .map(
-          (ch) => `<li class="channel-readiness-item${ch.ok ? " is-ok" : " is-fail"}">
-            <span class="channel-readiness-mark" aria-hidden="true">${ch.ok ? "✓" : "○"}</span>
-            <span class="channel-readiness-label">${escapeHtml(ch.label)}</span>
-            ${ch.ok ? "" : `<span class="channel-readiness-hint">${escapeHtml(ch.hint)}</span>`}
-          </li>`,
-        )
-        .join("")}
-    </ul>`;
+    return renderChannelCheckList(checks);
   }
   const checks = [
     {
@@ -14421,6 +14549,10 @@ function renderChannelReadinessChecks(c, rt, gw, daemonOk) {
       hint: rt?.lastError || "检查网络，或重新扫码登录",
     },
   ];
+  return renderChannelCheckList(checks);
+}
+
+function renderChannelCheckList(checks) {
   return `<ul class="channel-readiness-list">
     ${checks
       .map(
@@ -14481,6 +14613,27 @@ function renderChannelActivityPanel(rt) {
   </div>`;
 }
 
+function renderMobileSecurityActivity(rt) {
+  const events = Array.isArray(rt?.recentEvents) ? rt.recentEvents : [];
+  if (!events.length) {
+    return `<p class="channel-activity-empty">暂无安全事件。生成配对码、撤销设备或连接失败后会记录在这里，不记录业务正文。</p>`;
+  }
+  return `<div class="channel-activity">
+    <div class="channel-activity-head"><span class="channel-activity-poll">最近安全事件</span></div>
+    <ol class="channel-activity-log">
+      ${events
+        .slice(0, 8)
+        .map(
+          (event) => `<li class="channel-activity-log-item channel-activity-${event.level || "info"}">
+            <time>${escapeHtml(formatRelativeTime(event.at))}</time>
+            <span>${escapeHtml(event.message)}</span>
+          </li>`,
+        )
+        .join("")}
+    </ol>
+  </div>`;
+}
+
 function renderChannelsTroubleshooting(activeCwd) {
   return `<details class="channels-troubleshoot">
     <summary>收不到微信回复？按此排查</summary>
@@ -14514,7 +14667,7 @@ function renderChannelsGatewayBar(gw) {
             ${running ? "运行中" : "已停止"}${pid}
           </span>
         </div>
-        <p class="channel-gateway-desc">统一接收微信、飞书等外部消息，并转发给本机 Agent 处理。</p>
+        <p class="channel-gateway-desc">统一承载微信等消息渠道与 Forge Mobile 公网 Relay 连接，并转发给本机 Agent。</p>
         <div class="channel-gateway-url"><span class="channel-gateway-url-label">监听</span><code>${url}</code></div>
         <div class="channel-gateway-daemon${daemonOk ? " is-ok" : ""}">
           <span class="channel-gateway-daemon-dot"></span>
@@ -14543,9 +14696,9 @@ function renderChannelsGatewayBar(gw) {
 
 function renderChannelsSetupSteps() {
   const steps = [
-    { n: "1", title: "添加渠道", desc: "选择 iLink 等平台并绑定当前项目" },
-    { n: "2", title: "扫码登录", desc: "微信扫码授权，Token 自动写入配置" },
-    { n: "3", title: "启动 Gateway", desc: "长轮询入站，无需公网穿透" },
+    { n: "1", title: "添加渠道", desc: "选择微信、Forge Mobile 或自有 HTTP 渠道" },
+    { n: "2", title: "完成授权", desc: "微信扫码登录；Mobile 配置 Relay 后配对设备" },
+    { n: "3", title: "启动 Gateway", desc: "所有渠道共用一个 Gateway 进程与 PID" },
   ];
   return `<ol class="channels-setup-steps">
     ${steps
@@ -14588,7 +14741,7 @@ function renderChannelsEmptyState(kinds) {
         <span class="channels-empty-icon-sat">📡</span>
       </div>
       <h3>连接第一个外部渠道</h3>
-      <p>从微信 iLink 开始：添加渠道 → 扫码登录 → 启动 Gateway，即可在家遥控公司 PC 上的 Agent。</p>
+      <p>添加 Forge Mobile 可通过公网 Relay 在家连接公司 PC；它与微信等渠道共用同一个 Gateway。</p>
     </div>
     ${renderChannelsSetupSteps()}
     ${renderChannelKindCards(kinds)}
@@ -14599,7 +14752,7 @@ function renderChannelsEmptyState(kinds) {
 function renderChannelCard(c, kindLabels, runtimeById, gw, daemonOk) {
   const rt = runtimeById[c.id];
   const status =
-    c.kind === "ilink"
+    c.kind === "ilink" || c.kind === "mobile"
       ? rt?.status ?? (c.enabled ? "disconnected" : "disabled")
       : c.enabled
         ? c.config?.webhookUrl
@@ -14614,7 +14767,7 @@ function renderChannelCard(c, kindLabels, runtimeById, gw, daemonOk) {
     <div class="channel-card-body">
       <div class="channel-card-title-row">
         <strong>${escapeHtml(c.name)}</strong>
-        ${renderChannelStatusBadge(status)}
+        ${renderChannelStatusBadge(status, c.kind)}
       </div>
       <p class="channel-card-meta">${escapeHtml(kindLabel)} · 项目 <code>${escapeHtml(c.cwd)}</code>${
         c.lastMessageAt ? ` · 最近消息 ${escapeHtml(formatRelativeTime(c.lastMessageAt))}` : ""
@@ -14624,7 +14777,13 @@ function renderChannelCard(c, kindLabels, runtimeById, gw, daemonOk) {
         <h5>就绪检查</h5>
         ${renderChannelReadinessChecks(c, rt, gw, daemonOk)}
       </div>
-      ${c.kind === "ilink" ? renderChannelActivityPanel(rt) : `<p class="channel-activity-empty">主动通知渠道：自动化完成后会向配置的 Webhook 发送结果。</p>`}
+      ${
+        c.kind === "ilink"
+          ? renderChannelActivityPanel(rt)
+          : c.kind === "mobile"
+            ? renderMobileSecurityActivity(rt)
+            : `<p class="channel-activity-empty">主动通知渠道：自动化完成后会向配置的 Webhook 发送结果。</p>`
+      }
     </div>
     <div class="channel-card-side">
       <label class="toggle channel-card-toggle" title="启用/停用">
@@ -14632,6 +14791,7 @@ function renderChannelCard(c, kindLabels, runtimeById, gw, daemonOk) {
       </label>
       <div class="channel-card-actions">
         ${showLogin ? `<button type="button" class="btn primary btn-sm channel-login-btn" data-channel-id="${escapeHtml(c.id)}">扫码登录</button>` : ""}
+        ${c.kind === "mobile" ? `<button type="button" class="btn primary btn-sm mobile-manage-btn" data-channel-id="${escapeHtml(c.id)}" ${c.enabled ? "" : "disabled"}>配对与设备</button>` : ""}
         <button type="button" class="btn secondary btn-sm channel-delete-btn" data-channel-id="${escapeHtml(c.id)}">删除</button>
       </div>
     </div>
@@ -14686,6 +14846,8 @@ function channelsRenderFingerprint({ daemonOk, channels, gw, kinds }) {
       lastError: c.lastError || "",
       hasBotToken: Boolean(c.config?.botToken),
       hasWebhookUrl: Boolean(c.config?.webhookUrl),
+      relayOrigin: c.config?.relayOrigin || "",
+      hasEnrollmentToken: Boolean(c.config?.enrollmentToken),
     })),
   });
 }
@@ -14747,7 +14909,11 @@ async function openChannelEditorModal(prefillKind) {
   }
   renderChannelConfigFields(kinds);
   $("channelNameInput").value =
-    prefillKind === "ilink" ? "微信 iLink" : kinds[0]?.label ?? "";
+    prefillKind === "ilink"
+      ? "微信 iLink"
+      : prefillKind === "mobile"
+        ? "Forge Mobile"
+        : kinds.find((kind) => kind.kind === prefillKind)?.label ?? kinds[0]?.label ?? "";
   $("channelDescInput").value = "";
   $("channelCwdDisplay").textContent = activeProject.cwd;
   $("channelEditorModal")?.classList.remove("hidden");
@@ -14891,6 +15057,132 @@ async function openChannelLoginModal(adapterId) {
   }
 }
 
+function closeMobileChannelModal() {
+  mobileManagerAdapterId = null;
+  mobilePairingUriValue = "";
+  $("mobileChannelModal")?.classList.add("hidden");
+}
+
+function mobilePairingUri(offer) {
+  const bytes = new TextEncoder().encode(JSON.stringify(offer));
+  const encoded = arrayBufferToBase64(bytes.buffer)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+  return `forge://pair?code=${encoded}`;
+}
+
+async function renderMobilePairingOffer(offer) {
+  const host = $("mobilePairingQrHost");
+  if (!host) return;
+  mobilePairingUriValue = mobilePairingUri(offer);
+  host.classList.remove("hidden");
+  host.innerHTML = `<p class="tiny">正在生成二维码…</p>`;
+  try {
+    const dataUrl = await globalThis.ForgeChannelLoginQr?.toDataUrl?.(mobilePairingUriValue);
+    host.innerHTML = dataUrl
+      ? `<img src="${escapeHtml(dataUrl)}" alt="Forge Mobile 配对二维码" class="channel-login-qr-img" />`
+      : `<p class="tiny"><code>${escapeHtml(mobilePairingUriValue)}</code></p>`;
+  } catch (error) {
+    host.innerHTML = `<p class="tiny">二维码生成失败：${escapeHtml(String(error))}</p>`;
+  }
+  const expiresAt = new Date(offer.expiresAt);
+  $("mobilePairingStatus").textContent = `一次性配对码有效至 ${expiresAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+  $("mobilePairingCopyBtn")?.classList.remove("hidden");
+  $("mobilePairingGenerateBtn").textContent = "重新生成（旧码立即失效）";
+}
+
+async function loadMobileDevices() {
+  const host = $("mobileDeviceList");
+  if (!host || !mobileManagerAdapterId) return;
+  host.innerHTML = `<p class="tiny">正在加载…</p>`;
+  try {
+    const result = await requireBridge().listMobileDevices({
+      adapterId: mobileManagerAdapterId,
+    });
+    const devices = Array.isArray(result?.devices) ? result.devices : [];
+    const active = devices.filter((device) => !device.revokedAt);
+    host.innerHTML = active.length
+      ? active
+          .map(
+            (device) => `<article class="mobile-device-item">
+              <div>
+                <strong>${escapeHtml(device.displayName || "未命名设备")}</strong>
+                <p>配对于 ${escapeHtml(formatRelativeTime(device.createdAt))}${device.lastSeenAt ? ` · 最后在线 ${escapeHtml(formatRelativeTime(device.lastSeenAt))}` : " · 尚未上线"}</p>
+                <p>允许项目：${escapeHtml((device.allowedProjects || []).join("、") || "无")}</p>
+              </div>
+              <div class="mobile-device-item-actions">
+                <button type="button" class="btn secondary btn-sm mobile-device-projects-btn" data-device-id="${escapeHtml(device.deviceId)}">修改项目</button>
+                <button type="button" class="btn secondary btn-sm mobile-device-revoke-btn" data-device-id="${escapeHtml(device.deviceId)}">撤销</button>
+              </div>
+            </article>`,
+          )
+          .join("")
+      : `<p class="tiny">暂无已配对设备。</p>`;
+    host.querySelectorAll(".mobile-device-revoke-btn").forEach((button) => {
+      button.addEventListener("click", () => {
+        const deviceId = button.getAttribute("data-device-id");
+        if (!deviceId || !confirm("撤销后该设备会立即断开，且恢复凭证永久失效。继续？")) return;
+        void requireBridge()
+          .revokeMobileDevice({ adapterId: mobileManagerAdapterId, deviceId })
+          .then(() => loadMobileDevices())
+          .catch((error) => alert(`撤销设备失败: ${error}`));
+      });
+    });
+    host.querySelectorAll(".mobile-device-projects-btn").forEach((button) => {
+      button.addEventListener("click", () => {
+        const deviceId = button.getAttribute("data-device-id");
+        const device = active.find((candidate) => candidate.deviceId === deviceId);
+        if (!deviceId || !device) return;
+        const value = prompt(
+          "每行填写一个允许项目的绝对路径。只能选择该 Mobile 渠道权限中已授权的项目；留空表示禁止访问所有项目。",
+          (device.allowedProjects || []).join("\n"),
+        );
+        if (value === null) return;
+        const allowedProjects = [...new Set(value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean))];
+        void requireBridge()
+          .updateMobileDeviceProjects({
+            adapterId: mobileManagerAdapterId,
+            deviceId,
+            allowedProjects,
+          })
+          .then(() => loadMobileDevices())
+          .catch((error) => alert(`修改项目授权失败: ${error}`));
+      });
+    });
+  } catch (error) {
+    host.innerHTML = `<p class="channel-card-error">加载设备失败：${escapeHtml(String(error))}</p>`;
+  }
+}
+
+async function openMobileChannelModal(adapterId) {
+  mobileManagerAdapterId = adapterId;
+  mobilePairingUriValue = "";
+  $("mobilePairingQrHost")?.classList.add("hidden");
+  $("mobilePairingCopyBtn")?.classList.add("hidden");
+  $("mobilePairingGenerateBtn").textContent = "生成配对二维码";
+  $("mobilePairingStatus").textContent = "尚未生成配对码";
+  $("mobileChannelModal")?.classList.remove("hidden");
+  await loadMobileDevices();
+}
+
+async function generateMobilePairing() {
+  if (!mobileManagerAdapterId) return;
+  const button = $("mobilePairingGenerateBtn");
+  button.disabled = true;
+  try {
+    const result = await requireBridge().createMobilePairing({
+      adapterId: mobileManagerAdapterId,
+      skipConfirm: true,
+    });
+    await renderMobilePairingOffer(result.offer);
+  } catch (error) {
+    $("mobilePairingStatus").textContent = `生成失败：${String(error)}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function bindChannelsView(root, channels, gw) {
   root.querySelector("#channelsOpenPermissionsBtn")?.addEventListener("click", () => {
     openSettingsTab("permissions");
@@ -14931,6 +15223,15 @@ function bindChannelsView(root, channels, gw) {
     input.addEventListener("change", () => {
       const id = input.getAttribute("data-channel-id");
       if (!id) return;
+      const channel = channels.find((candidate) => candidate.id === id);
+      if (
+        channel?.kind === "mobile" &&
+        !input.checked &&
+        !confirm("关闭 Forge Mobile 会立即断开现有手机连接，但微信等其他渠道会继续运行。继续？")
+      ) {
+        input.checked = true;
+        return;
+      }
       void requireBridge()
         .updateChannel({ id, patch: { enabled: input.checked } })
         .then(() => renderChannelsView())
@@ -14945,6 +15246,13 @@ function bindChannelsView(root, channels, gw) {
     btn.addEventListener("click", () => {
       const id = btn.getAttribute("data-channel-id");
       if (id) void openChannelLoginModal(id);
+    });
+  });
+
+  root.querySelectorAll(".mobile-manage-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-channel-id");
+      if (id) void openMobileChannelModal(id);
     });
   });
 
@@ -15077,6 +15385,22 @@ function bindChannelsPageUi() {
   $("channelLoginCloseBtn")?.addEventListener("click", closeLogin);
   $("channelLoginCancelBtn")?.addEventListener("click", closeLogin);
   loginModal?.querySelector(".modal-mask")?.addEventListener("click", closeLogin);
+
+  const mobileModal = $("mobileChannelModal");
+  const closeMobile = () => closeMobileChannelModal();
+  $("mobileChannelCloseBtn")?.addEventListener("click", closeMobile);
+  $("mobileChannelCancelBtn")?.addEventListener("click", closeMobile);
+  mobileModal?.querySelector(".modal-mask")?.addEventListener("click", closeMobile);
+  $("mobilePairingGenerateBtn")?.addEventListener("click", () => {
+    void generateMobilePairing();
+  });
+  $("mobilePairingCopyBtn")?.addEventListener("click", () => {
+    if (!mobilePairingUriValue) return;
+    void navigator.clipboard
+      .writeText(mobilePairingUriValue)
+      .then(() => notifyUser("配对链接已复制", "done"))
+      .catch((error) => notifyUser(`复制失败: ${String(error)}`, "warn"));
+  });
 }
 
 async function renderSkillsView() {
@@ -15304,6 +15628,10 @@ async function reloadConfigAndSessions() {
   const bridge = requireBridge();
   const cfg = await bridge.getConfig();
   renderConfig(cfg);
+  if (syncProjectsFromConfig(cfg)) {
+    saveProjects();
+    renderComposerProjectSelect();
+  }
   renderSessions(await bridge.listSessions());
   if (state.activeNav === "talents") void renderTalentsView();
   else void loadTalentRoster();

@@ -2,6 +2,7 @@ node_modules/
 dist/
 apps/desktop/.forge-electron/
 apps/desktop/.electron-staging/
+apps/mobile/.expo/
 .idea/
 *.db
 *.db-wal

@@ -1,12 +1,20 @@
 #!/usr/bin/env node
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { writeFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
+import {
+  writeFileSync,
+  existsSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  unlinkSync,
+} from "node:fs";
+import { randomUUID } from "node:crypto";
 import { connect } from "node:net";
 import type { AgentEvent, ReloadRuntimeResult } from "@forge/protocol";
 import { DAEMON_METHODS, FORGE_DAEMON_BUILD } from "@forge/protocol";
 import { DaemonServer } from "@forge/bus";
-import { loadConfig } from "@forge/config";
+import { loadConfig, saveConfig } from "@forge/config";
 import { SessionStore } from "@forge/session";
 import { AutomationStore } from "@forge/automation";
 import { ChannelStore } from "@forge/channel";
@@ -92,6 +100,12 @@ import {
   handleUpdateChannel,
 } from "./services/channel-service.js";
 import {
+  handleMobileCreatePairing,
+  handleMobileListDevices,
+  handleMobileRevokeDevice,
+  handleMobileUpdateDeviceProjects,
+} from "./services/mobile-service.js";
+import {
   handleFireTalent,
   handleGetTalentTemplate,
   handleHireTalent,
@@ -143,6 +157,8 @@ const automationDeps = {
 const channelGatewayHost = new ChannelGatewayHost({
   dataDir: bootConfig.daemon.dataDir,
   pidFile: channelGatewayPidFile,
+  listenHost: process.env.FORGE_CHANNEL_GATEWAY_HOST ?? "127.0.0.1",
+  listenPort: Number(process.env.FORGE_CHANNEL_GATEWAY_PORT ?? "8787"),
 });
 
 const channelDeps = {
@@ -186,6 +202,44 @@ async function reloadRuntime(): Promise<ReloadRuntimeResult> {
   };
 }
 
+type SharedProject = { id: string; name: string; cwd: string };
+
+function sharedProjects(): SharedProject[] {
+  const projects = loadConfig().ui?.projects;
+  if (!Array.isArray(projects)) return [];
+  return projects.filter(
+    (project): project is SharedProject =>
+      Boolean(project) &&
+      typeof project.id === "string" &&
+      Boolean(project.id) &&
+      typeof project.name === "string" &&
+      Boolean(project.name) &&
+      typeof project.cwd === "string" &&
+      Boolean(project.cwd),
+  );
+}
+
+function registerSharedProject(params: unknown): { project: SharedProject } {
+  const raw = params && typeof params === "object" ? params as Record<string, unknown> : {};
+  if (typeof raw.cwd !== "string" || !raw.cwd.trim()) {
+    throw new Error("project cwd is required");
+  }
+  const cwd = realpathSync.native(raw.cwd.trim());
+  if (!statSync(cwd).isDirectory()) throw new Error("project cwd must be a directory");
+  const name =
+    typeof raw.name === "string" && raw.name.trim()
+      ? raw.name.trim().slice(0, 200)
+      : basename(cwd) || cwd;
+  const current = sharedProjects();
+  const existing = current.find((project) => project.cwd === cwd);
+  const project = existing ?? { id: `project-${randomUUID()}`, name, cwd };
+  if (!existing) {
+    const cfg = loadConfig();
+    saveConfig({ ui: { ...cfg.ui, projects: [...current, project] } });
+  }
+  return { project };
+}
+
 async function handleRpc(
   method: string,
   params: unknown,
@@ -210,6 +264,14 @@ async function handleRpc(
 
   if (method === DAEMON_METHODS.LIST_SESSIONS) {
     return handleListSessions(params, { sessions });
+  }
+
+  if (method === DAEMON_METHODS.LIST_PROJECTS) {
+    return { projects: sharedProjects() };
+  }
+
+  if (method === DAEMON_METHODS.REGISTER_PROJECT) {
+    return registerSharedProject(params);
   }
 
   if (method === DAEMON_METHODS.SEARCH_SESSIONS) {
@@ -550,6 +612,22 @@ async function handleRpc(
 
   if (method === DAEMON_METHODS.CHANNEL_POLL_LOGIN) {
     return handleChannelPollLogin(params, channelDeps);
+  }
+
+  if (method === DAEMON_METHODS.MOBILE_CREATE_PAIRING) {
+    return handleMobileCreatePairing(params, channelDeps);
+  }
+
+  if (method === DAEMON_METHODS.MOBILE_LIST_DEVICES) {
+    return handleMobileListDevices(params, channelDeps);
+  }
+
+  if (method === DAEMON_METHODS.MOBILE_REVOKE_DEVICE) {
+    return handleMobileRevokeDevice(params, channelDeps);
+  }
+
+  if (method === DAEMON_METHODS.MOBILE_UPDATE_DEVICE_PROJECTS) {
+    return handleMobileUpdateDeviceProjects(params, channelDeps);
   }
 
   throw new Error(`Unknown method: ${method}`);

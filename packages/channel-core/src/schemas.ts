@@ -21,6 +21,27 @@ export interface ChannelKindSchema {
 
 export const CHANNEL_KIND_SCHEMAS: ChannelKindSchema[] = [
   {
+    kind: "mobile",
+    label: "Forge Mobile",
+    description: "Forge 自有移动端，通过公网 Relay 建立端到端加密交互连接",
+    fields: [
+      {
+        key: "relayOrigin",
+        label: "Relay Origin",
+        type: "string",
+        required: true,
+        placeholder: "https://relay.example.com",
+      },
+      {
+        key: "enrollmentToken",
+        label: "Enrollment Token",
+        type: "secret",
+        required: true,
+      },
+    ],
+    actions: ["login", "test"],
+  },
+  {
     kind: "ilink",
     label: "微信 iLink",
     description: "通过腾讯 iLink Bot API 收发微信消息（出站长轮询，无需公网穿透）",

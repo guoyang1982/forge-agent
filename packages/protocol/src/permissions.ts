@@ -53,6 +53,16 @@ export interface ChannelsPermissions {
   delete: PermissionLevel;
 }
 
+export interface MobilePermissions {
+  enabled: boolean;
+  pair: PermissionLevel;
+  run: PermissionLevel;
+  approve: PermissionLevel;
+  allowedProjects: string[];
+  maxDevices: number;
+  maxConcurrentRunsPerDevice: number;
+}
+
 export interface NotificationsPermissions {
   enabled: boolean;
   send: PermissionLevel;
@@ -86,6 +96,7 @@ export interface PermissionsConfig {
   memory: MemoryPermissions;
   automation: AutomationPermissions;
   channels: ChannelsPermissions;
+  mobile: MobilePermissions;
   notifications: NotificationsPermissions;
   browser: BrowserPermissions;
   apps: AppsPermissions;
@@ -143,6 +154,15 @@ export const DEFAULT_PERMISSIONS: PermissionsConfig = {
     create: "confirm",
     start: "allow",
     delete: "confirm",
+  },
+  mobile: {
+    enabled: false,
+    pair: "confirm",
+    run: "confirm",
+    approve: "confirm",
+    allowedProjects: [],
+    maxDevices: 3,
+    maxConcurrentRunsPerDevice: 1,
   },
   notifications: {
     enabled: false,

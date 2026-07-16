@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "Forge Mobile",
+    "slug": "forge-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "forge",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "dev.forge.mobile",
+      "infoPlist": {
+        "NSCameraUsageDescription": "扫描 Forge Desktop 生成的一次性设备配对二维码。"
+      }
+    },
+    "android": {
+      "package": "dev.forge.mobile",
+      "permissions": ["CAMERA"]
+    },
+    "plugins": [
+      ["expo-camera", { "cameraPermission": "扫描 Forge Desktop 生成的一次性设备配对二维码。" }],
+      ["expo-secure-store", { "configureAndroidBackup": true }]
+    ]
+  }
+}
