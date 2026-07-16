@@ -657,7 +657,7 @@ const api = {
         };
       }>;
     }>,
-  listChannels: (payload?: { cwd?: string }) =>
+  listChannels: (payload?: { cwd?: string; includeGlobalMobile?: boolean }) =>
     ipcRenderer.invoke("forge:list-channels", payload ?? {}) as Promise<{
       channels: Array<{
         id: string;

@@ -9,7 +9,8 @@ Channel Gateway 是统一的渠道层，不绑定某个特定平台。微信 iLi
 | 能力 | 当前状态 |
 |------|----------|
 | 统一 Channel Gateway | 已支持 |
-| 渠道绑定到指定本地项目 | 已支持 |
+| 消息/通知渠道绑定到指定本地项目 | 已支持 |
+| 电脑级全局 Forge Mobile 渠道 | 已支持（每台电脑一个） |
 | 桌面端同步显示渠道会话 | 已支持 |
 | 微信 iLink 文字消息入站与回复 | 已接入 |
 | Forge Mobile Relay、配对与设备撤销 | 已接入（测试客户端可用） |
@@ -37,7 +38,7 @@ Channel Gateway
 
 ## 通用接入流程
 
-1. 在 Forge 桌面端选择要远程操作的项目。
+1. 在 Forge 桌面端选择要配置消息渠道的项目；Forge Mobile 只需在任意项目下首次配置一次。
 2. 打开 **设置 → 权限**，启用渠道能力。
 3. 进入左侧 **渠道**，确认 Daemon 已连接。
 4. 点击 **添加渠道**，选择已经可用的渠道适配器。
@@ -55,10 +56,12 @@ Channel Gateway
 ### Forge Mobile 公网 Relay
 
 1. 在权限中同时启用 `channels` 与 `mobile`，并设置 `mobile.allowedProjects`。
-2. 添加 **Forge Mobile** 渠道，填写 HTTPS Relay Origin 和 Enrollment Token。渠道默认关闭。
+2. 在电脑级 **Forge Mobile** 区域配置唯一的全局连接，填写 HTTPS Relay Origin 和 Enrollment Token。渠道默认关闭；已经配置后不会再提供重复创建入口。
 3. 启用渠道并启动页面顶部唯一的 Channel Gateway；不要另起 Mobile Gateway。
 4. 打开 **配对与设备**，生成一次性二维码。重新生成会立即撤销旧邀请。
-5. 配对后可查看设备名称、配对时间、最后在线与允许项目，可收缩/切换单设备项目权限，也可立即撤销设备。设备权限不能超出渠道 `permissions.mobile.allowedProjects`。
+5. 配对后可查看设备名称、配对时间、最后在线与允许项目，可收缩/切换单设备项目权限，也可立即撤销设备。项目访问由设备的 `allowedProjects` 管理，不能超出全局 Mobile 配置源中的 `permissions.mobile.allowedProjects`。
+
+Forge Mobile 在所有项目的渠道页面都可见。其卡片显示的“权限配置源”是首次创建它时使用的项目目录；这只决定 Mobile 权限配置从哪里读取，不限制手机只能操作该项目。
 
 Enrollment Token、host 私钥和设备 token 不会返回 Desktop renderer。二维码自身包含短期一次性秘密，截图泄漏时应立即点击“重新生成”。
 
@@ -68,7 +71,7 @@ Enrollment Token、host 私钥和设备 token 不会返回 Desktop renderer。�
 - 公司电脑与手机都只需出站连接公网 Relay，不要求同一局域网，也不要求公司路由器开放入站端口。
 - 每个渠道支持的消息类型和认证方式由对应适配器决定。
 - 微信 iLink 当前仅处理文字消息，且 Bot 不能主动发起首次对话。
-- 渠道与项目绑定。发送任务前确认桌面端选择的是正确项目。
+- 微信、飞书、钉钉和 HTTP 渠道与项目绑定；Forge Mobile 是电脑级全局渠道，通过设备授权控制可访问项目。
 - 移动端任务会使用该项目可用的模型、Skills、工具和权限配置。
 - 不建议为无人值守渠道开放不必要的删除、安装或外部网络权限。
 
@@ -91,7 +94,7 @@ Channel Gateway 按多渠道架构设计。消息 Adapter（微信等）、交�
 
 ### 桌面端找不到渠道会话
 
-确认当前查看的是渠道绑定的项目。渠道会话只会显示在对应项目的侧栏中。
+消息渠道需要在其绑定项目下查看。Forge Mobile 连接会全局显示，但具体会话仍显示在会话所属项目的侧栏中。
 
 ### 外部渠道没有收到回复
 

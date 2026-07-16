@@ -62,14 +62,33 @@ export async function handleListChannels(
   params: unknown,
   deps: ChannelServiceDeps,
 ): Promise<ListChannelsResult> {
-  const req = params as { cwd?: string } | undefined;
+  const req = params as { cwd?: string; includeGlobalMobile?: boolean } | undefined;
   const cwd = req?.cwd ? resolveCwd(req.cwd) : undefined;
+  const scoped = deps.getStore().list(cwd ? { cwd } : undefined);
+  if (!cwd || !req?.includeGlobalMobile) {
+    return { channels: scoped.map(redactChannelRecord) };
+  }
+
+  const scopedIds = new Set(scoped.map((channel) => channel.id));
+  const globalMobile = deps
+    .getStore()
+    .list()
+    .filter((channel) => channel.kind === "mobile" && !scopedIds.has(channel.id));
   return {
-    channels: deps
-      .getStore()
-      .list(cwd ? { cwd } : undefined)
-      .map(redactChannelRecord),
+    channels: [...globalMobile, ...scoped].map(redactChannelRecord),
   };
+}
+
+export function assertGlobalMobileAvailable(
+  kind: ChannelAdapterRecord["kind"],
+  existing: ChannelAdapterRecord[],
+): void {
+  if (kind !== "mobile") return;
+  const mobile = existing.find((channel) => channel.kind === "mobile");
+  if (!mobile) return;
+  throw new Error(
+    `Forge Mobile is already configured as a computer-level channel (${mobile.name})`,
+  );
 }
 
 export async function handleGetChannel(
@@ -99,6 +118,7 @@ export async function handleCreateChannel(
   };
   const absCwd = resolveCwd(req.draft.cwd);
   assertCwdExists(absCwd);
+  assertGlobalMobileAvailable(req.draft.kind, deps.getStore().list());
   const cfg = loadConfig({ cwd: absCwd });
   assertChannelPermission(cfg, "create", { skipConfirm: req.skipConfirm });
   if (
