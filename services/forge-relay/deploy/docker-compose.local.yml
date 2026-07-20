@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: forge_relay
+      POSTGRES_USER: forge_relay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    ports:
+      - "5433:5432"
+    volumes:
+      - relay-postgres-local:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forge_relay -d forge_relay"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build:
+      context: ..
+    command: ["migrate", "up"]
+    environment:
+      FORGE_RELAY_DATABASE_URL: postgresql://forge_relay:${POSTGRES_PASSWORD}@postgres:5432/forge_relay
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  relay:
+    build:
+      context: ..
+    restart: unless-stopped
+    environment:
+      FORGE_RELAY_LISTEN_ADDRESS: :8080
+      FORGE_RELAY_PUBLIC_ORIGIN: http://127.0.0.1:8080
+      FORGE_RELAY_DATABASE_URL: postgresql://forge_relay:${POSTGRES_PASSWORD}@postgres:5432/forge_relay
+      FORGE_RELAY_ENROLL_TOKEN: ${FORGE_RELAY_ENROLL_TOKEN:?set FORGE_RELAY_ENROLL_TOKEN}
+      FORGE_RELAY_JWT_PRIVATE_KEY_FILE: /run/secrets/relay-jwt-private.pem
+    volumes:
+      - ./secrets/relay-jwt-private.pem:/run/secrets/relay-jwt-private.pem:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  relay-postgres-local:

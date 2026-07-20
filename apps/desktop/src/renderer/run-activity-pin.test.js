@@ -44,7 +44,8 @@ describe("run activity manual expansion", () => {
       /async function refreshViewedSessionFromDaemonIfChanged[\s\S]*?\n}\n/,
     )?.[0] ?? "";
     expect(refresh).toContain("state.externalSessionVersionSeen.set(sessionId, ver)");
-    expect(refresh).toContain("seen === ver");
+    expect(refresh).toContain("seen !== ver");
+    expect(refresh).toContain("shouldRefreshSessionTimeline");
   });
 
   it("does not collapse thinking blocks the user has opened", () => {

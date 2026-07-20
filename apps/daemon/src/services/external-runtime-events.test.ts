@@ -224,13 +224,11 @@ describe("external-runtime-events", () => {
     ).toBe("Parse game script\nPlaytest in Chromium");
   });
 
-  it("terminalizes orphaned Codex activity when the turn completes", () => {
+  it("terminalizes orphaned Codex activity when the turn completes or thread goes idle", () => {
     const source = readFileSync(join(here, "codex-runtime.ts"), "utf8");
     expect(source).toContain("activeChipItems");
-    const completed = source.match(
-      /if \(message\.method\.includes\("turn\/completed"\)\)[\s\S]*?\n  }/,
-    )?.[0] ?? "";
-    expect(completed).toContain("emitCodexChipFromItem");
-    expect(completed).toContain("activeChipItems.clear()");
+    expect(source).toContain("terminalizeActiveCodexChips");
+    expect(source).toContain("isCodexThreadIdleNotification");
+    expect(source).toContain("classifyCodexTurnNotification");
   });
 });

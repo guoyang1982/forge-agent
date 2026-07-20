@@ -172,7 +172,7 @@ Forge 对文件、命令、网络、软件、自动化和渠道分别控制。�
 }
 ```
 
-`allowedProjects` 使用绝对路径并遵循最小授权。Relay Origin 与 Enrollment Token 在桌面端“渠道 → 添加渠道 → Forge Mobile”中录入；读取渠道配置时 secret 字段只返回“已配置”占位，不返回原文。
+`allowedProjects` 使用绝对路径并遵循最小授权。Forge Mobile 是电脑级全局连接：它的权限只从**全局配置**读取（项目级 `.forge/config.json` 中的 `permissions.mobile` 不会生效），手机在 `allowedProjects` 授权范围内可以创建和切换工作目录。Relay Origin 与 Enrollment Token 在桌面端“渠道 → 配置全局连接”中录入；读取渠道配置时 secret 字段只返回“已配置”占位，不返回原文。公网 Relay 在阿里云上的部署步骤见 [DEPLOY-aliyun.md](../services/forge-relay/deploy/DEPLOY-aliyun.md)。
 
 ## 项目配置
 

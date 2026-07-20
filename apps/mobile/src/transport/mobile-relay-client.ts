@@ -41,6 +41,21 @@ interface PendingRpc {
 
 export type MobileConnectionState = "connecting" | "authenticated" | "closed" | "error";
 
+export type MobileRunRuntime = {
+  provider: string;
+  model?: string;
+  permissionMode?: string;
+  sandboxMode?: string;
+  effort?: string;
+};
+
+export type MobileRunStartParams = {
+  cwd: string;
+  message: string;
+  sessionId?: string | null;
+  runtime?: MobileRunRuntime;
+};
+
 export class MobileRelayClient {
   private readonly pending = new Map<string, PendingRpc>();
   private readonly subscriptions = new Map<string, (event: RpcEvent) => void>();
@@ -146,7 +161,7 @@ export class MobileRelayClient {
   }
 
   startRun(
-    params: { cwd: string; message: string; sessionId?: string | null },
+    params: MobileRunStartParams,
     onEvent: (event: RpcEvent) => void,
   ): { subscriptionId: string; result: Promise<unknown> } {
     const subscriptionId = opaqueId("subscription");

@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { DEFAULT_PERMISSIONS } from "@forge/protocol";
 import type {
@@ -116,13 +117,16 @@ export async function handleCreateChannel(
     };
     skipConfirm?: boolean;
   };
-  const absCwd = resolveCwd(req.draft.cwd);
+  // Forge Mobile is computer-level: it is not bound to a project directory,
+  // and its permissions are read from the global config.
+  const isMobile = req.draft.kind === "mobile";
+  const absCwd = isMobile ? homedir() : resolveCwd(req.draft.cwd);
   assertCwdExists(absCwd);
   assertGlobalMobileAvailable(req.draft.kind, deps.getStore().list());
-  const cfg = loadConfig({ cwd: absCwd });
+  const cfg = isMobile ? loadConfig() : loadConfig({ cwd: absCwd });
   assertChannelPermission(cfg, "create", { skipConfirm: req.skipConfirm });
   if (
-    req.draft.kind === "mobile" &&
+    isMobile &&
     !(cfg.permissions?.mobile ?? DEFAULT_PERMISSIONS.mobile).enabled
   ) {
     throw new Error("mobile disabled in permissions");
@@ -205,7 +209,8 @@ export async function handleDeleteChannel(
   const existing = store.get(req.id);
   if (!existing) throw new Error("channel not found");
 
-  const cfg = loadConfig({ cwd: existing.cwd });
+  const cfg =
+    existing.kind === "mobile" ? loadConfig() : loadConfig({ cwd: existing.cwd });
   assertChannelPermission(cfg, "delete", { skipConfirm: req.skipConfirm });
 
   store.delete(req.id);

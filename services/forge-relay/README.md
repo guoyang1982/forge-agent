@@ -4,6 +4,12 @@ The Relay is a standalone Go service for connecting Forge hosts and mobile
 clients over public WSS. It authenticates the outer connection and forwards
 opaque E2EE frames; it must never parse or persist Mobile RPC payloads.
 
+## Production (Aliyun)
+
+Step-by-step ECS + domain + Desktop/mobile connection guide:
+
+- [deploy/DEPLOY-aliyun.md](deploy/DEPLOY-aliyun.md)
+
 ## Local deployment
 
 1. Copy `deploy/.env.example` to `deploy/.env` and replace every secret.

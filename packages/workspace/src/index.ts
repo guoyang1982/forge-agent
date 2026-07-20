@@ -98,6 +98,31 @@ export class WorkspaceGuard {
   ): string {
     const repaired = stripMistakenWorkspacePrefix(this.cwd, relativePath);
     const normalized = normalize(normalizeAgentFilePath(repaired));
+    const isAbsolute =
+      normalized.startsWith("/") || /^[A-Za-z]:[\\/]/.test(normalized);
+
+    // Prefer workspace-rooted resolution for relative paths when the target exists.
+    // absolutePathCandidates() uses path.resolve(relative) against process.cwd(), which
+    // breaks when the daemon is launched from a workspace subdirectory (apps/daemon).
+    // Only win when the workspace join exists so mistaken abs-looking relatives
+    // (e.g. "Users/..." / "var/...") still fall through to candidate repair.
+    if (!isAbsolute && !normalized.split(/[\\/]/).includes("..")) {
+      const abs = resolve(this.cwd, normalized === "" ? "." : normalized);
+      const isWorkspaceRoot = normalized === "." || normalized === "";
+      if (
+        (isWorkspaceRoot || existsSync(abs))
+        && canAccessPath({
+          abs,
+          cwd: this.cwd,
+          allowedRoots: this.allowedRoots,
+          skillRoots: this.skillRoots,
+          intent,
+        })
+      ) {
+        this.assertAccessible(abs, intent);
+        return abs;
+      }
+    }
 
     for (const abs of absolutePathCandidates(repaired)) {
       if (

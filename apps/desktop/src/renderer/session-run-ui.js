@@ -1,5 +1,37 @@
 /** Multi-session run routing for desktop sidebar + timeline (loaded before app.js). */
 (function () {
+  function persistedSessionIsRunning(records) {
+    let running = false;
+    for (const record of records || []) {
+      const event = record?.event ?? record;
+      if (event?.type === "session_start") running = true;
+      else if (event?.type === "done") running = false;
+    }
+    return running;
+  }
+
+  function shouldRefreshSessionTimeline({
+    running,
+    locallyOwned,
+    versionChanged,
+  }) {
+    if (running) return !locallyOwned;
+    return versionChanged;
+  }
+
+  function currentTurnHasStructuredConclusion(entries) {
+    let latestPromptIndex = -1;
+    for (let i = 0; i < (entries || []).length; i += 1) {
+      const entry = entries[i];
+      if (entry?.type === "event" && entry.isUserPrompt) {
+        latestPromptIndex = i;
+      }
+    }
+    return (entries || [])
+      .slice(latestPromptIndex + 1)
+      .some((entry) => entry?.type === "conclusion");
+  }
+
   function createSessionRunApi(getState, helpers) {
     const {
       $,
@@ -329,5 +361,10 @@
     };
   }
 
-  window.ForgeSessionRunUi = { createSessionRunApi };
+  window.ForgeSessionRunUi = {
+    createSessionRunApi,
+    persistedSessionIsRunning,
+    shouldRefreshSessionTimeline,
+    currentTurnHasStructuredConclusion,
+  };
 })();

@@ -14,7 +14,7 @@ Channel Gateway 是统一的渠道层，不绑定某个特定平台。微信 iLi
 | 桌面端同步显示渠道会话 | 已支持 |
 | 微信 iLink 文字消息入站与回复 | 已接入 |
 | Forge Mobile Relay、配对与设备撤销 | 已接入（测试客户端可用） |
-| Forge Mobile iOS / Android App | 开发中 |
+| Forge Mobile iOS / Android App | MVP 工作台已实现（配对、工作空间只读浏览、完整会话执行、多电脑） |
 | 微信图片、语音和文件消息 | 暂未支持 |
 | 飞书、钉钉、自研 App HTTP Webhook | 自动化通知渠道 |
 
@@ -38,7 +38,7 @@ Channel Gateway
 
 ## 通用接入流程
 
-1. 在 Forge 桌面端选择要配置消息渠道的项目；Forge Mobile 只需在任意项目下首次配置一次。
+1. 在 Forge 桌面端选择要配置消息渠道的项目；Forge Mobile 是电脑级全局连接，不绑定项目，可直接配置。
 2. 打开 **设置 → 权限**，启用渠道能力。
 3. 进入左侧 **渠道**，确认 Daemon 已连接。
 4. 点击 **添加渠道**，选择已经可用的渠道适配器。
@@ -55,15 +55,57 @@ Channel Gateway
 
 ### Forge Mobile 公网 Relay
 
-1. 在权限中同时启用 `channels` 与 `mobile`，并设置 `mobile.allowedProjects`。
-2. 在电脑级 **Forge Mobile** 区域配置唯一的全局连接，填写 HTTPS Relay Origin 和 Enrollment Token。渠道默认关闭；已经配置后不会再提供重复创建入口。
+1. 在 **全局** 权限（设置 → 权限）中同时启用 `channels` 与 `mobile`，并设置 `mobile.allowedProjects`。
+2. 在电脑级 **Forge Mobile** 区域配置唯一的全局连接，填写 HTTPS Relay Origin 和 Enrollment Token。该表单不绑定项目目录，也不需要名称和描述；渠道默认关闭，已经配置后不会再提供重复创建入口。
 3. 启用渠道并启动页面顶部唯一的 Channel Gateway；不要另起 Mobile Gateway。
 4. 打开 **配对与设备**，生成一次性二维码。重新生成会立即撤销旧邀请。
-5. 配对后可查看设备名称、配对时间、最后在线与允许项目，可收缩/切换单设备项目权限，也可立即撤销设备。项目访问由设备的 `allowedProjects` 管理，不能超出全局 Mobile 配置源中的 `permissions.mobile.allowedProjects`。
+5. 配对后可查看设备名称、配对时间、最后在线与允许项目，可收缩/切换单设备项目权限，也可立即撤销设备。项目访问由设备的 `allowedProjects` 管理，不能超出全局配置中的 `permissions.mobile.allowedProjects`。
 
-Forge Mobile 在所有项目的渠道页面都可见。其卡片显示的“权限配置源”是首次创建它时使用的项目目录；这只决定 Mobile 权限配置从哪里读取，不限制手机只能操作该项目。
+Forge Mobile 在所有项目的渠道页面都可见。它的权限始终读取全局配置（`~/.forge-agent/config.json`），与任何项目目录无关；手机可以在 `allowedProjects` 授权范围内创建和切换工作目录。
 
 Enrollment Token、host 私钥和设备 token 不会返回 Desktop renderer。二维码自身包含短期一次性秘密，截图泄漏时应立即点击“重新生成”。
+
+## Forge Mobile App（MVP）
+
+Forge Mobile 是桌面端的移动工作台，不是完整桌面镜像。手机通过 Relay 以端到端加密（E2EE）方式调用本机 Daemon；Relay 只转发密文，无法读取 Prompt、回答或文件内容。
+
+### 信息架构
+
+底部四个入口：工作台、工作空间、会话、设置。支持多台已配对电脑，默认自动进入上次使用的电脑。
+
+### 移动端 RPC
+
+已有：
+
+- `status.get`、`runtime.list`
+- `project.list`、`project.create`
+- `session.list`、`session.search`、`session.messages`
+- `run.start`、`run.cancel`、`run.subscribe`
+- `permission.pending`、`permission.respond`
+
+首版新增（均受设备 `allowedProjects`、真实路径校验与符号链接防逃逸约束）：
+
+| 方法 | 作用 |
+|------|------|
+| `git.branches` | 当前分支、可切换分支、detached / dirty |
+| `git.switch` | 切换分支；运行中禁止；脏工作区需 `confirmDirty: true` |
+| `workspace.files.list` | 只读目录列表，单目录最多 **500** 条 |
+| `workspace.file.read` | 只读文本预览，最大 **200 KiB**；二进制仅元信息 |
+| `workspace.diff.list` | 工作区 Diff 摘要 |
+| `workspace.diff.get` | 单文件统一 Diff，最大 **500 KiB** |
+
+文件与 Diff 始终只读：不支持编辑、保存、上传或下载。
+
+### 同步与重连
+
+- Daemon 会话存储是手机与电脑共同的事实来源。
+- 实时事件用于低延迟展示；进入会话与断线恢复后通过 `session.messages` 拉取持久化历史。
+- 按 `(subscriptionId, seq)` 去重事件；运行结束后重新加载持久化历史。
+- 重连后调用 `permission.pending`，并尽量 `run.subscribe`；若运行已结束则回退到持久化历史。
+
+### 首版不包含
+
+文件编辑与附件、Git commit/merge/rebase/push、自动化管理、人才中心 / Skill / 插件、完整桌面设置镜像、后台推送基础设施。
 
 ## 使用条件与边界
 
@@ -109,6 +151,7 @@ Channel Gateway 按多渠道架构设计。消息 Adapter（微信等）、交�
 
 ## 相关文档
 
+- [阿里云部署 Forge Relay](../services/forge-relay/deploy/DEPLOY-aliyun.md)
 - [移动端 Relay 实施计划](superpowers/plans/2026-07-15-mobile-relay.md)
 - [桌面端指南](desktop-guide.md)
 - [配置参考](configuration.md)

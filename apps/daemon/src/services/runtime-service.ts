@@ -1,11 +1,15 @@
 import { spawnSync } from "node:child_process";
 import type {
   RuntimeListResult,
+  RuntimeModelSummary,
   RuntimeProbeResult,
   RuntimeProviderSummary,
   RuntimeStatus,
 } from "@forge/protocol";
+import { getProvider, loadConfig } from "@forge/config";
 import { acpSessionPool } from "./acp-session-pool.js";
+import { listClaudeModels } from "./claude-runtime.js";
+import { listCodexModels, listCodexModes } from "./codex-runtime.js";
 import { listCursorModes, prewarmCursorAcp, probeCursorRuntime } from "./cursor-runtime.js";
 
 function commandExists(name: string): boolean {
@@ -40,8 +44,97 @@ function summarizeBinaryProvider(options: {
   };
 }
 
+/** Models selectable for the built-in Forge Agent (config profiles + provider catalog). */
+export function listForgeModels(cwd?: string): RuntimeModelSummary[] {
+  const cfg = loadConfig(cwd ? { cwd } : undefined);
+  const models: RuntimeModelSummary[] = [];
+  const seen = new Set<string>();
+  const push = (entry: RuntimeModelSummary) => {
+    const key = entry.model.trim();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    models.push(entry);
+  };
+
+  const profiles = cfg.profiles ?? {};
+  for (const [id, profile] of Object.entries(profiles)) {
+    if (profile.enabled === false) continue;
+    const name = typeof profile.name === "string" ? profile.name.trim() : "";
+    if (!name) continue;
+    push({
+      id: name,
+      model: name,
+      displayName: id !== name ? `${name} · ${id}` : name,
+      isDefault: id === cfg.activeProfile || name === cfg.model?.name,
+    });
+  }
+
+  const providerId =
+    (typeof cfg.model?.provider === "string" && cfg.model.provider.trim())
+    || (typeof cfg.activeProfile === "string" && cfg.activeProfile.trim())
+    || "";
+  const catalog = providerId ? getProvider(providerId) : undefined;
+  if (catalog) {
+    for (const item of catalog.models) {
+      push({
+        id: item.id,
+        model: item.id,
+        displayName: item.label || item.id,
+        isDefault: item.id === catalog.defaultModel && !models.some((m) => m.isDefault),
+      });
+    }
+  }
+
+  if (typeof cfg.model?.name === "string" && cfg.model.name.trim()) {
+    push({
+      id: cfg.model.name.trim(),
+      model: cfg.model.name.trim(),
+      displayName: cfg.model.name.trim(),
+      isDefault: !models.some((m) => m.isDefault),
+    });
+  }
+
+  if (models.length && !models.some((m) => m.isDefault)) {
+    models[0]!.isDefault = true;
+  }
+  return models.sort((a, b) => Number(Boolean(b.isDefault)) - Number(Boolean(a.isDefault)));
+}
+
 export async function listRuntimes(cwd: string): Promise<RuntimeListResult> {
   const cursorProbe = await probeCursorRuntime(cwd);
+  const forgeModels = listForgeModels(cwd);
+  const claude = summarizeBinaryProvider({
+    id: "claude-code",
+    label: "Claude Code",
+    kind: "cli",
+    binaryCandidates: ["claude"],
+    readyMessage: "Claude Code CLI 可用",
+  });
+  if (claude.status === "ready") {
+    claude.models = listClaudeModels().models;
+  }
+
+  const codex = summarizeBinaryProvider({
+    id: "codex",
+    label: "Codex",
+    kind: "app-server",
+    binaryCandidates: ["codex"],
+    readyMessage: "Codex app-server 可用",
+  });
+  if (codex.status === "ready") {
+    codex.modes = listCodexModes();
+    try {
+      const listed = await listCodexModels(cwd);
+      codex.models = [...listed.models].sort(
+        (a, b) => Number(Boolean(b.isDefault)) - Number(Boolean(a.isDefault)),
+      );
+    } catch (cause) {
+      codex.message = cause instanceof Error
+        ? `Codex 可用，但模型列表加载失败：${cause.message}`
+        : "Codex 可用，但模型列表加载失败";
+    }
+  }
+
   const providers: RuntimeProviderSummary[] = [
     {
       id: "forge",
@@ -49,21 +142,10 @@ export async function listRuntimes(cwd: string): Promise<RuntimeListResult> {
       kind: "default",
       status: "ready",
       message: "内置 ReAct runtime",
+      models: forgeModels,
     },
-    summarizeBinaryProvider({
-      id: "claude-code",
-      label: "Claude Code",
-      kind: "cli",
-      binaryCandidates: ["claude"],
-      readyMessage: "Claude Code CLI 可用",
-    }),
-    summarizeBinaryProvider({
-      id: "codex",
-      label: "Codex",
-      kind: "app-server",
-      binaryCandidates: ["codex"],
-      readyMessage: "Codex app-server 可用",
-    }),
+    claude,
+    codex,
     {
       id: cursorProbe.provider,
       label: "Cursor",

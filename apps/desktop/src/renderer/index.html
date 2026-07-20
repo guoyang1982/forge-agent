@@ -416,18 +416,19 @@
           <label for="channelKindSelect">渠道类型</label>
           <select id="channelKindSelect" class="modal-input"></select>
         </div>
-        <div class="field">
+        <div class="field" id="channelNameField">
           <label for="channelNameInput">名称</label>
           <input id="channelNameInput" type="text" class="modal-input" placeholder="例如：公司微信 Bot" />
         </div>
-        <div class="field">
+        <div class="field" id="channelDescField">
           <label for="channelDescInput">描述</label>
           <input id="channelDescInput" type="text" class="modal-input" placeholder="可选说明" />
         </div>
-        <div class="field">
+        <div class="field" id="channelCwdField">
           <label>工作目录</label>
           <div id="channelCwdDisplay" class="automation-cwd-display tiny">—</div>
         </div>
+        <p id="channelMobileScopeHint" class="tiny hidden">电脑级全局连接：不绑定任何项目目录。手机可访问的目录由「设置 → 权限」中的 Mobile 授权与「配对与设备」中的单设备授权决定。</p>
         <div id="channelConfigFields"></div>
         <div class="modal-actions">
           <button type="button" id="channelEditorCancelBtn" class="btn secondary">取消</button>

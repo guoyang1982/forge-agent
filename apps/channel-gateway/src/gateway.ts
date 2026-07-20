@@ -157,8 +157,9 @@ export class ChannelGateway {
   }
 
   private mobileAdapterConfig(record: ChannelAdapterRecord): Record<string, unknown> {
-    const permissions =
-      loadConfig({ cwd: record.cwd }).permissions?.mobile ?? DEFAULT_PERMISSIONS.mobile;
+    // Forge Mobile is a computer-level channel: its permissions always come
+    // from the global config, never from the project the record was created in.
+    const permissions = loadConfig().permissions?.mobile ?? DEFAULT_PERMISSIONS.mobile;
     return {
       ...record.config,
       mobileEnabled: permissions.enabled,
