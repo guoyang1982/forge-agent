@@ -1478,14 +1478,7 @@ function recordConclusionEntry(sessionId, finalText) {
   const timelineState = getNormalTimelineState(sessionId, true);
   if (!timelineState) return;
   const entries = ensureTimelineEntries(timelineState);
-  let runIdx = -1;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    if (entries[i].type === "run_activity") {
-      runIdx = i;
-      break;
-    }
-  }
-  if (runIdx >= 0 && entries[runIdx + 1]?.type === "conclusion") return;
+  if (window.ForgeSessionRunUi.currentTurnHasStructuredConclusion(entries)) return;
   entries.push({
     type: "conclusion",
     id: timelineEntryId(),
@@ -3526,6 +3519,10 @@ function shouldHoistNodeIntoRunActivity(node) {
 }
 
 function resolveTurnRunActivityForConclusion(container) {
+  const prompts = container?.querySelectorAll?.(":scope > .event.user-prompt");
+  if (prompts?.length) {
+    return findRunActivityDomForTurn(container, prompts.length - 1);
+  }
   if (state.runActivityEl?.isConnected && container?.contains(state.runActivityEl)) {
     return state.runActivityEl;
   }
@@ -10365,6 +10362,10 @@ function renderPersistedSessionEvents(sessionId, records) {
     flushStreamText();
     syncStructuredTimelineFromDom(sessionId);
     sanitizeStructuredTimelineCache(sessionId);
+    sessionRuns.markSessionRunning(
+      sessionId,
+      window.ForgeSessionRunUi.persistedSessionIsRunning(records),
+    );
     return true;
   } finally {
     state.eventRouteSessionId = previousRoute;
@@ -11434,8 +11435,6 @@ async function refreshViewedSessionFromDaemonIfChanged() {
     if (
       state.activeNav !== "chat" ||
       !sessionId ||
-      state.running ||
-      state.runningSessions.has(sessionId) ||
       !incoming ||
       sessionRuns?.getViewingSessionId() !== sessionId
     ) return;
@@ -11445,12 +11444,19 @@ async function refreshViewedSessionFromDaemonIfChanged() {
     const ver = sessionRowVersion(incoming);
     const seen = state.externalSessionVersionSeen.get(sessionId);
     state.externalSessionVersionSeen.set(sessionId, ver);
-    if (seen === undefined) {
-      // First observation since viewing: the open itself restored from daemon.
-      if (ver === sessionRowVersion(current)) return;
-    } else if (seen === ver) {
-      return;
-    }
+    const versionChanged =
+      seen === undefined ? ver !== sessionRowVersion(current) : seen !== ver;
+    const running = state.runningSessions.has(sessionId);
+    const locallyOwned = [...state.clientRuns.values()].some(
+      (run) => run.sessionId === sessionId,
+    );
+    if (
+      !window.ForgeSessionRunUi.shouldRefreshSessionTimeline({
+        running,
+        locallyOwned,
+        versionChanged,
+      })
+    ) return;
     const switchGen = state.viewSwitchGeneration;
     await restoreSessionTimeline(sessionId, switchGen);
   } catch {
@@ -14800,7 +14806,7 @@ function renderChannelCard(c, kindLabels, runtimeById, gw, daemonOk, options = {
   const showLogin = c.kind === "ilink" && !hasToken;
   const kindLabel = kindLabels[c.kind] || c.kind;
   const meta = globalMobile
-    ? `电脑级全局连接 · 权限配置源 <code>${escapeHtml(c.cwd)}</code>`
+    ? `电脑级全局连接 · 访问范围由全局 Mobile 权限与「配对与设备」授权管理`
     : `${escapeHtml(kindLabel)} · 项目 <code>${escapeHtml(c.cwd)}</code>`;
   return `<article class="channel-card${rt?.processing ? " is-processing" : ""}${globalMobile ? " is-global-mobile" : ""}" data-channel-id="${escapeHtml(c.id)}">
     ${channelKindIconHtml(c.kind)}
@@ -14916,6 +14922,18 @@ function renderChannelConfigFields(kinds) {
     .join("");
 }
 
+function updateChannelEditorLayout(kind) {
+  const isMobile = kind === "mobile";
+  $("channelNameField")?.classList.toggle("hidden", isMobile);
+  $("channelDescField")?.classList.toggle("hidden", isMobile);
+  $("channelCwdField")?.classList.toggle("hidden", isMobile);
+  $("channelMobileScopeHint")?.classList.toggle("hidden", !isMobile);
+  const title = $("channelEditorModal")?.querySelector(".modal-head h3");
+  if (title) title.textContent = isMobile ? "配置 Forge Mobile 全局连接" : "添加渠道";
+  const saveBtn = $("channelEditorSaveBtn");
+  if (saveBtn) saveBtn.textContent = isMobile ? "保存配置" : "创建";
+}
+
 function readChannelConfigFields() {
   const config = {};
   $("channelConfigFields")
@@ -14931,7 +14949,8 @@ function readChannelConfigFields() {
 
 async function openChannelEditorModal(prefillKind) {
   const activeProject = getActiveProject();
-  if (!activeProject?.cwd) {
+  // Forge Mobile 是电脑级全局连接，不依赖当前项目；其他渠道仍需项目目录。
+  if (prefillKind !== "mobile" && !activeProject?.cwd) {
     alert("请先为项目设置有效工作目录。");
     return;
   }
@@ -14946,9 +14965,14 @@ async function openChannelEditorModal(prefillKind) {
     notifyUser("Forge Mobile 已作为电脑级全局连接存在，请直接使用「配对与设备」管理。", "warn");
     return;
   }
-  const kinds = (kindsRes?.kinds ?? []).filter(
-    (kind) => kind.kind !== "mobile" || !hasGlobalMobile,
-  );
+  const kinds = (kindsRes?.kinds ?? []).filter((kind) => {
+    if (kind.kind === "mobile") {
+      // 专用入口只显示 mobile；通用入口在已有全局连接时隐藏 mobile。
+      return prefillKind === "mobile" ? true : !hasGlobalMobile && Boolean(activeProject?.cwd);
+    }
+    // 没有项目目录时（mobile 专用入口）不提供项目级渠道，避免切换后缺少 cwd。
+    return prefillKind === "mobile" ? false : true;
+  });
   const sel = $("channelKindSelect");
   if (sel) {
     sel.innerHTML = kinds
@@ -14958,7 +14982,10 @@ async function openChannelEditorModal(prefillKind) {
       )
       .join("");
     if (prefillKind) sel.value = prefillKind;
-    sel.onchange = () => renderChannelConfigFields(kinds);
+    sel.onchange = () => {
+      renderChannelConfigFields(kinds);
+      updateChannelEditorLayout(sel.value);
+    };
   }
   renderChannelConfigFields(kinds);
   $("channelNameInput").value =
@@ -14968,15 +14995,18 @@ async function openChannelEditorModal(prefillKind) {
         ? "Forge Mobile"
         : kinds.find((kind) => kind.kind === prefillKind)?.label ?? kinds[0]?.label ?? "";
   $("channelDescInput").value = "";
-  $("channelCwdDisplay").textContent = activeProject.cwd;
+  $("channelCwdDisplay").textContent = activeProject?.cwd ?? "—";
+  updateChannelEditorLayout(sel?.value ?? prefillKind);
   $("channelEditorModal")?.classList.remove("hidden");
 }
 
 async function saveChannelFromModal() {
   const activeProject = getActiveProject();
   const kind = $("channelKindSelect")?.value;
-  const name = $("channelNameInput")?.value?.trim();
-  if (!activeProject?.cwd || !kind || !name) {
+  const isMobile = kind === "mobile";
+  // Forge Mobile 全局连接：名称固定，不绑定项目目录（cwd 由 Daemon 忽略）。
+  const name = isMobile ? "Forge Mobile" : $("channelNameInput")?.value?.trim();
+  if (!kind || !name || (!isMobile && !activeProject?.cwd)) {
     alert("请填写名称并选择项目目录。");
     return;
   }
@@ -14994,8 +15024,10 @@ async function saveChannelFromModal() {
       draft: {
         kind,
         name,
-        description: $("channelDescInput")?.value?.trim() || undefined,
-        cwd: activeProject.cwd,
+        description: isMobile
+          ? undefined
+          : $("channelDescInput")?.value?.trim() || undefined,
+        ...(isMobile ? {} : { cwd: activeProject.cwd }),
         enabled: false,
         config,
       },

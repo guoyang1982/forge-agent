@@ -580,7 +580,7 @@ describe("restored step narratives", () => {
   it("allows one conclusion block per turn in a multi-turn session", () => {
     const source = appSource();
     const record = source.match(/function recordConclusionEntry[\s\S]*?\n}\n/)?.[0] ?? "";
-    expect(record).toContain('type === "run_activity"');
+    expect(record).toContain("currentTurnHasStructuredConclusion");
     expect(record).not.toContain("last?.type === \"conclusion\"");
     const turnCheck = source.match(/function turnHasConclusionAfter[\s\S]*?\n}\n/)?.[0] ?? "";
     expect(turnCheck).toContain("run-conclusion");

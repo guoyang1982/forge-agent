@@ -91,7 +91,19 @@ export async function handleRun(
   const req = params as RunRequest;
   const cwd = req.cwd || process.cwd();
   const absCwd = resolve(cwd);
-  const config = loadConfig({ cwd: absCwd });
+  const loaded = loadConfig({ cwd: absCwd });
+  const requestedModel = req.runtime?.model?.trim();
+  const provider = req.runtime?.provider?.trim() || "forge";
+  const config =
+    provider === "forge" && requestedModel
+      ? {
+          ...loaded,
+          model: {
+            ...loaded.model,
+            name: requestedModel,
+          },
+        }
+      : loaded;
   const guard = await WorkspaceGuard.ensure(absCwd, {
     allowedRoots: config.permissions?.fileSystem.allowedRoots,
   });

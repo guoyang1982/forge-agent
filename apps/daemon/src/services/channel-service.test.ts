@@ -1,8 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChannelAdapterRecord } from "@forge/protocol";
 import type { ChannelStore } from "@forge/channel";
 import {
   assertGlobalMobileAvailable,
+  handleCreateChannel,
   handleListChannels,
   redactChannelRecord,
 } from "./channel-service.js";
@@ -87,4 +91,55 @@ describe("computer-level Forge Mobile channel", () => {
     );
     expect(() => assertGlobalMobileAvailable("ilink", [mobile])).not.toThrow();
   });
+
+  it("creates Mobile without binding it to a project directory", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "forge-channel-service-"));
+    tempDirs.push(dataDir);
+    const configPath = join(dataDir, "config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        permissions: {
+          channels: { enabled: true, create: "allow", start: "allow", delete: "allow" },
+          mobile: { enabled: true, allowedProjects: [dataDir] },
+        },
+      }),
+    );
+    vi.stubEnv("FORGE_CONFIG_PATH", configPath);
+    vi.stubEnv("FORGE_DATA_DIR", dataDir);
+
+    const createFromDraft = vi.fn((draft: { kind: string }, cwd: string) =>
+      record("mobile", { relayOrigin: "https://relay.example.com" }, { cwd }),
+    );
+    const result = await handleCreateChannel(
+      {
+        draft: {
+          kind: "mobile",
+          name: "Forge Mobile",
+          // 前端不再传项目目录；即使传了也应被忽略。
+          cwd: "/definitely/not/a/real/project",
+          config: { relayOrigin: "https://relay.example.com", enrollmentToken: "x".repeat(32) },
+        },
+        skipConfirm: true,
+      },
+      {
+        getStore: () => ({ list: () => [], createFromDraft } as unknown as ChannelStore),
+        getGatewayHost: () => {
+          throw new Error("not used");
+        },
+      },
+    );
+
+    expect(createFromDraft).toHaveBeenCalledWith(expect.anything(), homedir());
+    expect(result.channel.cwd).toBe(homedir());
+  });
+});
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  for (const dir of tempDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

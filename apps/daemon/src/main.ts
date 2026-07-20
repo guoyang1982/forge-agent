@@ -106,6 +106,14 @@ import {
   handleMobileUpdateDeviceProjects,
 } from "./services/mobile-service.js";
 import {
+  handleMobileDiffGet,
+  handleMobileDiffList,
+  handleMobileFileRead,
+  handleMobileFilesList,
+  handleMobileGitBranches,
+  handleMobileGitSwitch,
+} from "./services/mobile-workspace-service.js";
+import {
   handleFireTalent,
   handleGetTalentTemplate,
   handleHireTalent,
@@ -238,6 +246,23 @@ function registerSharedProject(params: unknown): { project: SharedProject } {
     saveConfig({ ui: { ...cfg.ui, projects: [...current, project] } });
   }
   return { project };
+}
+
+function mobileWorkspaceParams(params: unknown): {
+  cwd: string;
+  path?: string;
+  branch?: string;
+  confirmDirty?: boolean;
+} {
+  const raw = params && typeof params === "object" && !Array.isArray(params)
+    ? params as Record<string, unknown>
+    : {};
+  return {
+    cwd: typeof raw.cwd === "string" ? raw.cwd : "",
+    path: typeof raw.path === "string" ? raw.path : undefined,
+    branch: typeof raw.branch === "string" ? raw.branch : undefined,
+    confirmDirty: raw.confirmDirty === true,
+  };
 }
 
 async function handleRpc(
@@ -628,6 +653,41 @@ async function handleRpc(
 
   if (method === DAEMON_METHODS.MOBILE_UPDATE_DEVICE_PROJECTS) {
     return handleMobileUpdateDeviceProjects(params, channelDeps);
+  }
+
+  if (method === DAEMON_METHODS.MOBILE_GIT_BRANCHES) {
+    const payload = mobileWorkspaceParams(params);
+    return handleMobileGitBranches({ cwd: payload.cwd });
+  }
+
+  if (method === DAEMON_METHODS.MOBILE_GIT_SWITCH) {
+    const payload = mobileWorkspaceParams(params);
+    return handleMobileGitSwitch({
+      cwd: payload.cwd,
+      branch: payload.branch ?? "",
+      confirmDirty: payload.confirmDirty,
+      running: cancelService.hasActiveRun(),
+    });
+  }
+
+  if (method === DAEMON_METHODS.MOBILE_WORKSPACE_FILES_LIST) {
+    const payload = mobileWorkspaceParams(params);
+    return handleMobileFilesList({ cwd: payload.cwd, path: payload.path });
+  }
+
+  if (method === DAEMON_METHODS.MOBILE_WORKSPACE_FILE_READ) {
+    const payload = mobileWorkspaceParams(params);
+    return handleMobileFileRead({ cwd: payload.cwd, path: payload.path ?? "" });
+  }
+
+  if (method === DAEMON_METHODS.MOBILE_WORKSPACE_DIFF_LIST) {
+    const payload = mobileWorkspaceParams(params);
+    return handleMobileDiffList({ cwd: payload.cwd });
+  }
+
+  if (method === DAEMON_METHODS.MOBILE_WORKSPACE_DIFF_GET) {
+    const payload = mobileWorkspaceParams(params);
+    return handleMobileDiffGet({ cwd: payload.cwd, path: payload.path ?? "" });
   }
 
   throw new Error(`Unknown method: ${method}`);

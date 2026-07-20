@@ -122,6 +122,12 @@ export const mobileRpcMethodSchema = z.enum([
   "run.subscribe",
   "permission.pending",
   "permission.respond",
+  "git.branches",
+  "git.switch",
+  "workspace.files.list",
+  "workspace.file.read",
+  "workspace.diff.list",
+  "workspace.diff.get",
 ]);
 
 export const mobileRpcErrorCodeSchema = z.enum([

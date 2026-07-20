@@ -12,6 +12,12 @@ type RpcEvent = Extract<MobileRpcFrameV1, { type: "rpc.event" }>;
 type EventSink = (frame: RpcEvent) => void;
 
 const emptyParams = z.object({}).strict().default({});
+const runtimeListParams = z
+  .object({
+    cwd: z.string().min(1).max(4096).optional(),
+  })
+  .strict()
+  .default({});
 const listParams = z
   .object({
     limit: z.number().int().min(1).max(100).default(20),
@@ -75,6 +81,17 @@ const pendingPermissionParams = z
   .object({ sessionId: z.string().min(8).max(128).optional() })
   .strict()
   .default({});
+const cwdParams = z.object({ cwd: z.string().min(1).max(4096) }).strict();
+const workspacePathParams = cwdParams.extend({
+  path: z.string().min(1).max(4096),
+}).strict();
+const filesListParams = cwdParams.extend({
+  path: z.string().min(1).max(4096).default("."),
+}).strict();
+const gitSwitchParams = cwdParams.extend({
+  branch: z.string().trim().min(1).max(255),
+  confirmDirty: z.boolean().default(false),
+}).strict();
 
 interface ActiveRun {
   deviceId: string;
@@ -147,8 +164,11 @@ export class MobileRpcRouter {
         return sanitizeStatus(status);
       }
       case "runtime.list": {
-        emptyParams.parse(frame.params ?? {});
-        const runtimes = await this.options.daemon.request(DAEMON_METHODS.LIST_RUNTIMES, {});
+        const params = runtimeListParams.parse(frame.params ?? {});
+        const runtimes = await this.options.daemon.request(
+          DAEMON_METHODS.LIST_RUNTIMES,
+          params.cwd ? { cwd: params.cwd } : {},
+        );
         return sanitizeRuntimeList(runtimes);
       }
       case "project.list": {
@@ -267,6 +287,60 @@ export class MobileRpcRouter {
             })),
         };
       }
+      case "git.branches": {
+        const params = cwdParams.parse(frame.params);
+        const cwd = this.assertProjectAccess(device.allowedProjects, params.cwd);
+        const result = await this.options.daemon.request(DAEMON_METHODS.MOBILE_GIT_BRANCHES, {
+          cwd,
+        });
+        return sanitizeGitBranches(result);
+      }
+      case "git.switch": {
+        const params = gitSwitchParams.parse(frame.params);
+        const cwd = this.assertProjectAccess(device.allowedProjects, params.cwd);
+        const result = await this.options.daemon.request(DAEMON_METHODS.MOBILE_GIT_SWITCH, {
+          cwd,
+          branch: params.branch,
+          confirmDirty: params.confirmDirty,
+        });
+        return sanitizeGitSwitch(result);
+      }
+      case "workspace.files.list": {
+        const params = filesListParams.parse(frame.params);
+        const cwd = this.assertProjectAccess(device.allowedProjects, params.cwd);
+        const result = await this.options.daemon.request(
+          DAEMON_METHODS.MOBILE_WORKSPACE_FILES_LIST,
+          { cwd, path: params.path },
+        );
+        return sanitizeFilesList(result);
+      }
+      case "workspace.file.read": {
+        const params = workspacePathParams.parse(frame.params);
+        const cwd = this.assertProjectAccess(device.allowedProjects, params.cwd);
+        const result = await this.options.daemon.request(
+          DAEMON_METHODS.MOBILE_WORKSPACE_FILE_READ,
+          { cwd, path: params.path },
+        );
+        return sanitizeFileRead(result);
+      }
+      case "workspace.diff.list": {
+        const params = cwdParams.parse(frame.params);
+        const cwd = this.assertProjectAccess(device.allowedProjects, params.cwd);
+        const result = await this.options.daemon.request(
+          DAEMON_METHODS.MOBILE_WORKSPACE_DIFF_LIST,
+          { cwd },
+        );
+        return sanitizeDiffList(result);
+      }
+      case "workspace.diff.get": {
+        const params = workspacePathParams.parse(frame.params);
+        const cwd = this.assertProjectAccess(device.allowedProjects, params.cwd);
+        const result = await this.options.daemon.request(
+          DAEMON_METHODS.MOBILE_WORKSPACE_DIFF_GET,
+          { cwd, path: params.path },
+        );
+        return sanitizeDiffGet(result);
+      }
     }
   }
 
@@ -300,9 +374,16 @@ export class MobileRpcRouter {
       for (const registered of registeredProjects) {
         const path = stringField(registered, "cwd");
         if (!path || !this.canAccessCwd(deviceProjects, path)) continue;
+        let canonicalPath: string;
+        try {
+          canonicalPath = realpathSync.native(path);
+        } catch {
+          // Skip registered projects whose cwd is missing or unreadable.
+          continue;
+        }
         projects.push({
           name: stringField(registered, "name") || basename(path) || path,
-          path: realpathSync.native(path),
+          path: canonicalPath,
           kind: "project",
         });
       }
@@ -423,7 +504,10 @@ export class MobileRpcRouter {
           message: params.message,
           sessionId: params.sessionId,
           runtime: params.runtime,
-          autoApply: false,
+          // Mobile has no patch-confirm UI (desktop "应用补丁"). Without auto-apply,
+          // write_file stays pending_confirmation and never lands on disk — the files
+          // tab then looks empty even though the agent claimed the write succeeded.
+          autoApply: true,
         },
         onEvent,
       );
@@ -515,7 +599,26 @@ function toPublicError(error: unknown): {
   if (error instanceof z.ZodError || error instanceof SyntaxError) {
     return { code: "bad_request", message: "request parameters are invalid" };
   }
+  if (error instanceof Error) {
+    const message = sanitizePublicErrorMessage(error.message);
+    if (message) {
+      return { code: "internal", message, retryable: true };
+    }
+  }
   return { code: "internal", message: "request failed", retryable: true };
+}
+
+function sanitizePublicErrorMessage(raw: string): string | null {
+  const trimmed = raw.replace(/\s+/g, " ").trim().slice(0, 280);
+  if (!trimmed) return null;
+  // Never forward credential-looking payloads to the phone.
+  if (/api[_-]?key|secret|password|authorization|bearer\s+\S{8,}/i.test(trimmed)) {
+    return null;
+  }
+  if (/token\s*[=:]\s*\S{12,}/i.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
 }
 
 function canonicalRoots(paths: string[]): string[] {
@@ -584,12 +687,138 @@ function sanitizeStatus(value: unknown): unknown {
 }
 
 function sanitizeRuntimeList(value: unknown): unknown {
-  const runtimes = objectArray(value, "runtimes").map((runtime) => ({
-    provider: runtime.provider,
-    available: runtime.available,
-    status: runtime.status,
-    modes: runtime.modes,
-    models: runtime.models,
-  }));
+  // Daemon returns { providers: [{ id, status, modes, models }] }.
+  // Accept legacy { runtimes: [{ provider, ... }] } for compatibility.
+  const rows = objectArray(value, "providers").length > 0
+    ? objectArray(value, "providers")
+    : objectArray(value, "runtimes");
+  const runtimes = rows.flatMap((runtime) => {
+    const provider = typeof runtime.id === "string"
+      ? runtime.id
+      : typeof runtime.provider === "string"
+        ? runtime.provider
+        : "";
+    if (!provider) return [];
+    const status = typeof runtime.status === "string" ? runtime.status : "";
+    return [{
+      provider: provider.slice(0, 120),
+      label: typeof runtime.label === "string" ? runtime.label.slice(0, 120) : provider.slice(0, 120),
+      available: runtime.available === true || status === "ready",
+      status: status.slice(0, 120),
+      modes: summaryIds(runtime.modes, 50),
+      models: summaryIds(runtime.models, 100),
+    }];
+  });
   return { runtimes };
+}
+
+function summaryIds(value: unknown, limit: number): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (typeof item === "string" && item.trim()) return [item.trim().slice(0, 256)];
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const row = item as Record<string, unknown>;
+    if (typeof row.id === "string" && row.id.trim()) return [row.id.trim().slice(0, 256)];
+    if (typeof row.model === "string" && row.model.trim()) return [row.model.trim().slice(0, 256)];
+    return [];
+  }).slice(0, limit);
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function booleanField(value: Record<string, unknown>, key: string): boolean {
+  return value[key] === true;
+}
+
+function numberField(value: Record<string, unknown>, key: string): number {
+  const field = value[key];
+  return typeof field === "number" && Number.isFinite(field) ? field : 0;
+}
+
+function sanitizeGitBranches(value: unknown): unknown {
+  const result = record(value);
+  const current = result.current;
+  return {
+    isRepo: booleanField(result, "isRepo"),
+    current: typeof current === "string" || current === null ? current : null,
+    detached: booleanField(result, "detached"),
+    dirty: booleanField(result, "dirty"),
+    branches: Array.isArray(result.branches)
+      ? result.branches.filter((branch): branch is string => typeof branch === "string").slice(0, 500)
+      : [],
+  };
+}
+
+function sanitizeGitSwitch(value: unknown): unknown {
+  const result = record(value);
+  const response: { ok: boolean; current?: string; message?: string } = {
+    ok: booleanField(result, "ok"),
+  };
+  if (typeof result.current === "string") response.current = result.current;
+  if (typeof result.message === "string") response.message = result.message;
+  return response;
+}
+
+function sanitizeFilesList(value: unknown): unknown {
+  const entries = objectArray(value, "entries")
+    .flatMap((entry) => {
+      const kind = stringField(entry, "kind");
+      if (!["file", "directory", "binary"].includes(kind)) return [];
+      const name = stringField(entry, "name");
+      const path = stringField(entry, "path");
+      if (!name || !path) return [];
+      return [{ name, path, kind, size: Math.max(0, numberField(entry, "size")) }];
+    })
+    .slice(0, 500);
+  return { entries };
+}
+
+function sanitizeFileRead(value: unknown): unknown {
+  const result = record(value);
+  const path = stringField(result, "path");
+  const kind = stringField(result, "kind");
+  const size = Math.max(0, numberField(result, "size"));
+  if (!path) return {};
+  if (kind === "text" && typeof result.language === "string" && typeof result.content === "string") {
+    return {
+      path,
+      kind,
+      language: result.language,
+      content: result.content,
+      size,
+      truncated: booleanField(result, "truncated"),
+    };
+  }
+  if (kind === "binary" && typeof result.mime === "string") {
+    return { path, kind, mime: result.mime, size, truncated: false };
+  }
+  return {};
+}
+
+function sanitizeDiffList(value: unknown): unknown {
+  const files = objectArray(value, "files")
+    .flatMap((file) => {
+      const path = stringField(file, "path");
+      if (!path) return [];
+      return [{
+        path,
+        additions: Math.max(0, numberField(file, "additions")),
+        deletions: Math.max(0, numberField(file, "deletions")),
+        binary: booleanField(file, "binary"),
+      }];
+    })
+    .slice(0, 500);
+  return { files };
+}
+
+function sanitizeDiffGet(value: unknown): unknown {
+  const result = record(value);
+  const path = stringField(result, "path");
+  const unifiedDiff = stringField(result, "unifiedDiff");
+  if (!path) return {};
+  return { path, unifiedDiff, truncated: booleanField(result, "truncated") };
 }

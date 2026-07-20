@@ -1362,6 +1362,12 @@ export const DAEMON_METHODS = {
   MOBILE_LIST_DEVICES: "mobile.list_devices",
   MOBILE_REVOKE_DEVICE: "mobile.revoke_device",
   MOBILE_UPDATE_DEVICE_PROJECTS: "mobile.update_device_projects",
+  MOBILE_GIT_BRANCHES: "mobile.git.branches",
+  MOBILE_GIT_SWITCH: "mobile.git.switch",
+  MOBILE_WORKSPACE_FILES_LIST: "mobile.workspace.files.list",
+  MOBILE_WORKSPACE_FILE_READ: "mobile.workspace.file.read",
+  MOBILE_WORKSPACE_DIFF_LIST: "mobile.workspace.diff.list",
+  MOBILE_WORKSPACE_DIFF_GET: "mobile.workspace.diff.get",
   PERMISSION_RESPONSE: "permission_response",
 } as const;
 

@@ -25,8 +25,7 @@ export async function handleMobileCreatePairing(
 ): Promise<MobileCreatePairingResult> {
   const req = params as MobileCreatePairingRequest;
   const channel = mobileChannel(req?.adapterId, deps);
-  const permissions =
-    loadConfig({ cwd: channel.cwd }).permissions?.mobile ?? DEFAULT_PERMISSIONS.mobile;
+  const permissions = globalMobilePermissions();
   assertMobileEnabled(permissions.enabled);
   assertLevel(permissions.pair, "mobile pair", req.skipConfirm);
   await ensureGateway(deps);
@@ -42,10 +41,7 @@ export async function handleMobileListDevices(
 ): Promise<MobileListDevicesResult> {
   const req = params as MobileListDevicesRequest;
   const channel = mobileChannel(req?.adapterId, deps);
-  assertMobileEnabled(
-    (loadConfig({ cwd: channel.cwd }).permissions?.mobile ?? DEFAULT_PERMISSIONS.mobile)
-      .enabled,
-  );
+  assertMobileEnabled(globalMobilePermissions().enabled);
   await ensureGateway(deps);
   return deps.getGatewayHost().requestMobile("devices", { adapterId: channel.id });
 }
@@ -56,10 +52,7 @@ export async function handleMobileRevokeDevice(
 ): Promise<MobileRevokeDeviceResult> {
   const req = params as MobileRevokeDeviceRequest;
   const channel = mobileChannel(req?.adapterId, deps);
-  assertMobileEnabled(
-    (loadConfig({ cwd: channel.cwd }).permissions?.mobile ?? DEFAULT_PERMISSIONS.mobile)
-      .enabled,
-  );
+  assertMobileEnabled(globalMobilePermissions().enabled);
   if (!req.deviceId?.trim()) throw new Error("deviceId is required");
   await ensureGateway(deps);
   return deps.getGatewayHost().requestMobile("revoke", {
@@ -74,10 +67,7 @@ export async function handleMobileUpdateDeviceProjects(
 ): Promise<MobileUpdateDeviceProjectsResult> {
   const req = params as MobileUpdateDeviceProjectsRequest;
   const channel = mobileChannel(req?.adapterId, deps);
-  assertMobileEnabled(
-    (loadConfig({ cwd: channel.cwd }).permissions?.mobile ?? DEFAULT_PERMISSIONS.mobile)
-      .enabled,
-  );
+  assertMobileEnabled(globalMobilePermissions().enabled);
   if (!req.deviceId?.trim()) throw new Error("deviceId is required");
   if (!Array.isArray(req.allowedProjects) || req.allowedProjects.length > 100) {
     throw new Error("allowedProjects must be an array with at most 100 entries");
@@ -88,6 +78,11 @@ export async function handleMobileUpdateDeviceProjects(
     deviceId: req.deviceId.trim(),
     allowedProjects: req.allowedProjects,
   });
+}
+
+/** Forge Mobile is computer-level; permissions always come from the global config. */
+function globalMobilePermissions() {
+  return loadConfig().permissions?.mobile ?? DEFAULT_PERMISSIONS.mobile;
 }
 
 function mobileChannel(adapterId: string | undefined, deps: MobileServiceDeps) {

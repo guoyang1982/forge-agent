@@ -1,9 +1,13 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type {
   AgentEvent,
   RunRequest,
   RunResult,
+  RuntimeModeSummary,
   RuntimeModelListResult,
   RuntimeModelSummary,
 } from "@forge/protocol";
@@ -170,8 +174,27 @@ function emitStatus(
   emit({ type: "status", sessionId, phase: "model", message });
 }
 
-function shouldSurfaceCodexStderr(text: string): boolean {
-  for (const line of text.split(/\n+/).map((x) => x.trim()).filter(Boolean)) {
+/** Strip ANSI color codes so log lines can be matched/surfaced cleanly. */
+export function stripAnsi(text: string): string {
+  return text.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+/**
+ * Codex CLI ↔ ChatGPT app version skew can leave ~/.codex/models_cache.json
+ * missing fields the current binary expects. Those ERROR lines are noisy and
+ * must not look like the live answer.
+ */
+export function isCodexModelsCacheStderr(text: string): boolean {
+  const cleaned = stripAnsi(text);
+  return (
+    /codex_models_manager::(cache|manager)/i.test(cleaned)
+    && /failed to (load models cache|renew cache TTL)|supports_reasoning_summaries/i.test(cleaned)
+  );
+}
+
+export function shouldSurfaceCodexStderr(text: string): boolean {
+  for (const line of text.split(/\n+/).map((x) => stripAnsi(x).trim()).filter(Boolean)) {
+    if (isCodexModelsCacheStderr(line)) continue;
     try {
       const parsed = JSON.parse(line);
       if (isRecord(parsed) && readString(parsed, ["level"]) === "WARN") continue;
@@ -181,6 +204,71 @@ function shouldSurfaceCodexStderr(text: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Best-effort repair when models_cache.json predates `supports_reasoning_summaries`.
+ * Returns whether the file was rewritten.
+ */
+export function ensureCodexModelsCacheCompatible(
+  cachePath = join(homedir(), ".codex", "models_cache.json"),
+): { repaired: boolean; reason?: string } {
+  try {
+    const raw = readFileSync(cachePath, "utf8");
+    const data = JSON.parse(raw) as unknown;
+    if (!isRecord(data) || !Array.isArray(data.models)) {
+      return { repaired: false, reason: "unexpected models_cache shape" };
+    }
+    let changed = false;
+    for (const entry of data.models) {
+      if (!isRecord(entry) || "supports_reasoning_summaries" in entry) continue;
+      entry.supports_reasoning_summaries = Boolean(
+        entry.default_reasoning_summary != null
+          || (Array.isArray(entry.supported_reasoning_levels)
+            && entry.supported_reasoning_levels.length > 0),
+      );
+      changed = true;
+    }
+    if (!changed) return { repaired: false };
+    writeFileSync(cachePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+    return { repaired: true };
+  } catch (cause) {
+    return {
+      repaired: false,
+      reason: cause instanceof Error ? cause.message : String(cause),
+    };
+  }
+}
+
+/** True when Codex reports the thread returned to idle after a turn. */
+export function isCodexThreadIdleNotification(message: {
+  method: string;
+  params?: unknown;
+}): boolean {
+  if (!message.method.includes("thread/status/changed")) return false;
+  const params = isRecord(message.params) ? message.params : {};
+  const status = params.status;
+  if (typeof status === "string") return status === "idle";
+  if (isRecord(status)) return status.type === "idle";
+  return false;
+}
+
+/**
+ * Codex app-server (0.144+) often omits `turn/completed` and only flips the
+ * thread to idle. Treat idle-after-armed as a successful terminal signal.
+ */
+export function classifyCodexTurnNotification(
+  message: { method: string; params?: unknown },
+  turnArmed: boolean,
+): "started" | "completed" | "failed" | "canceled" | "idle" | null {
+  if (message.method.includes("turn/started")) return "started";
+  if (message.method.includes("turn/completed")) return "completed";
+  if (message.method.includes("turn/failed")) return "failed";
+  if (message.method.includes("turn/canceled") || message.method.includes("turn/cancelled")) {
+    return "canceled";
+  }
+  if (turnArmed && isCodexThreadIdleNotification(message)) return "idle";
+  return null;
 }
 
 function getResponseId(message: JsonRpcMessage): number | null {
@@ -344,6 +432,29 @@ function toCodexTextInput(text: string): Record<string, unknown> {
   return { type: "text", text, text_elements: [] };
 }
 
+const CODEX_APPROVAL_POLICIES = ["untrusted", "on-request", "granular", "never"] as const;
+type CodexApprovalPolicy = (typeof CODEX_APPROVAL_POLICIES)[number];
+
+const CODEX_MODES: RuntimeModeSummary[] = [
+  { id: "on-request", label: "On Request", isDefault: true },
+  { id: "untrusted", label: "Untrusted" },
+  { id: "never", label: "Never" },
+  { id: "granular", label: "Granular" },
+];
+
+export function listCodexModes(): RuntimeModeSummary[] {
+  return CODEX_MODES;
+}
+
+/** Map mobile/desktop permissionMode values onto Codex approvalPolicy variants. */
+export function normalizeCodexApprovalPolicy(value: unknown): CodexApprovalPolicy {
+  if (typeof value === "string" && (CODEX_APPROVAL_POLICIES as readonly string[]).includes(value)) {
+    return value as CodexApprovalPolicy;
+  }
+  // Cursor/Claude-style modes (default/plan/ask) must not be forwarded — Codex rejects them.
+  return "on-request";
+}
+
 function toSandboxPolicy(type: string | undefined): Record<string, unknown> {
   switch (type) {
     case "read-only":
@@ -367,7 +478,7 @@ function buildTurnStartParams(options: CodexRuntimeOptions, threadId: string): R
   return {
     threadId,
     input: [toCodexTextInput(expandRunPromptText(options.request, { priorHistory: options.priorHistory }))],
-    approvalPolicy: runtime?.permissionMode ?? "on-request",
+    approvalPolicy: normalizeCodexApprovalPolicy(runtime?.permissionMode),
     sandboxPolicy: toSandboxPolicy(runtime?.sandboxMode ?? "workspace-write"),
     ...(runtime?.model ? { model: runtime.model } : {}),
     ...(runtime?.effort ? { effort: runtime.effort } : {}),
@@ -388,7 +499,7 @@ function buildThreadStartParams(options: CodexRuntimeOptions): Record<string, un
   return {
     cwd: options.cwd,
     ...(runtime?.model ? { model: runtime.model } : {}),
-    ...(runtime?.permissionMode ? { approvalPolicy: runtime.permissionMode } : {}),
+    approvalPolicy: normalizeCodexApprovalPolicy(runtime?.permissionMode),
     ...(runtime?.sandboxMode ? { sandbox: runtime.sandboxMode } : {}),
   };
 }
@@ -498,6 +609,17 @@ function codexDeltaItemType(method: string): string {
   return match?.[1] ?? "item";
 }
 
+function terminalizeActiveCodexChips(
+  emit: (event: AgentEvent) => void,
+  sessionId: string,
+  streamState: CodexStreamState,
+): void {
+  for (const item of streamState.activeChipItems.values()) {
+    emitCodexChipFromItem(emit, sessionId, item, false);
+  }
+  streamState.activeChipItems.clear();
+}
+
 function mapCodexNotification(
   message: JsonRpcNotification,
   emit: (event: AgentEvent) => void,
@@ -506,11 +628,15 @@ function mapCodexNotification(
   streamAcc: { value: string },
   streamState: CodexStreamState,
 ): void {
-  if (message.method.includes("turn/completed")) {
-    for (const item of streamState.activeChipItems.values()) {
-      emitCodexChipFromItem(emit, sessionId, item, false);
-    }
-    streamState.activeChipItems.clear();
+  // Codex may omit turn/completed; idle/cancel/fail also ends activity chips.
+  if (
+    message.method.includes("turn/completed")
+    || message.method.includes("turn/failed")
+    || message.method.includes("turn/canceled")
+    || message.method.includes("turn/cancelled")
+    || isCodexThreadIdleNotification(message)
+  ) {
+    terminalizeActiveCodexChips(emit, sessionId, streamState);
     return;
   }
 
@@ -664,7 +790,15 @@ function mapCodexNotification(
       const phase = readString(item, ["phase"]);
       const text = readString(item, ["text"]);
       if (phase === "commentary" && text) {
-        emitTextDelta(emit, sessionId, text, streamAcc);
+        // Deltas already streamed the body; only emit the unsent suffix to avoid
+        // mobile/desktop showing the same paragraph twice.
+        const already = streamAcc.value;
+        if (text.startsWith(already)) {
+          const suffix = text.slice(already.length);
+          if (suffix) emitTextDelta(emit, sessionId, suffix, streamAcc);
+        } else if (!already) {
+          emitTextDelta(emit, sessionId, text, streamAcc);
+        }
         return;
       }
       if (phase === "final_answer" && text) {
@@ -676,6 +810,12 @@ function mapCodexNotification(
 }
 
 export async function runCodexRuntime(options: CodexRuntimeOptions): Promise<RunResult> {
+  const cacheRepair = ensureCodexModelsCacheCompatible();
+  if (cacheRepair.repaired) {
+    console.error("[forge-codex] repaired ~/.codex/models_cache.json (added supports_reasoning_summaries)");
+  } else if (cacheRepair.reason) {
+    console.error(`[forge-codex] models_cache check skipped: ${cacheRepair.reason}`);
+  }
   console.error(`[forge-codex] spawn codex app-server cwd=${options.cwd}`);
   const child = spawn("codex", ["app-server"], {
     cwd: options.cwd,
@@ -687,6 +827,7 @@ export async function runCodexRuntime(options: CodexRuntimeOptions): Promise<Run
   const streamAcc = { value: "" };
   const streamState = createCodexStreamState();
   let cancelRequested = false;
+  let modelsCacheWarningEmitted = false;
   const permissionBridge = createExternalRuntimePermissionBridge({
     emit: options.emit,
     sessionId: options.sessionId,
@@ -716,16 +857,26 @@ export async function runCodexRuntime(options: CodexRuntimeOptions): Promise<Run
 
   child.stderr.on("data", (chunk: Buffer) => {
     const text = chunk.toString("utf8").trim();
-    if (text) {
-      console.error(`[forge-codex:stderr] ${text}`);
-      if (!shouldSurfaceCodexStderr(text)) return;
-      options.emit({
-        type: "status",
-        sessionId: options.sessionId,
-        phase: "model",
-        message: `Codex: ${text}`,
-      });
+    if (!text) return;
+    console.error(`[forge-codex:stderr] ${text}`);
+    if (isCodexModelsCacheStderr(text)) {
+      if (!modelsCacheWarningEmitted) {
+        modelsCacheWarningEmitted = true;
+        options.emit({
+          type: "warning",
+          sessionId: options.sessionId,
+          message: "Codex 模型缓存字段过期（supports_reasoning_summaries），已忽略该错误，不影响本轮完成。",
+        });
+      }
+      return;
     }
+    if (!shouldSurfaceCodexStderr(text)) return;
+    options.emit({
+      type: "status",
+      sessionId: options.sessionId,
+      phase: "model",
+      message: `Codex: ${stripAnsi(text).slice(0, 240)}`,
+    });
   });
 
   const abort = () => {
@@ -737,29 +888,44 @@ export async function runCodexRuntime(options: CodexRuntimeOptions): Promise<Run
   options.signal?.addEventListener("abort", abort, { once: true });
 
   try {
+    let turnArmed = false;
     const completion = new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const settleOk = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      const settleErr = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
       child.once("error", (cause) => {
-        reject(cause instanceof Error ? cause : new Error(String(cause)));
+        settleErr(cause instanceof Error ? cause : new Error(String(cause)));
       });
       child.once("exit", (code, signal) => {
         if (cancelRequested || code === 0) {
-          resolve();
+          settleOk();
           return;
         }
-        reject(new Error(`codex app-server exited before turn completion (${signal ?? code ?? "unknown"})`));
+        settleErr(
+          new Error(`codex app-server exited before turn completion (${signal ?? code ?? "unknown"})`),
+        );
       });
       rpc.onNotification((message) => {
-        if (message.method.includes("turn/completed")) {
-          resolve();
+        const kind = classifyCodexTurnNotification(message, turnArmed);
+        if (kind === "started") {
+          turnArmed = true;
           return;
         }
-        if (message.method.includes("turn/failed")) {
+        if (kind === "completed" || kind === "canceled" || kind === "idle") {
+          settleOk();
+          return;
+        }
+        if (kind === "failed") {
           const params = isRecord(message.params) ? message.params : {};
-          reject(new Error(readString(params, ["error", "message"]) ?? "Codex turn failed"));
-          return;
-        }
-        if (message.method.includes("turn/canceled")) {
-          resolve();
+          settleErr(new Error(readString(params, ["error", "message"]) ?? "Codex turn failed"));
         }
       });
     });
@@ -783,6 +949,8 @@ export async function runCodexRuntime(options: CodexRuntimeOptions): Promise<Run
     const threadId = resolveThreadId(thread);
     emitStatus(options.emit, options.sessionId, "Codex turn 启动中…");
     await rpc.request("turn/start", buildTurnStartParams(options, threadId));
+    // Arm even if turn/started notification is skipped/reordered.
+    turnArmed = true;
     await completion;
     emitStatus(options.emit, options.sessionId, "Codex turn 完成");
     const answer = String(finalText.value || streamAcc.value || "").trim();
