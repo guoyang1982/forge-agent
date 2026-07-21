@@ -1431,6 +1431,8 @@ body.is-resizing .resize-handle {
 .timeline > .event,
 .timeline > .run-activity,
 .timeline > .run-activity-stream,
+.timeline > details.step-tool-group,
+.timeline > .codex-commentary,
 .timeline > .plan-card,
 .timeline > .dispatch-timeline-card,
 .timeline > .reflection-card {
@@ -2394,7 +2396,13 @@ body.is-resizing .resize-handle {
   line-height: 1.65;
 }
 
+/* Closed <details> + overflow:hidden can shrink-wrap to the summary label in
+ * Chromium/Electron — force the tool fold to span the message column always. */
 .step-tool-group {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   margin: 0 0 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -2403,6 +2411,9 @@ body.is-resizing .resize-handle {
 }
 
 .step-tool-group > summary.step-tool-group-summary {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
   padding: 6px 10px;
   font-size: 12px;
   color: var(--sub);

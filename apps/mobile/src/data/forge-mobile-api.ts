@@ -30,12 +30,17 @@ export type WorkspaceFile = {
   size: number;
 };
 
+export type RuntimeMode = {
+  id: string;
+  label: string;
+};
+
 export type Runtime = {
   provider: string;
   label?: string;
   available: boolean;
   status: string;
-  modes: string[];
+  modes: RuntimeMode[];
   models: string[];
 };
 
@@ -198,10 +203,30 @@ function parseRuntimes(value: unknown): Runtime[] {
       ...(typeof runtime.label === "string" ? { label: runtime.label.slice(0, 120) } : {}),
       available: runtime.available === true || status === "ready",
       status,
-      modes: summaryIds(runtime.modes, 50),
+      modes: summaryModes(runtime.modes, 50),
       models: summaryIds(runtime.models, 100),
     }];
   });
+}
+
+function summaryModes(value: unknown, limit: number): RuntimeMode[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (typeof item === "string" && item.trim()) {
+      const id = item.trim().slice(0, 256);
+      return [{ id, label: id }];
+    }
+    const row = record(item);
+    if (typeof row?.id === "string" && row.id.trim()) {
+      const id = row.id.trim().slice(0, 256);
+      const label =
+        typeof row.label === "string" && row.label.trim()
+          ? row.label.trim().slice(0, 256)
+          : id;
+      return [{ id, label }];
+    }
+    return [];
+  }).slice(0, limit);
 }
 
 function summaryIds(value: unknown, limit: number): string[] {

@@ -394,7 +394,9 @@ describe("restored step narratives", () => {
     expect(source).toContain("pruneRunActivityConclusionCopies");
     expect(source).toContain("pruneStructuredRunActivityConclusionCopies");
     const prune = source.match(/function pruneRunActivityConclusionCopies[\s\S]*?\n}\n/)?.[0] ?? "";
-    expect(prune).toContain(".codex-commentary");
+    // Keep step narratives / commentary as the intro above tools; only drop live buffers.
+    expect(prune).toContain("run-conclusion-live");
+    expect(prune).not.toContain("isDuplicateConclusionCopy");
     expect(source).not.toContain(
       'querySelectorAll(".run-activity-body .assistant-block")',
     );
@@ -444,6 +446,23 @@ describe("restored step narratives", () => {
     expect(css).toContain("@keyframes codexStatsBump");
   });
 
+  it("keeps step-tool-group bars full message-column width", () => {
+    const css = readFileSync(join(here, "styles.css"), "utf-8");
+    const toolGroup =
+      css.match(/\.step-tool-group\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(toolGroup).toContain("display: block");
+    expect(toolGroup).toContain("width: 100%");
+    expect(toolGroup).toContain("box-sizing: border-box");
+    const summary =
+      css.match(
+        /\.step-tool-group > summary\.step-tool-group-summary\s*\{[^}]*\}/,
+      )?.[0] ?? "";
+    expect(summary).toContain("display: block");
+    expect(summary).toContain("width: 100%");
+    // Short unwrapped runs hoist the fold to timeline root — keep column width.
+    expect(css).toContain(".timeline > details.step-tool-group");
+  });
+
   it("dedupes near-duplicate step narratives when tools interrupt streaming", () => {
     const source = appSource();
     expect(source).toContain("isNearDuplicateNarrative");
@@ -457,7 +476,11 @@ describe("restored step narratives", () => {
     expect(skip).toContain("isNearDuplicateNarrative");
     const seed =
       source.match(/function seedCodexCommentarySeenFromDom[\s\S]*?\n}\n/)?.[0] ?? "";
-    expect(seed).toContain(".run-activity-stream .step-narrative-text");
+    expect(seed).toContain("getRunActivityContentHost");
+    expect(seed).toContain("resolveTurnRunActivityForConclusion");
+    const begin =
+      source.match(/function beginSessionTurn[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(begin).toContain("codexCommentarySeenBySession.delete");
     const restored =
       source.match(/function appendRestoredAssistantText[\s\S]*?\n}\n/)?.[0] ?? "";
     expect(restored).toContain("collapseRepeatedCodexText");
@@ -474,6 +497,8 @@ describe("restored step narratives", () => {
     const conclusion = source.match(/function renderRunConclusion[\s\S]*?\n}\n/)?.[0] ?? "";
     expect(conclusion).toContain("hadToolSteps");
     expect(conclusion).toContain("dedupeConclusionAgainstStepNarratives");
+    expect(conclusion).toContain("turnNarratives");
+    expect(conclusion).toContain("collectStepNarrativeTexts");
     expect(conclusion).toContain("turnHasConclusionAfter");
     expect(conclusion).not.toContain('querySelector(":scope > .run-conclusion.done")');
     expect(conclusion).toContain("placeRunConclusionOnMount");
@@ -500,11 +525,39 @@ describe("restored step narratives", () => {
     expect(finish).toContain("options.skipPersist");
     const dedupe = source.match(/function collectStepNarrativeTexts[\s\S]*?\n}\n/)?.[0] ?? "";
     expect(dedupe).toContain("codex-commentary-text");
+    expect(dedupe).toContain("getRunActivityContentHost");
+    expect(dedupe).toContain("stepNarrativesBySession");
     const strip = source.match(/function stripLeadingStepNarratives[\s\S]*?\n}\n/)?.[0] ?? "";
     expect(strip).toContain("isNearDuplicateLeadSentence");
     expect(strip).toContain("isLikelyProcessNarrativeSentence");
+    expect(strip).toContain('fullyCovered ? "" : original');
     expect(source).toContain("stripLeadingProcessNarrativeSentences");
     expect(source).toContain("recordRunModifiedFile");
+  });
+
+  it("empties conclusion body when finalText only replays step narration", () => {
+    const source = appSource();
+    const strip = source.match(/function stripLeadingStepNarratives[\s\S]*?\n}\n/)?.[0] ?? "";
+    const escape = source.match(/function escapeRegex[\s\S]*?\n}\n/)?.[0] ?? "";
+    const normalizeDedupe =
+      source.match(/function normalizeDedupeSentence[\s\S]*?\n}\n/)?.[0] ?? "";
+    const levenshtein = source.match(/function levenshteinDistance[\s\S]*?\n}\n/)?.[0] ?? "";
+    const firstSentence = source.match(/function firstSentenceText[\s\S]*?\n}\n/)?.[0] ?? "";
+    const processNarrative =
+      source.match(/function isLikelyProcessNarrativeSentence[\s\S]*?\n}\n/)?.[0] ?? "";
+    const nearLead =
+      source.match(/function isNearDuplicateLeadSentence[\s\S]*?\n}\n/)?.[0] ?? "";
+    const normalizeCopy =
+      source.match(/function normalizeConclusionCopyText[\s\S]*?\n}\n/)?.[0] ?? "";
+    const stripFn = Function(
+      `${escape}${normalizeDedupe}${levenshtein}${firstSentence}${processNarrative}${nearLead}${normalizeCopy}${strip}; return stripLeadingStepNarratives;`,
+    )();
+    const intro = "我会按要求仅执行这条命令，并原样返回 stdout。";
+    expect(stripFn(intro, [intro])).toBe("");
+    expect(stripFn(`${intro}\n\nhello-permission-test`, [intro])).toBe(
+      "hello-permission-test",
+    );
+    expect(stripFn("独立结论内容", ["我会先查看文件"])).toBe("独立结论内容");
   });
 
   it("keeps the active run timer ticking while work is running", () => {

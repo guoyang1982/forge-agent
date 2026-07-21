@@ -139,6 +139,37 @@ describe("Mobile run event sanitization", () => {
     });
   });
 
+  it("maps Codex approval options onto the sticky permission card", () => {
+    expect(
+      parseRunEvent({
+        type: "permission_request",
+        id: "codex_perm_01",
+        sessionId: "session_codex",
+        kind: "codex",
+        summary: "执行命令: touch /tmp/forge-permission-probe",
+        detail: {
+          method: "item/commandExecution/requestApproval",
+          command: "touch /tmp/forge-permission-probe",
+        },
+        options: [
+          { optionId: "allow-once", name: "允许一次", kind: "allow_once" },
+          { optionId: "allow-session", name: "本会话总是允许", kind: "allow_always" },
+          { optionId: "deny", name: "拒绝", kind: "reject_once" },
+        ],
+      }),
+    ).toEqual({
+      kind: "permission",
+      requestId: "codex_perm_01",
+      sessionId: "session_codex",
+      summary: "执行命令: touch /tmp/forge-permission-probe",
+      options: [
+        { optionId: "allow-once", name: "允许一次", allow: true },
+        { optionId: "allow-session", name: "本会话总是允许", allow: true },
+        { optionId: "deny", name: "拒绝", allow: false },
+      ],
+    });
+  });
+
   it("normalizes file activity and bounds command output", () => {
     expect(parseRunEvent({
       type: "command_output",

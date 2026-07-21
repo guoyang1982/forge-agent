@@ -2956,14 +2956,29 @@ function codexCommentarySeenSet(sessionId, create = false) {
 function seedCodexCommentarySeenFromDom(sessionId, root = getTimelineMount()) {
   const seen = codexCommentarySeenSet(sessionId, true);
   if (!seen || !root?.querySelectorAll) return seen;
-  root
-    .querySelectorAll(
-      "details.run-activity .codex-commentary-text, details.run-activity .step-narrative-text, .run-activity-stream .codex-commentary-text, .run-activity-stream .step-narrative-text",
-    )
-    .forEach((el) => {
-      const key = normalizeCodexCommentaryKey(el.textContent || "");
-      if (key) seen.add(key);
-    });
+  // Only the active turn — prior-turn intros must not suppress this turn's preamble.
+  const activity =
+    state.runActivityEl ||
+    resolveTurnRunActivityForConclusion(root) ||
+    null;
+  const hosts = [];
+  if (activity) {
+    hosts.push(activity);
+    const streamHost = getRunActivityContentHost(activity);
+    if (streamHost && streamHost !== activity) hosts.push(streamHost);
+  } else {
+    root
+      .querySelectorAll(":scope > .run-activity-stream")
+      .forEach((stream) => hosts.push(stream));
+  }
+  for (const host of hosts) {
+    host
+      .querySelectorAll?.(".codex-commentary-text, .step-narrative-text")
+      ?.forEach((el) => {
+        const key = normalizeCodexCommentaryKey(el.textContent || "");
+        if (key) seen.add(key);
+      });
+  }
   return seen;
 }
 
@@ -3417,6 +3432,9 @@ function beginSessionTurn(sessionId) {
     state.runningSessions.add(sessionId);
     state.foregroundTalentBySession.delete(sessionId);
     state.stepNarrativesBySession.set(sessionId, []);
+    // Near-duplicate skip must be per-turn; seeding from prior turns drops this
+    // turn's intro when the model reuses similar preamble wording.
+    state.codexCommentarySeenBySession.delete(sessionId);
   }
   state.runConclusionRendered = false;
   state.runFinalText = "";
@@ -6531,7 +6549,10 @@ function isDuplicateConclusionCopy(candidate, finalText) {
 }
 
 function pruneRunActivityConclusionCopies(finalText, root = getTimelineMount()) {
-  if (!root || !finalText) return;
+  if (!root) return;
+  // Drop live stream / buffer copies only. Step narratives above tools are the
+  // durable intro — conclusion dedupe strips matching finalText instead of
+  // deleting those intros (which made short unwrapped turns look empty).
   root
     .querySelectorAll(
       ":scope > details.run-activity .run-conclusion-live, :scope > details.run-activity .run-conclusion, :scope > details.run-activity .assistant-block.narrative-buffer, :scope > .run-activity-stream .run-conclusion-live, :scope > .run-activity-stream .run-conclusion, :scope > .run-activity-stream .assistant-block.narrative-buffer",
@@ -6540,18 +6561,11 @@ function pruneRunActivityConclusionCopies(finalText, root = getTimelineMount()) 
       const holder = el.closest(".event") || el;
       holder.remove();
     });
-  root
-    .querySelectorAll(
-      ":scope > details.run-activity .step-narrative, :scope > details.run-activity .codex-commentary, :scope > .run-activity-stream .step-narrative, :scope > .run-activity-stream .codex-commentary",
-    )
-    .forEach((el) => {
-      const text = domLineTextContent(el);
-      if (isDuplicateConclusionCopy(text, finalText)) el.remove();
-    });
+  void finalText;
 }
 
 function pruneStructuredRunActivityConclusionCopies(sessionId, finalText) {
-  if (!sessionId || !finalText) return;
+  if (!sessionId) return;
   const timelineState = getNormalTimelineState(sessionId, false);
   if (!timelineState) return;
   let changed = false;
@@ -6566,17 +6580,12 @@ function pruneStructuredRunActivityConclusionCopies(sessionId, finalText) {
       ) {
         return false;
       }
-      if (
-        (child.type === "step_narrative" || child.type === "codex_commentary") &&
-        isDuplicateConclusionCopy(child.text, finalText)
-      ) {
-        return false;
-      }
       return true;
     });
     if (entry.children.length !== before) changed = true;
   }
   if (changed) touchTimelineState(sessionId);
+  void finalText;
 }
 
 function renderConclusionMarkdown(host, text) {
@@ -6710,6 +6719,13 @@ function renderRunConclusion(finalText, explicitSessionId) {
   });
   const hadToolSteps = (state.runActivityStats?.tools ?? 0) > 0;
   const concludingActivity = resolveTurnRunActivityForConclusion(getTimelineMount());
+  // Capture before finalizeRunActivity unwraps/folds the flat stream — otherwise
+  // short tool turns lose step narratives for conclusion dedupe.
+  const turnNarratives = collectStepNarrativeTexts(
+    sid,
+    getTimelineMount(),
+    concludingActivity,
+  );
   stripNarrativeFromActivity();
   hoistOrphanNodesIntoRunActivity();
   repairTimelineDomStructure(getTimelineMount());
@@ -6720,11 +6736,15 @@ function renderRunConclusion(finalText, explicitSessionId) {
   // Intermediate step narration is persisted inside 已处理 at each segment boundary.
   // Conclusion is only the final user-facing answer from the done event.
   if (!text && streamedText && !hadToolSteps) text = streamedText;
-  text = dedupeConclusionAgainstStepNarratives(text, sid, getTimelineMount(), concludingActivity);
-  if (text) {
-    state.runFinalText = text;
-    if (sid) state.runFinalTextBySession.set(sid, text);
-  }
+  text = dedupeConclusionAgainstStepNarratives(
+    text,
+    sid,
+    getTimelineMount(),
+    concludingActivity,
+    turnNarratives,
+  );
+  state.runFinalText = text || "";
+  if (sid) state.runFinalTextBySession.set(sid, state.runFinalText);
   recordGeneratedImagePathsFromText(text);
   pruneRunActivityConclusionCopies(text, getTimelineMount());
   if (sid) pruneStructuredRunActivityConclusionCopies(sid, text);
@@ -9923,23 +9943,58 @@ function collectStepNarrativeTexts(sessionId, root = getTimelineMount(), activit
     seen.add(t);
     texts.push(t);
   };
-  const activity =
-    activityEl ||
-    state.runActivityEl ||
-    root?.querySelector?.(":scope > details.run-activity:last-of-type");
   const collectFrom = (container) => {
     if (!container?.querySelectorAll) return;
     container.querySelectorAll(".step-narrative-text, .codex-commentary-text").forEach((el) => {
       push(el.textContent);
     });
   };
+  const collectTurnSiblingNarratives = (startNode, stopBefore = null) => {
+    let node = startNode;
+    while (node && node !== stopBefore) {
+      if (node.classList?.contains("user-prompt") || node.classList?.contains("run-conclusion")) {
+        break;
+      }
+      if (
+        node.matches?.("details.run-activity") &&
+        !node.classList.contains("subagent-talent-activity") &&
+        node !== activity
+      ) {
+        break;
+      }
+      if (node.classList?.contains("step-narrative") || node.classList?.contains("codex-commentary")) {
+        push(domLineTextContent(node));
+      } else {
+        collectFrom(node);
+      }
+      node = node.nextElementSibling;
+    }
+  };
+  const activity =
+    activityEl ||
+    state.runActivityEl ||
+    root?.querySelector?.(":scope > details.run-activity:last-of-type");
   if (activity) {
     collectFrom(activity);
+    const streamHost = getRunActivityContentHost(activity);
+    if (streamHost && streamHost !== activity) collectFrom(streamHost);
+    // Short runs may already have unwrapped stream children before the activity chip.
+    const prompt = findOwningPromptForRunActivity(activity);
+    if (prompt?.parentElement === root) {
+      collectTurnSiblingNarratives(prompt.nextElementSibling, activity);
+    }
   } else {
     root
       ?.querySelectorAll?.(":scope > details.run-activity")
       ?.forEach((entry) => collectFrom(entry));
+    root
+      ?.querySelectorAll?.(":scope > .run-activity-stream")
+      ?.forEach((entry) => collectFrom(entry));
+    const prompts = root?.querySelectorAll?.(":scope > .event.user-prompt");
+    const lastPrompt = prompts?.length ? prompts[prompts.length - 1] : null;
+    if (lastPrompt) collectTurnSiblingNarratives(lastPrompt.nextElementSibling);
   }
+  for (const t of state.stepNarrativesBySession.get(sessionId) || []) push(t);
   return texts;
 }
 
@@ -9981,7 +10036,20 @@ function stripLeadingStepNarratives(conclusionText, narratives) {
     }
     if (!changed) break;
   }
-  return text || original;
+  if (text) return text;
+  // Exact / prefix replay of step narration already shown above tools → empty 结论 body.
+  // Fuzzy-only over-strip falls back to the original answer.
+  const fullyCovered = narratives.some((narrative) => {
+    const plain = String(narrative || "").trim();
+    if (!plain) return false;
+    if (normalizeConclusionCopyText(plain) === normalizeConclusionCopyText(original)) {
+      return true;
+    }
+    if (original.startsWith(plain)) return true;
+    const pattern = escapeRegex(plain).replace(/\s+/g, "\\s*");
+    return Boolean(original.match(new RegExp(`^${pattern}`)));
+  });
+  return fullyCovered ? "" : original;
 }
 
 function stripLeadingProcessNarrativeSentences(conclusionText, maxDrop = 3) {
@@ -9999,9 +10067,16 @@ function stripLeadingProcessNarrativeSentences(conclusionText, maxDrop = 3) {
   return text;
 }
 
-function dedupeConclusionAgainstStepNarratives(text, sessionId, root = getTimelineMount(), activityEl = null) {
-  const narratives = collectStepNarrativeTexts(sessionId, root, activityEl);
-  const deduped = stripLeadingStepNarratives(text, narratives);
+function dedupeConclusionAgainstStepNarratives(
+  text,
+  sessionId,
+  root = getTimelineMount(),
+  activityEl = null,
+  narratives = null,
+) {
+  const list =
+    narratives || collectStepNarrativeTexts(sessionId, root, activityEl);
+  const deduped = stripLeadingStepNarratives(text, list);
   const trimmed = stripLeadingProcessNarrativeSentences(deduped);
   return trimmed || deduped;
 }

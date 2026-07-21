@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -20,6 +20,8 @@ import {
   StatusPill,
   WorkspaceGlyph,
 } from "../ui/components";
+import { FileTypeIcon } from "../ui/file-type-icon";
+import { filterFileTreeRows, flattenFileTree } from "../ui/file-tree";
 import { colors, radii, spacing } from "../ui/theme";
 
 type Api = ReturnType<typeof createForgeMobileApi>;
@@ -42,8 +44,11 @@ export function WorkspaceDetailScreen(props: {
   const [dirty, setDirty] = useState(false);
   const [diffs, setDiffs] = useState<DiffItem[]>([]);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
-  const [dirPath, setDirPath] = useState(".");
-  const [entries, setEntries] = useState<WorkspaceFile[]>([]);
+  const [rootEntries, setRootEntries] = useState<WorkspaceFile[]>([]);
+  const [childrenByPath, setChildrenByPath] = useState<Record<string, WorkspaceFile[]>>({});
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
+  const [loadingPaths, setLoadingPaths] = useState<Set<string>>(() => new Set());
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [fileQuery, setFileQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -68,12 +73,15 @@ export function WorkspaceDetailScreen(props: {
     }
   }, [props.api, props.cwd]);
 
-  const loadFiles = useCallback(async (path: string) => {
+  const loadRootFiles = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      setEntries(await props.api.files(props.cwd, path));
-      setDirPath(path);
+      const entries = await props.api.files(props.cwd, ".");
+      setRootEntries(entries);
+      setChildrenByPath({});
+      setExpandedPaths(new Set());
+      setLoadingPaths(new Set());
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "无法列出目录");
     } finally {
@@ -81,19 +89,66 @@ export function WorkspaceDetailScreen(props: {
     }
   }, [props.api, props.cwd]);
 
+  const loadChildren = useCallback(async (path: string) => {
+    setLoadingPaths((prev) => new Set(prev).add(path));
+    try {
+      const entries = await props.api.files(props.cwd, path);
+      setChildrenByPath((prev) => ({ ...prev, [path]: entries }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法列出目录");
+      setExpandedPaths((prev) => {
+        const next = new Set(prev);
+        next.delete(path);
+        return next;
+      });
+    } finally {
+      setLoadingPaths((prev) => {
+        const next = new Set(prev);
+        next.delete(path);
+        return next;
+      });
+    }
+  }, [props.api, props.cwd]);
+
+  const toggleDirectory = useCallback((path: string) => {
+    let shouldLoad = false;
+    setExpandedPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) {
+        next.delete(path);
+        return next;
+      }
+      next.add(path);
+      shouldLoad = true;
+      return next;
+    });
+    if (!shouldLoad) return;
+    setChildrenByPath((prev) => {
+      if (!prev[path]) void loadChildren(path);
+      return prev;
+    });
+  }, [loadChildren]);
+
   useEffect(() => {
     void loadMeta();
   }, [loadMeta]);
 
   useEffect(() => {
-    if (tab === "files") void loadFiles(dirPath === "." ? "." : dirPath);
+    if (tab === "files") void loadRootFiles();
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const parentPath = dirPath === "." ? null : dirPath.split("/").slice(0, -1).join("/") || ".";
-  const visibleEntries = entries.filter((entry) => {
-    const needle = fileQuery.trim().toLowerCase();
-    return !needle || entry.name.toLowerCase().includes(needle) || entry.path.toLowerCase().includes(needle);
-  });
+  const treeRows = useMemo(
+    () => filterFileTreeRows(
+      flattenFileTree({
+        rootEntries,
+        childrenByPath,
+        expandedPaths,
+        loadingPaths,
+      }),
+      fileQuery,
+    ),
+    [rootEntries, childrenByPath, expandedPaths, loadingPaths, fileQuery],
+  );
 
   return (
     <View style={styles.page}>
@@ -249,43 +304,50 @@ export function WorkspaceDetailScreen(props: {
             onChangeText={setFileQuery}
             placeholder="搜索文件或目录"
           />
-          <Text style={styles.pathLine} numberOfLines={1}>{dirPath === "." ? basename(props.cwd) : dirPath}</Text>
-          {parentPath ? (
-            <Pressable style={styles.upRow} onPress={() => void loadFiles(parentPath)}>
-              <Text style={styles.upText}>‹ 上级目录</Text>
-            </Pressable>
-          ) : null}
+          <Text style={styles.pathLine} numberOfLines={1}>{basename(props.cwd)}</Text>
           <FlatList
-            data={visibleEntries}
-            keyExtractor={(item) => item.path}
-            refreshControl={<RefreshControl refreshing={loading} onRefresh={() => void loadFiles(dirPath)} tintColor={colors.brand} />}
+            data={treeRows}
+            keyExtractor={(item) => item.entry.path}
+            refreshControl={<RefreshControl refreshing={loading} onRefresh={() => void loadRootFiles()} tintColor={colors.brand} />}
             contentContainerStyle={styles.body}
             ListEmptyComponent={
               loading ? <ActivityIndicator color={colors.brand} /> : <Text style={styles.emptyInline}>目录为空。</Text>
             }
             ListFooterComponent={
-              <Text style={styles.footerCount}>{visibleEntries.length} 个项目</Text>
+              <Text style={styles.footerCount}>{treeRows.length} 个项目</Text>
             }
-            renderItem={({ item }) => (
-              <Pressable
-                style={styles.fileRow}
-                onPress={() => {
-                  if (item.kind === "directory") void loadFiles(item.path);
-                  else props.onOpenFile(item.path);
-                }}
-              >
-                <Text style={styles.fileIcon}>
-                  {item.kind === "directory" ? "📁" : item.kind === "binary" ? "📦" : "📄"}
-                </Text>
-                <View style={styles.fileCopy}>
-                  <Text style={styles.fileName}>{item.name}</Text>
-                  <Text style={styles.meta}>
-                    {item.kind === "directory" ? "目录" : item.kind === "binary" ? "二进制" : "文件"}
-                    {item.kind !== "directory" ? ` · ${formatBytes(item.size)}` : ""}
-                  </Text>
-                </View>
-              </Pressable>
-            )}
+            renderItem={({ item }) => {
+              const selected = selectedPath === item.entry.path;
+              const indent = item.depth * 14;
+              return (
+                <Pressable
+                  style={[styles.fileRow, selected ? styles.fileRowSelected : null]}
+                  onPress={() => {
+                    if (item.entry.kind === "directory") {
+                      void toggleDirectory(item.entry.path);
+                      return;
+                    }
+                    setSelectedPath(item.entry.path);
+                    props.onOpenFile(item.entry.path);
+                  }}
+                >
+                  <View style={[styles.treeLead, { marginLeft: indent }]}>
+                    {item.entry.kind === "directory" ? (
+                      <Text style={styles.caret}>{item.expanded ? "▾" : "▸"}</Text>
+                    ) : (
+                      <Text style={styles.caretSpacer}> </Text>
+                    )}
+                    <FileTypeIcon name={item.entry.name} kind={item.entry.kind} />
+                  </View>
+                  <View style={styles.fileCopy}>
+                    <Text style={styles.fileName} numberOfLines={1}>{item.entry.name}</Text>
+                    {item.loading ? (
+                      <Text style={styles.meta}>加载中…</Text>
+                    ) : null}
+                  </View>
+                </Pressable>
+              );
+            }}
           />
         </View>
       ) : null}
@@ -331,12 +393,6 @@ function formatRelative(iso: string): string {
   return new Date(time).toLocaleDateString();
 }
 
-function formatBytes(size: number): string {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 const styles = StyleSheet.create({
   page: { flex: 1, gap: spacing.md, paddingTop: spacing.xs },
   flex: { flex: 1, gap: spacing.sm },
@@ -346,31 +402,14 @@ const styles = StyleSheet.create({
   headerCopy: { flex: 1 },
   title: { color: colors.textPrimary, fontSize: 18, fontWeight: "700" },
   meta: { color: colors.textSecondary, fontSize: 12 },
-  body: { gap: spacing.sm, paddingBottom: spacing.xl, paddingTop: spacing.sm },
+  body: { gap: spacing.xs, paddingBottom: spacing.xl, paddingTop: spacing.sm },
   badgeRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  sectionRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: spacing.md,
-    marginBottom: spacing.xs,
-  },
   section: {
     color: colors.textSecondary,
     fontSize: 12,
     fontWeight: "700",
     marginTop: spacing.md,
     marginBottom: spacing.xs,
-  },
-  sectionInline: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  sectionAction: {
-    color: colors.brandActive,
-    fontSize: 12,
-    fontWeight: "700",
   },
   card: {
     backgroundColor: colors.surface,
@@ -446,23 +485,38 @@ const styles = StyleSheet.create({
   filesHead: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   filesTitle: { color: colors.textPrimary, fontSize: 20, fontWeight: "700" },
   pathLine: { color: colors.textMuted, fontSize: 12 },
-  upRow: { minHeight: 44, justifyContent: "center" },
-  upText: { color: colors.brandActive, fontWeight: "700" },
   fileRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.md,
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: radii.lg,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    minHeight: 56,
+    gap: spacing.sm,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    minHeight: 44,
   },
-  fileIcon: { fontSize: 18 },
-  fileCopy: { flex: 1, gap: 2 },
-  fileName: { color: colors.textPrimary, fontWeight: "600" },
+  fileRowSelected: {
+    backgroundColor: colors.brandSoft,
+  },
+  treeLead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    minWidth: 40,
+  },
+  caret: {
+    width: 14,
+    color: colors.textMuted,
+    fontSize: 12,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  caretSpacer: {
+    width: 14,
+    color: "transparent",
+    fontSize: 12,
+  },
+  fileCopy: { flex: 1, gap: 2, minWidth: 0 },
+  fileName: { color: colors.textPrimary, fontWeight: "600", fontSize: 14 },
   footerCount: { color: colors.textMuted, textAlign: "center", marginTop: spacing.md, fontSize: 12 },
   emptyInline: { color: colors.textSecondary, fontSize: 13, marginVertical: spacing.sm },
   error: { color: colors.danger, fontSize: 13 },

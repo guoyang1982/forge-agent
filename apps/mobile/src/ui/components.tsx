@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import {
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,6 +14,8 @@ import type { MobileHostSummary } from "../storage/host-store";
 import type { MobileConnectionState } from "../transport/mobile-relay-client";
 import type { MobileWorkbenchState } from "../state/mobile-workbench-state";
 import { colors, radii, spacing } from "./theme";
+
+const forgeIcon = require("../../assets/forge-icon.png");
 
 export type TabKey = MobileWorkbenchState["activeTab"];
 
@@ -250,11 +253,32 @@ function GearTabIcon(props: { color: string; filled: boolean; size?: number }) {
   );
 }
 
-export function ForgeMark(props: { size?: number }) {
-  const size = props.size ?? 28;
+/** Primary brand mark in page titles and host headers (matches Workbench two-line header). */
+export const FORGE_MARK_MD = 32;
+/** In-content identity (e.g. agent turn avatar). */
+export const FORGE_MARK_SM = 22;
+/** Inline meta next to secondary header text. */
+export const FORGE_MARK_XS = 14;
+
+export type ForgeMarkSize = "xs" | "sm" | "md" | number;
+
+const FORGE_MARK_SIZES = {
+  xs: FORGE_MARK_XS,
+  sm: FORGE_MARK_SM,
+  md: FORGE_MARK_MD,
+} as const;
+
+export function ForgeMark(props: { size?: ForgeMarkSize }) {
+  const size = typeof props.size === "number" ? props.size : FORGE_MARK_SIZES[props.size ?? "md"];
+  const radius = size * 0.28;
   return (
-    <View style={[styles.mark, { width: size, height: size, borderRadius: size * 0.28 }]}>
-      <Text style={[styles.markText, { fontSize: size * 0.45 }]}>F</Text>
+    <View style={[styles.mark, { width: size, height: size, borderRadius: radius }]}>
+      <Image
+        source={forgeIcon}
+        accessibilityLabel="Forge"
+        resizeMode="cover"
+        style={{ width: size, height: size, borderRadius: radius }}
+      />
     </View>
   );
 }
@@ -276,7 +300,7 @@ export function MobileShell(props: {
         <View style={styles.header}>
           <View style={styles.headerCopy}>
             <View style={styles.headerBrandRow}>
-              <ForgeMark size={24} />
+              <ForgeMark size="md" />
               <Text style={styles.title}>{props.title}</Text>
             </View>
             {props.subtitle ? <Text style={styles.subtitle}>{props.subtitle}</Text> : null}
@@ -315,7 +339,7 @@ export function HostPicker(props: {
             if (next) props.onSelect(next.hostId);
           }}
         >
-          <ForgeMark size={32} />
+          <ForgeMark size="md" />
           <View style={styles.compactHostCopy}>
             <View style={styles.compactTitleRow}>
               <Text style={styles.compactBrand}>Forge</Text>
@@ -649,11 +673,11 @@ const styles = StyleSheet.create({
   subtitle: { color: colors.textSecondary, fontSize: 12, marginTop: spacing.xs },
   content: { flex: 1, paddingHorizontal: spacing.lg },
   mark: {
-    backgroundColor: colors.brand,
+    overflow: "hidden",
+    backgroundColor: "#0B0614",
     alignItems: "center",
     justifyContent: "center",
   },
-  markText: { color: "white", fontWeight: "900" },
   tabBar: {
     flexDirection: "row",
     borderTopColor: colors.border,

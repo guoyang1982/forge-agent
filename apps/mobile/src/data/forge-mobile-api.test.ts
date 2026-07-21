@@ -44,7 +44,7 @@ describe("Forge mobile API", () => {
         label: "Forge Agent",
         available: true,
         status: "ready",
-        modes: ["default"],
+        modes: [{ id: "default", label: "Default" }],
         models: ["auto"],
       },
     ]);

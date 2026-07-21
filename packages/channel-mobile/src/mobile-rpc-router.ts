@@ -230,11 +230,10 @@ export class MobileRpcRouter {
         this.assertPermissionLevel(this.options.runPermission, "remote run");
         return this.startRun(deviceId, device.allowedProjects, frame.params, emit);
       case "run.cancel": {
+        // Stopping must not require the same start-run permission gate — paired
+        // devices with session access should always be able to interrupt.
         const params = cancelParams.parse(frame.params);
-        const run = this.activeRuns.get(params.sessionId);
-        if (!run || run.deviceId !== deviceId) {
-          throw new MobileRpcRouterError("forbidden", "run is not owned by this device");
-        }
+        await this.assertCancelAccess(deviceId, device.allowedProjects, params.sessionId);
         return this.options.daemon.request(DAEMON_METHODS.CANCEL_RUN, {
           sessionId: params.sessionId,
         });
@@ -467,6 +466,10 @@ export class MobileRpcRouter {
       subscribers: new Map([[params.subscriptionId, emit]]),
       nextSeq: 0,
     };
+    // Register immediately for follow-up turns (same sessionId). Previously
+    // activeRuns was only set when the event sessionId *changed*, so continuing
+    // a session never appeared in activeRuns and run.cancel always failed.
+    if (sessionId) this.activeRuns.set(sessionId, provisional);
     const onEvent = (event: unknown) => {
       const eventSessionId = objectString(event, "sessionId");
       if (eventSessionId && eventSessionId !== sessionId) {
@@ -536,6 +539,33 @@ export class MobileRpcRouter {
     });
     const session = sessionItems(result).find((item) => item.id === sessionId);
     if (!session) throw new MobileRpcRouterError("not_found", "session not found");
+    if (!this.canAccessCwd(deviceProjects, session.cwd)) {
+      throw new MobileRpcRouterError("forbidden", "session project is not allowed");
+    }
+  }
+
+  /**
+   * Cancel is allowed when this device owns the live run, or when the session
+   * belongs to an allowed project (so Desktop-started runs can be stopped from
+   * the phone and vice versa via the shared daemon cancel_run).
+   */
+  private async assertCancelAccess(
+    deviceId: string,
+    deviceProjects: string[],
+    sessionId: string,
+  ): Promise<void> {
+    const run = this.activeRuns.get(sessionId);
+    if (run?.deviceId === deviceId) return;
+
+    const result = await this.options.daemon.request(DAEMON_METHODS.LIST_SESSIONS, {
+      limit: 500,
+    });
+    const session = sessionItems(result).find((item) => item.id === sessionId);
+    if (!session) {
+      // Race: brand-new session may not be listed yet while this device owns the
+      // in-flight run under a different key — still forbid unknown sessions.
+      throw new MobileRpcRouterError("not_found", "session not found");
+    }
     if (!this.canAccessCwd(deviceProjects, session.cwd)) {
       throw new MobileRpcRouterError("forbidden", "session project is not allowed");
     }
@@ -705,11 +735,32 @@ function sanitizeRuntimeList(value: unknown): unknown {
       label: typeof runtime.label === "string" ? runtime.label.slice(0, 120) : provider.slice(0, 120),
       available: runtime.available === true || status === "ready",
       status: status.slice(0, 120),
-      modes: summaryIds(runtime.modes, 50),
+      modes: summaryModes(runtime.modes, 50),
       models: summaryIds(runtime.models, 100),
     }];
   });
   return { runtimes };
+}
+
+function summaryModes(value: unknown, limit: number): Array<{ id: string; label: string }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (typeof item === "string" && item.trim()) {
+      const id = item.trim().slice(0, 256);
+      return [{ id, label: id }];
+    }
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const row = item as Record<string, unknown>;
+    if (typeof row.id === "string" && row.id.trim()) {
+      const id = row.id.trim().slice(0, 256);
+      const label =
+        typeof row.label === "string" && row.label.trim()
+          ? row.label.trim().slice(0, 256)
+          : id;
+      return [{ id, label }];
+    }
+    return [];
+  }).slice(0, limit);
 }
 
 function summaryIds(value: unknown, limit: number): string[] {

@@ -25,7 +25,7 @@ export function PairingScreen(props: {
   return (
     <View style={styles.sheet}>
       <View style={styles.sheetHead}>
-        <ForgeMark size={28} />
+        <ForgeMark size="md" />
         <View style={styles.sheetHeadCopy}>
           <Text style={styles.sheetTitle}>添加电脑</Text>
           <Text style={styles.sheetSubtitle}>配对并建立端到端加密连接</Text>

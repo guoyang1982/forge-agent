@@ -35,7 +35,11 @@ import { colors, radii, spacing } from "../ui/theme";
 type Api = ReturnType<typeof createForgeMobileApi>;
 
 /** Fallback only for Cursor-style agents when runtime.list omits modes. */
-const CURSOR_STYLE_MODES = ["default", "plan", "ask"] as const;
+const CURSOR_STYLE_MODES = [
+  { id: "default", label: "default" },
+  { id: "plan", label: "plan" },
+  { id: "ask", label: "ask" },
+] as const;
 const COMPOSER_PLACEHOLDER = "描述你的需求，或粘贴代码、截图。输入 @ 引用文件或上下文";
 
 export function ConversationScreen(props: {
@@ -130,7 +134,7 @@ export function ConversationScreen(props: {
         branch: null,
         provider,
         model: preferred?.models[0] || "",
-        permissionMode: preferred?.modes[0] || "",
+        permissionMode: preferred?.modes[0]?.id || "",
         sandboxMode: "workspace-write",
       });
 
@@ -379,13 +383,19 @@ export function ConversationScreen(props: {
 
   const cancelRun = async () => {
     const sessionId = sessionIdRef.current || session?.id;
-    if (!sessionId) return;
+    if (!sessionId) {
+      setError("会话尚未就绪，请稍后再停止");
+      return;
+    }
+    setRunStatus("正在停止…");
     try {
-      // run.cancel
+      // run.cancel — daemon abort for this session (cross-device via shared cancel_run)
       await props.api.cancelRun(sessionId);
-      setRunStatus("正在停止…");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "停止失败");
+      const message = cause instanceof Error ? cause.message : "停止失败";
+      setError(message);
+      setRunStatus("停止失败");
+      Alert.alert("停止失败", message);
     }
   };
 
@@ -412,7 +422,10 @@ export function ConversationScreen(props: {
   const workspaceName = basename(context.cwd) || "未选择工作空间";
   const agentLabel = selectedRuntime?.label || context.provider || "选择 Agent";
   const modelLabel = context.model || (selectedRuntime?.models[0] ? selectedRuntime.models[0] : "默认模型");
-  const modeLabel = context.permissionMode || (selectedRuntime?.modes[0] ? selectedRuntime.modes[0] : "默认");
+  const modeLabel =
+    selectedRuntime?.modes.find((mode) => mode.id === context.permissionMode)?.label
+    || context.permissionMode
+    || (selectedRuntime?.modes[0]?.label ?? "默认");
   const modeChoices = selectedRuntime?.modes.length
     ? selectedRuntime.modes
     : selectedRuntime?.provider === "cursor"
@@ -546,7 +559,7 @@ export function ConversationScreen(props: {
     return (
       <View style={styles.agentTurn}>
         <View style={styles.agentIdentity}>
-          <ForgeMark size={22} />
+          <ForgeMark size="sm" />
           <View style={styles.agentIdentityCopy}>
             <Text style={styles.agentName}>{agentLabel || "Forge Agent"}</Text>
             {!running && !showCompletedPill ? (
@@ -709,7 +722,7 @@ export function ConversationScreen(props: {
         <View style={styles.headerCopy}>
           <Text style={styles.title} numberOfLines={1}>{title}</Text>
           <View style={styles.headerMetaRow}>
-            <ForgeMark size={14} />
+            <ForgeMark size="xs" />
             <Text style={styles.meta} numberOfLines={1}>
               {workspaceName}
               {props.connectionState === "authenticated" ? "" : " · 重连中"}
@@ -926,7 +939,7 @@ export function ConversationScreen(props: {
                       provider: runtime.provider,
                       model: runtime.models[0] || "",
                       // Never keep another agent's mode (e.g. Cursor "default") for Codex.
-                      permissionMode: runtime.modes[0] || "",
+                      permissionMode: runtime.modes[0]?.id || "",
                     }));
                     setError("");
                     setPicker(null);
@@ -945,14 +958,17 @@ export function ConversationScreen(props: {
                   ? <Text style={styles.meta}>当前 Agent 使用默认权限策略，无需选择模式。</Text>
                   : modeChoices.map((mode) => (
                 <Pressable
-                  key={mode}
+                  key={mode.id}
                   style={styles.modalRow}
                   onPress={() => {
-                    setContext((current) => ({ ...current, permissionMode: mode }));
+                    setContext((current) => ({ ...current, permissionMode: mode.id }));
                     setPicker(null);
                   }}
                 >
-                  <Text style={styles.modalRowText}>{mode}</Text>
+                  <Text style={styles.modalRowText}>{mode.label}</Text>
+                  {mode.label !== mode.id ? (
+                    <Text style={styles.meta}>{mode.id}</Text>
+                  ) : null}
                 </Pressable>
               ))
               ) : null}

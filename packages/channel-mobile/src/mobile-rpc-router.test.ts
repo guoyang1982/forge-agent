@@ -221,6 +221,223 @@ describe("MobileRpcRouter", () => {
     }
   });
 
+  it("cancels a follow-up turn on an existing sessionId (activeRuns registered immediately)", async () => {
+    const { root, registry } = fixture();
+    let finishRun!: (value: unknown) => void;
+    const cancelCalls: unknown[] = [];
+    const daemon: AdapterDaemonBridge = {
+      async request(method, params, onEvent) {
+        if (method === "run") {
+          // Same sessionId as the request — previously this never entered activeRuns.
+          onEvent?.({ type: "session_start", sessionId: "session_existing_01" });
+          onEvent?.({ type: "status", sessionId: "session_existing_01", message: "连接模型…" });
+          return new Promise((resolve) => {
+            finishRun = resolve;
+          });
+        }
+        if (method === "cancel_run") {
+          cancelCalls.push(params);
+          return { ok: true };
+        }
+        if (method === "list_sessions") {
+          return { sessions: [{ id: "session_existing_01", cwd: root }] };
+        }
+        return {};
+      },
+    };
+    const router = new MobileRpcRouter({ daemon, registry, allowedProjects: [root] });
+    try {
+      const runPromise = router.handle(
+        "device_000001",
+        {
+          type: "rpc.request",
+          id: "request_01",
+          method: "run.start",
+          params: {
+            cwd: root,
+            message: "follow up",
+            sessionId: "session_existing_01",
+            subscriptionId: "subscription_followup",
+          },
+        },
+        () => undefined,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      await expect(
+        router.handle(
+          "device_000001",
+          {
+            type: "rpc.request",
+            id: "request_02",
+            method: "run.cancel",
+            params: { sessionId: "session_existing_01" },
+          },
+          () => undefined,
+        ),
+      ).resolves.toMatchObject({ ok: true, result: { ok: true } });
+
+      expect(cancelCalls).toEqual([{ sessionId: "session_existing_01" }]);
+      finishRun({ sessionId: "session_existing_01", finalText: "" });
+      await expect(runPromise).resolves.toMatchObject({ ok: true });
+    } finally {
+      registry.close();
+    }
+  });
+
+  it("cancels a Desktop-owned run when the device has session project access", async () => {
+    const { root, outside, registry } = fixture();
+    const cancelCalls: unknown[] = [];
+    const daemon: AdapterDaemonBridge = {
+      async request(method, params) {
+        if (method === "cancel_run") {
+          cancelCalls.push(params);
+          return { ok: true };
+        }
+        if (method === "list_sessions") {
+          return {
+            sessions: [
+              { id: "session_desktop_01", cwd: root },
+              { id: "session_outside_01", cwd: outside },
+            ],
+          };
+        }
+        return {};
+      },
+    };
+    const router = new MobileRpcRouter({ daemon, registry, allowedProjects: [root] });
+    try {
+      await expect(
+        router.handle(
+          "device_000001",
+          {
+            type: "rpc.request",
+            id: "request_01",
+            method: "run.cancel",
+            params: { sessionId: "session_desktop_01" },
+          },
+          () => undefined,
+        ),
+      ).resolves.toMatchObject({ ok: true, result: { ok: true } });
+      expect(cancelCalls).toEqual([{ sessionId: "session_desktop_01" }]);
+
+      await expect(
+        router.handle(
+          "device_000001",
+          {
+            type: "rpc.request",
+            id: "request_02",
+            method: "run.cancel",
+            params: { sessionId: "session_outside_01" },
+          },
+          () => undefined,
+        ),
+      ).resolves.toMatchObject({ ok: false, error: { code: "forbidden" } });
+    } finally {
+      registry.close();
+    }
+  });
+
+  it("forwards Codex permission_request events without auto-approving", async () => {
+    const { root, registry } = fixture();
+    let finishRun!: (value: unknown) => void;
+    const permissionResponses: unknown[] = [];
+    const daemon: AdapterDaemonBridge = {
+      async request(method, params, onEvent) {
+        if (method === "run") {
+          onEvent?.({ type: "session_start", sessionId: "session_codex_01" });
+          onEvent?.({
+            type: "permission_request",
+            sessionId: "session_codex_01",
+            id: "codex_perm_01",
+            kind: "codex",
+            summary: "执行命令: touch /tmp/forge-permission-probe",
+            options: [
+              { optionId: "allow-once", name: "允许一次", kind: "allow_once" },
+              { optionId: "allow-session", name: "本会话总是允许", kind: "allow_always" },
+              { optionId: "deny", name: "拒绝", kind: "reject_once" },
+            ],
+          });
+          return new Promise((resolve) => {
+            finishRun = resolve;
+          });
+        }
+        if (method === "permission_response") {
+          permissionResponses.push(params);
+          return { ok: true };
+        }
+        return {};
+      },
+    };
+    const router = new MobileRpcRouter({ daemon, registry, allowedProjects: [root] });
+    const events: unknown[] = [];
+    try {
+      const runPromise = router.handle(
+        "device_000001",
+        {
+          type: "rpc.request",
+          id: "request_01",
+          method: "run.start",
+          params: {
+            cwd: root,
+            message: "touch a file",
+            subscriptionId: "subscription_codex",
+            runtime: { provider: "codex", permissionMode: "untrusted" },
+          },
+        },
+        (event) => events.push(event),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(permissionResponses).toEqual([]);
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "rpc.event",
+            event: expect.objectContaining({
+              type: "permission_request",
+              id: "codex_perm_01",
+              summary: "执行命令: touch /tmp/forge-permission-probe",
+            }),
+          }),
+        ]),
+      );
+
+      await expect(
+        router.handle(
+          "device_000001",
+          {
+            type: "rpc.request",
+            id: "request_02",
+            method: "permission.pending",
+            params: { sessionId: "session_codex_01" },
+          },
+          () => undefined,
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        result: {
+          requests: [
+            expect.objectContaining({
+              requestId: "codex_perm_01",
+              sessionId: "session_codex_01",
+              event: expect.objectContaining({
+                type: "permission_request",
+                id: "codex_perm_01",
+                summary: "执行命令: touch /tmp/forge-permission-probe",
+              }),
+            }),
+          ],
+        },
+      });
+
+      finishRun({ sessionId: "session_codex_01", finalText: "done" });
+      await expect(runPromise).resolves.toMatchObject({ ok: true });
+    } finally {
+      registry.close();
+    }
+  });
+
   it("fails closed for methods outside the Mobile RPC schema", async () => {
     const { root, registry } = fixture();
     const router = new MobileRpcRouter({
@@ -667,7 +884,7 @@ describe("MobileRpcRouter", () => {
               label: "Forge Agent",
               available: true,
               status: "ready",
-              modes: ["default"],
+              modes: [{ id: "default", label: "Default" }],
               models: ["auto"],
             },
             {
@@ -675,7 +892,7 @@ describe("MobileRpcRouter", () => {
               label: "Cursor",
               available: false,
               status: "needs_setup",
-              modes: ["agent"],
+              modes: [{ id: "agent", label: "agent" }],
               models: ["gpt-5"],
             },
           ],
