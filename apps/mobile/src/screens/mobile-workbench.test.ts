@@ -40,9 +40,14 @@ describe("Sessions and conversation UI contract", () => {
       expect(conversationSource).toContain(label);
     }
     expect(conversationSource).toContain("permission.pending");
+    expect(conversationSource).toContain("需要你的确认");
+    expect(conversationSource).toContain("permissionMode: mode.id");
     expect(conversationSource).toContain("session.messages");
     expect(conversationSource).toContain("run.cancel");
     expect(conversationSource).toContain("停止");
+    expect(conversationSource).toContain("正在停止…");
+    expect(conversationSource).toContain('Alert.alert("停止失败"');
+    expect(conversationSource).toContain("会话尚未就绪，请稍后再停止");
     expect(conversationSource).toContain("思考过程");
     expect(conversationSource).toContain("执行过程");
     expect(conversationSource).toContain("查看全部");
@@ -107,6 +112,18 @@ describe("Workbench workspace file Diff UI contract", () => {
     expect(diffSource).toContain("在会话中提及");
   });
 
+  it("renders an expandable file tree with typed icons and syntax-highlighted preview", () => {
+    expect(workspaceDetailSource).toContain("flattenFileTree");
+    expect(workspaceDetailSource).toContain("FileTypeIcon");
+    expect(workspaceDetailSource).toContain("toggleDirectory");
+    expect(workspaceDetailSource).toContain("▸");
+    expect(workspaceDetailSource).toContain("▾");
+    expect(workspaceDetailSource).not.toContain("上级目录");
+    expect(workspaceDetailSource).not.toContain("📁");
+    expect(filePreviewSource).toContain("CodeHighlight");
+    expect(filePreviewSource).toContain("MarkdownBody");
+  });
+
   it("never offers save, edit, upload, or download actions in workspace screens", () => {
     for (const source of workspaceUiSources) {
       expect(source).not.toMatch(/保存|编辑|上传|下载|save|edit|upload|download/i);
@@ -148,6 +165,21 @@ describe("Mobile shell design system contract", () => {
   it("uses compact Forge host header and E2EE status copy", () => {
     expect(shellSource).toContain("Forge");
     expect(shellSource).toContain("端到端加密 (E2EE)");
+  });
+
+  it("renders the desktop hammer brand mark instead of a letter F glyph", () => {
+    expect(shellSource).toContain("forge-icon.png");
+    expect(shellSource).toContain("ForgeMark");
+    expect(shellSource).not.toMatch(/<Text[^>]*>\s*F\s*<\/Text>/);
+  });
+
+  it("uses one primary brand mark size for page titles and host headers", () => {
+    expect(shellSource).toContain("FORGE_MARK_MD = 32");
+    expect(shellSource).toMatch(/<ForgeMark size="md" \/>[\s\S]*styles\.title/);
+    expect(shellSource).toMatch(/<ForgeMark size="md" \/>[\s\S]*compactHostCopy/);
+    expect(shellSource).not.toMatch(/<ForgeMark size=\{24\}/);
+    expect(shellSource).not.toMatch(/<ForgeMark size=\{32\}/);
+    expect(pairingSource).toContain('<ForgeMark size="md" />');
   });
 
   it("exposes both pairing actions", () => {

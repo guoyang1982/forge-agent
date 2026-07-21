@@ -10,6 +10,8 @@ import {
 } from "react-native";
 import type { createForgeMobileApi, WorkspaceContent } from "../data/forge-mobile-api";
 import { SegmentedControl, StatusPill } from "../ui/components";
+import { CodeHighlight } from "../ui/code-highlight";
+import { MarkdownBody } from "../ui/markdown";
 import { colors, radii, spacing } from "../ui/theme";
 
 type Api = ReturnType<typeof createForgeMobileApi>;
@@ -85,15 +87,23 @@ export function FilePreviewScreen(props: {
       ) : null}
 
       {content?.kind === "text" && mode === "file" ? (
-        <ScrollView contentContainerStyle={styles.body}>
+        <ScrollView contentContainerStyle={styles.body} horizontal={false}>
           {content.truncated ? (
             <View style={styles.banner}>
               <Text style={styles.bannerText}>内容已截断：超过只读预览大小限制。</Text>
             </View>
           ) : null}
-          <Text style={isMarkdown(content.language, props.path) ? styles.markdown : styles.code}>
-            {content.content}
-          </Text>
+          {isMarkdown(content.language, props.path) ? (
+            <MarkdownBody text={content.content} />
+          ) : (
+            <ScrollView horizontal nestedScrollEnabled contentContainerStyle={styles.codeScroll}>
+              <CodeHighlight
+                code={content.content}
+                language={content.language}
+                path={props.path}
+              />
+            </ScrollView>
+          )}
         </ScrollView>
       ) : null}
 
@@ -130,6 +140,7 @@ const styles = StyleSheet.create({
   path: { flex: 1, color: colors.textPrimary, fontSize: 14, fontWeight: "600" },
   badgeRow: { flexDirection: "row", gap: spacing.sm },
   body: { paddingBottom: spacing.xl, gap: spacing.sm },
+  codeScroll: { paddingBottom: spacing.sm, minWidth: "100%" },
   banner: {
     backgroundColor: colors.warningSoft,
     borderColor: colors.warning,
@@ -138,8 +149,6 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   bannerText: { color: colors.warning, fontSize: 12, fontWeight: "600" },
-  code: { color: colors.textPrimary, fontFamily: "Menlo", fontSize: 12, lineHeight: 18 },
-  markdown: { color: colors.textPrimary, fontSize: 14, lineHeight: 22 },
   metaCard: {
     backgroundColor: colors.surface,
     borderColor: colors.border,

@@ -395,7 +395,11 @@ class CodexJsonRpcClient {
   }
 }
 
-function codexOptionsFromParams(
+/**
+ * Map Codex app-server `availableDecisions` onto mobile permission card options.
+ * Codex decisions use camelCase (`accept`, `acceptForSession`, `decline`, `cancel`).
+ */
+export function codexOptionsFromParams(
   params: Record<string, unknown>,
 ): ReturnType<typeof defaultExternalPermissionOptions> {
   const available = params.availableDecisions;
@@ -424,7 +428,8 @@ function codexOptionsFromParams(
   return options.length ? options : defaultExternalPermissionOptions("Codex");
 }
 
-function isCodexApprovalMethod(method: string): boolean {
+/** True for Codex JSON-RPC server requests that need a human approval response. */
+export function isCodexApprovalMethod(method: string): boolean {
   return /requestApproval|Approval$/i.test(method);
 }
 
@@ -435,11 +440,19 @@ function toCodexTextInput(text: string): Record<string, unknown> {
 const CODEX_APPROVAL_POLICIES = ["untrusted", "on-request", "granular", "never"] as const;
 type CodexApprovalPolicy = (typeof CODEX_APPROVAL_POLICIES)[number];
 
+/**
+ * Codex approvalPolicy modes. Labels clarify CLI semantics:
+ * - on-request (default): sandboxed workspace commands usually auto-run; Codex only
+ *   prompts for escalations (network, outside workspace, dangerous, model-requested).
+ * - untrusted: prompt for anything not in the known-safe set (pwd/echo/ls still auto).
+ * - never: never prompt.
+ * - granular: fine-grained category toggles.
+ */
 const CODEX_MODES: RuntimeModeSummary[] = [
-  { id: "on-request", label: "On Request", isDefault: true },
-  { id: "untrusted", label: "Untrusted" },
-  { id: "never", label: "Never" },
-  { id: "granular", label: "Granular" },
+  { id: "on-request", label: "On Request · 沙箱内常自动执行", isDefault: true },
+  { id: "untrusted", label: "Untrusted · 非安全命令需确认" },
+  { id: "never", label: "Never · 从不询问" },
+  { id: "granular", label: "Granular · 按类别" },
 ];
 
 export function listCodexModes(): RuntimeModeSummary[] {
