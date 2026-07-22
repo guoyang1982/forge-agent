@@ -9,6 +9,7 @@
     "ios": "expo run:ios",
     "android": "expo run:android",
     "build": "tsc --noEmit",
+    "pack:android": "bash ../../scripts/pack-mobile-android.sh",
     "test": "vitest run"
   },
   "dependencies": {

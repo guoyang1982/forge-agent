@@ -100,6 +100,25 @@ CI 会为每次通过测试的提交生成安装包：
 
 安装、首次启动和系统安全提示见[桌面端指南](docs/desktop-guide.md)。正式版本发布后会出现在 [GitHub Releases](https://github.com/guoyang1982/forge-agent/releases)。
 
+## 手机端下载（Android）
+
+CI 会在桌面端打包同一条流水线里生成 Forge Mobile 安装包：
+
+| 平台 | 安装包 | 下载 |
+|------|--------|------|
+| Android | `.apk` | [下载最新构建](https://github.com/guoyang1982/forge-agent/actions/workflows/ci.yml) |
+
+打开最新成功的 **CI** 运行，在页面底部 **Artifacts** 下载 `forge-mobile-android`，解压后得到 `Forge-Mobile-*-android.apk`。安装时需允许「未知来源」/「安装未知应用」。GitHub Actions 下载可能需要登录 GitHub。
+
+手机端通过公网 Relay 配对桌面端使用；配置与配对见[移动端与消息渠道指南](docs/mobile-access.md)和 [Relay 部署说明](services/forge-relay/deploy/DEPLOY-aliyun.md)。当前不提供 iOS 侧载包。
+
+本地打包（需本机 Android SDK + JDK 17）：
+
+```bash
+pnpm pack:mobile:android
+# → release/Forge-Mobile-<version>-android.apk
+```
+
 ## 从源码快速开始
 
 需要 Node.js 22+、pnpm 9+ 和 Git。
