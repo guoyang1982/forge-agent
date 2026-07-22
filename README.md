@@ -102,17 +102,42 @@ CI 会为每次通过测试的提交生成安装包：
 
 ## 手机端下载（Android）
 
-CI 会在桌面端打包同一条流水线里生成 Forge Mobile 安装包：
+推荐在本机局域网发布，手机扫码即可安装，无需登录 GitHub。
+
+### 本机扫码安装（推荐）
+
+1. 电脑与 Android 手机连接**同一 Wi‑Fi**。
+2. 在项目根目录执行：
+
+```bash
+pnpm publish:mobile:android
+```
+
+脚本会先打包 APK，再启动局域网安装页。终端会打印下载地址；用电脑浏览器打开 `http://<电脑IP>:8765/` 可看到二维码，手机扫码下载安装。
+
+若 APK 已打好，只启动安装页：
+
+```bash
+pnpm serve:mobile:android
+# 或
+pnpm publish:mobile:android --skip-build
+```
+
+安装时若系统拦截，请在 Android 设置中允许「安装未知应用」。
+
+**一次性环境**（仅首次打包需要）：JDK 17 + Android SDK（platform 36、build-tools 36.0.0、NDK 27.1.12297006）。macOS 可用 Android Studio 或 command-line tools，并设置 `ANDROID_HOME`。
+
+手机端通过公网 Relay 配对桌面端使用；配置与配对见[移动端与消息渠道指南](docs/mobile-access.md)和 [Relay 部署说明](services/forge-relay/deploy/DEPLOY-aliyun.md)。当前不提供 iOS 侧载包。
+
+### GitHub CI（可选）
+
+CI 也会在通过测试后上传 `forge-mobile-android` Artifact，适合已有 GitHub 访问权限时使用：
 
 | 平台 | 安装包 | 下载 |
 |------|--------|------|
 | Android | `.apk` | [下载最新构建](https://github.com/guoyang1982/forge-agent/actions/workflows/ci.yml) |
 
-打开最新成功的 **CI** 运行，在页面底部 **Artifacts** 下载 `forge-mobile-android`，解压后得到 `Forge-Mobile-*-android.apk`。安装时需允许「未知来源」/「安装未知应用」。GitHub Actions 下载可能需要登录 GitHub。
-
-手机端通过公网 Relay 配对桌面端使用；配置与配对见[移动端与消息渠道指南](docs/mobile-access.md)和 [Relay 部署说明](services/forge-relay/deploy/DEPLOY-aliyun.md)。当前不提供 iOS 侧载包。
-
-本地打包（需本机 Android SDK + JDK 17）：
+本地仅打包、不启动安装页：
 
 ```bash
 pnpm pack:mobile:android
