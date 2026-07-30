@@ -6,7 +6,8 @@ function readSource(relativePath: string): string {
 }
 
 const shellSource = readSource("../ui/components.tsx");
-const themeSource = readSource("../ui/theme.ts");
+const themeSource = readSource("../ui/theme.tsx");
+const themePalettesSource = readSource("../ui/theme-palettes.ts");
 const pairingSource = readSource("./PairingScreen.tsx");
 const settingsSource = readSource("./SettingsScreen.tsx");
 const appSource = readSource("../../App.tsx");
@@ -43,6 +44,9 @@ describe("Sessions and conversation UI contract", () => {
     expect(conversationSource).toContain("需要你的确认");
     expect(conversationSource).toContain("permissionMode: mode.id");
     expect(conversationSource).toContain("session.messages");
+    expect(conversationSource).toContain("session.history.page");
+    expect(conversationSource).toContain("加载更早的消息");
+    expect(conversationSource).toContain("sessionHistoryPage");
     expect(conversationSource).toContain("run.cancel");
     expect(conversationSource).toContain("停止");
     expect(conversationSource).toContain("正在停止…");
@@ -67,9 +71,28 @@ describe("Sessions and conversation UI contract", () => {
     expect(conversationSource).toContain("需要你的确认");
     expect(conversationSource).toContain("允许一次");
     expect(conversationSource).toContain("styles.dock");
+    expect(conversationSource).toContain("useKeyboardLift");
+    expect(conversationSource).toContain("keyboardShouldPersistTaps");
+    expect(conversationSource).toContain("attachToActiveRun");
+    expect(conversationSource).toContain("device run limit");
+    expect(conversationSource).toContain("当前设备已有任务在运行");
+    expect(conversationSource).toContain("runningSessionId");
     expect(conversationSource).toContain("agentTurn");
+    expect(appSource).toContain("runningSessionId={state.runningSessionId}");
     expect(conversationSource).toContain("sessionHistory");
     expect(appSource).toContain("hideTabs=");
+    expect(conversationSource).toContain("pickImagesFromLibrary");
+    expect(conversationSource).toContain("pasteClipboardImage");
+    expect(conversationSource).toContain("startDictation");
+    expect(conversationSource).toContain("onPressIn");
+    expect(conversationSource).toContain("朗读");
+    expect(conversationSource).toContain("attachments");
+    expect(conversationSource).toContain("attachProgress");
+    expect(conversationSource).toContain("粘贴剪贴板图片");
+    expect(conversationSource).toContain("openMentionPicker");
+    expect(conversationSource).toContain("extractMentionedPaths");
+    expect(conversationSource).toContain("retryHint");
+    expect(conversationSource).toContain("files");
   });
 
   it("wires SessionsScreen and ConversationScreen from App", () => {
@@ -88,8 +111,8 @@ describe("Workbench workspace file Diff UI contract", () => {
     expect(workbenchSource).toContain("常用工作空间");
     expect(workbenchSource).toContain("快速操作");
     expect(workbenchSource).toContain("已用时");
-    expect(workbenchSource).toContain("预计剩余");
-    expect(workbenchSource).toContain("规划中");
+    expect(workbenchSource).not.toContain("预计剩余");
+    expect(workbenchSource).not.toContain("ProgressStages");
     expect(workbenchSource).toContain("查看全部 >");
     expect(workbenchSource).toContain("onViewAllSessions");
     expect(workbenchSource).toContain("onViewAllWorkspaces");
@@ -135,6 +158,9 @@ describe("Workbench workspace file Diff UI contract", () => {
     expect(appSource).toContain("WorkspacesScreen");
     expect(appSource).toContain("WorkspaceDetailScreen");
     expect(appSource).toContain("FilePreviewScreen");
+    expect(appSource).toContain("reduceNavStack");
+    expect(appSource).toContain("popNavToRoot");
+    expect(appSource).toContain("onBackToRoot");
     expect(appSource).toContain("DiffScreen");
     expect(appSource).not.toContain("工作台建设中");
     expect(appSource).not.toContain("工作空间建设中");
@@ -192,7 +218,7 @@ describe("Mobile shell design system contract", () => {
   });
 
   it("uses the approved background color from the theme", () => {
-    expect(themeSource).toContain('background: "#080B10"');
+    expect(themePalettesSource).toContain('background: "#080B10"');
   });
 
   it("defines the approved spacing and radii scales", () => {
@@ -203,6 +229,25 @@ describe("Mobile shell design system contract", () => {
     expect(themeSource).toContain("xl: 24");
     expect(themeSource).toContain("sm: 10");
     expect(themeSource).toContain("sheet: 22");
+  });
+
+  it("exposes multiple selectable appearance themes", () => {
+    expect(themePalettesSource).toContain('"forge-dark"');
+    expect(themePalettesSource).toContain('"forge-light"');
+    expect(themePalettesSource).toContain('"midnight"');
+    expect(themePalettesSource).toContain('"ocean"');
+    expect(themePalettesSource).toContain('"forest"');
+    expect(themePalettesSource).toContain('"sunset"');
+    expect(themePalettesSource).toContain('"slate"');
+    expect(themePalettesSource).toContain('"rose"');
+    expect(themePalettesSource).toContain('"sand"');
+    expect(themePalettesSource).toContain('"aurora"');
+    expect(settingsSource).toContain("THEME_DEFINITIONS");
+    expect(settingsSource).toContain("跟随系统");
+    expect(sessionsSource).toContain("本机隐藏");
+    expect(settingsSource).toContain("管理已隐藏会话");
+    expect(settingsSource).toContain("外观主题");
+    expect(settingsSource).toContain("本地通知");
   });
 
   it("lets users remove a paired host from settings", () => {

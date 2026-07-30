@@ -8,7 +8,9 @@ opaque E2EE frames; it must never parse or persist Mobile RPC payloads.
 
 Step-by-step ECS + domain + Desktop/mobile connection guide:
 
-- [deploy/DEPLOY-aliyun.md](deploy/DEPLOY-aliyun.md)
+- [deploy/RUNBOOK.md](deploy/RUNBOOK.md) — **上线后运维手册**（日常操作、发版更新、排障）
+- [deploy/DEPLOY-aliyun.md](deploy/DEPLOY-aliyun.md) — clone on server / standard compose
+- [deploy/DEPLOY-aliyun-ssh.md](deploy/DEPLOY-aliyun-ssh.md) — rsync local tree over SSH (`deploy/ssh-sync.sh`)
 
 ## Local deployment
 

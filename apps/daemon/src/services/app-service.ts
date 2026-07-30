@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, formatConfigForDisplay, loadMcpServers } from "@forge/config";
 import type {
+  ChatMessage,
   GetSessionMessagesRequest,
   GetSessionMessagesResult,
   GetConfigResult,
@@ -14,6 +15,7 @@ import type {
   ListSessionsResult,
   ListSkillsRequest,
   ListSkillsResult,
+  SessionEventRecord,
   SkillListItem,
 } from "@forge/protocol";
 import type { SessionStore } from "@forge/session";
@@ -248,12 +250,76 @@ export function handleGetSessionMessages(
   if (!req?.sessionId) {
     throw new Error("sessionId is required");
   }
+  const messageLimit =
+    typeof req.limit === "number" && Number.isFinite(req.limit)
+      ? Math.max(1, Math.floor(req.limit))
+      : 400;
+  const eventLimit =
+    typeof req.eventLimit === "number" && Number.isFinite(req.eventLimit)
+      ? Math.max(1, Math.floor(req.eventLimit))
+      : undefined;
+  const beforeMessageId =
+    typeof req.beforeMessageId === "number" && Number.isFinite(req.beforeMessageId)
+      ? Math.floor(req.beforeMessageId)
+      : undefined;
+  const beforeEventSequence =
+    typeof req.beforeEventSequence === "number" && Number.isFinite(req.beforeEventSequence)
+      ? Math.floor(req.beforeEventSequence)
+      : undefined;
+  const paging = beforeMessageId != null || beforeEventSequence != null;
+
+  let messageRows: Array<{ id: number; message: ChatMessage }>;
+  let events: SessionEventRecord[];
+
+  if (paging) {
+    messageRows = beforeMessageId != null
+      ? deps.sessions.loadMessageRowsBefore(req.sessionId, beforeMessageId, messageLimit)
+      : [];
+    events = beforeEventSequence != null && eventLimit != null
+      ? deps.sessions.listEventsBefore(req.sessionId, beforeEventSequence, eventLimit)
+      : beforeEventSequence != null
+        ? deps.sessions.listEventsBefore(req.sessionId, beforeEventSequence, messageLimit)
+        : [];
+  } else if (eventLimit != null) {
+    messageRows = deps.sessions.loadRecentMessageRows(req.sessionId, messageLimit);
+    events = deps.sessions.listRecentEvents(req.sessionId, eventLimit);
+  } else {
+    // Desktop / unbounded: preserve prior behavior.
+    return {
+      sessionId: req.sessionId,
+      messages: deps.sessions.loadMessages(req.sessionId, messageLimit),
+      events: deps.sessions.listEvents(req.sessionId),
+      checkpoints: deps.sessions.listCheckpoints(req.sessionId),
+      dispatchPlans: deps.sessions.listDispatchPlans(req.sessionId),
+    };
+  }
+
+  const messages = messageRows.map((row) => row.message);
+  const messageIds = messageRows.map((row) => row.id);
+  const oldestMessageId = messageIds[0]
+    ?? beforeMessageId
+    ?? null;
+  const oldestEventSequence = events[0]?.sequence
+    ?? beforeEventSequence
+    ?? null;
+  const truncated =
+    (oldestMessageId != null && deps.sessions.hasMessagesBefore(req.sessionId, oldestMessageId))
+    || (oldestEventSequence != null
+      && deps.sessions.hasEventsBefore(req.sessionId, oldestEventSequence));
+
   return {
     sessionId: req.sessionId,
-    messages: deps.sessions.loadMessages(req.sessionId, req.limit ?? 400),
-    events: deps.sessions.listEvents(req.sessionId),
-    checkpoints: deps.sessions.listCheckpoints(req.sessionId),
-    dispatchPlans: deps.sessions.listDispatchPlans(req.sessionId),
+    messages,
+    events,
+    page: {
+      truncated,
+      messageIds,
+      oldestMessageId,
+      oldestEventSequence,
+    },
+    // Mobile callers drop these; desktop unbounded path above still returns them.
+    checkpoints: [],
+    dispatchPlans: [],
   };
 }
 

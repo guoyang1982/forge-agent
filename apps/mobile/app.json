@@ -1,26 +1,72 @@
 {
   "expo": {
-    "name": "Forge Mobile",
+    "name": "Forge",
     "slug": "forge-mobile",
-    "version": "0.2.0",
+    "version": "0.2.5",
     "orientation": "portrait",
+    "icon": "./assets/forge-icon.png",
     "scheme": "forge",
-    "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "dev.forge.mobile",
       "infoPlist": {
-        "NSCameraUsageDescription": "扫描 Forge Desktop 生成的一次性设备配对二维码。"
+        "NSCameraUsageDescription": "扫描配对二维码，或为会话拍照附加图片。",
+        "NSPhotoLibraryUsageDescription": "从相册选择图片附加到会话。",
+        "NSMicrophoneUsageDescription": "语音输入：将说话内容转为文字填入输入框。",
+        "NSSpeechRecognitionUsageDescription": "将语音识别为文字，方便快速输入需求。"
       }
     },
     "android": {
       "package": "dev.forge.mobile",
-      "permissions": ["CAMERA"]
+      "versionCode": 8,
+      "permissions": [
+        "CAMERA",
+        "android.permission.CAMERA",
+        "RECORD_AUDIO",
+        "android.permission.RECORD_AUDIO",
+        "READ_MEDIA_IMAGES",
+        "POST_NOTIFICATIONS"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/forge-icon.png",
+        "backgroundColor": "#0b0f14"
+      }
     },
     "plugins": [
-      ["expo-camera", { "cameraPermission": "扫描 Forge Desktop 生成的一次性设备配对二维码。" }],
-      ["expo-secure-store", { "configureAndroidBackup": true }]
-    ]
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "扫描配对二维码，或为会话拍照附加图片。"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "从相册选择图片附加到会话。",
+          "cameraPermission": "为会话拍照附加图片。"
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "语音输入需要麦克风权限。",
+          "speechRecognitionPermission": "将语音转为文字填入输入框。"
+        }
+      ],
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": true
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "910d3024-1019-4ed9-9b1d-5a4908c2dddb"
+      }
+    },
+    "owner": "guoyang1982"
   }
 }

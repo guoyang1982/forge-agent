@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@forge/channel-core": "workspace:*",
+    "@forge/document-extract": "workspace:*",
     "@forge/mobile-crypto": "workspace:*",
     "@forge/mobile-protocol": "workspace:*",
     "@forge/protocol": "workspace:*",

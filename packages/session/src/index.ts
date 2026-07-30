@@ -305,22 +305,66 @@ export class SessionStore {
   }
 
   listEvents(sessionId: string, limit = 10_000): SessionEventRecord[] {
-    const rows = this.db
+    return this.readEvents(
+      `SELECT id AS sequence, session_id AS sessionId, turn_index AS turnIndex,
+              event_type AS eventType, item_id AS itemId, payload,
+              emitted_at_ms AS emittedAtMs
+       FROM session_events WHERE session_id = ? ORDER BY id ASC LIMIT ?`,
+      [sessionId, limit],
+    );
+  }
+
+  /** Most recent events in chronological order (oldest → newest within the window). */
+  listRecentEvents(sessionId: string, limit: number): SessionEventRecord[] {
+    const safeLimit = Math.max(1, Math.floor(limit));
+    const rows = this.readEvents(
+      `SELECT id AS sequence, session_id AS sessionId, turn_index AS turnIndex,
+              event_type AS eventType, item_id AS itemId, payload,
+              emitted_at_ms AS emittedAtMs
+       FROM session_events WHERE session_id = ? ORDER BY id DESC LIMIT ?`,
+      [sessionId, safeLimit],
+    );
+    rows.reverse();
+    return rows;
+  }
+
+  /** Events with id < beforeSequence, chronological within the window. */
+  listEventsBefore(
+    sessionId: string,
+    beforeSequence: number,
+    limit: number,
+  ): SessionEventRecord[] {
+    const safeLimit = Math.max(1, Math.floor(limit));
+    const rows = this.readEvents(
+      `SELECT id AS sequence, session_id AS sessionId, turn_index AS turnIndex,
+              event_type AS eventType, item_id AS itemId, payload,
+              emitted_at_ms AS emittedAtMs
+       FROM session_events WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ?`,
+      [sessionId, beforeSequence, safeLimit],
+    );
+    rows.reverse();
+    return rows;
+  }
+
+  hasEventsBefore(sessionId: string, beforeSequence: number): boolean {
+    const row = this.db
       .prepare(
-        `SELECT id AS sequence, session_id AS sessionId, turn_index AS turnIndex,
-                event_type AS eventType, item_id AS itemId, payload,
-                emitted_at_ms AS emittedAtMs
-         FROM session_events WHERE session_id = ? ORDER BY id ASC LIMIT ?`,
+        `SELECT 1 AS ok FROM session_events WHERE session_id = ? AND id < ? LIMIT 1`,
       )
-      .all(sessionId, limit) as Array<{
-        sequence: number;
-        sessionId: string;
-        turnIndex: number | null;
-        eventType: AgentEvent["type"];
-        itemId: string | null;
-        payload: string;
-        emittedAtMs: number;
-      }>;
+      .get(sessionId, beforeSequence) as { ok: number } | undefined;
+    return Boolean(row);
+  }
+
+  private readEvents(sql: string, params: unknown[]): SessionEventRecord[] {
+    const rows = this.db.prepare(sql).all(...params) as Array<{
+      sequence: number;
+      sessionId: string;
+      turnIndex: number | null;
+      eventType: AgentEvent["type"];
+      itemId: string | null;
+      payload: string;
+      emittedAtMs: number;
+    }>;
     return rows.flatMap(({ payload, itemId, ...row }) => {
       try {
         return [{
@@ -337,6 +381,55 @@ export class SessionStore {
   loadMessages(sessionId: string, limit = 50): ChatMessage[] {
     return this.loadMessagesWithBudget(sessionId, Number.MAX_SAFE_INTEGER, limit)
       .messages;
+  }
+
+  /** Newest-first fetch then reverse → chronological rows with DB ids. */
+  loadRecentMessageRows(
+    sessionId: string,
+    limit: number,
+  ): Array<{ id: number; message: ChatMessage }> {
+    const safeLimit = Math.max(1, Math.floor(limit));
+    const rows = this.db
+      .prepare(
+        `SELECT id, content FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?`,
+      )
+      .all(sessionId, safeLimit) as Array<{ id: number; content: string }>;
+    return rows.reverse().flatMap((row) => {
+      try {
+        return [{ id: row.id, message: JSON.parse(row.content) as ChatMessage }];
+      } catch {
+        return [];
+      }
+    });
+  }
+
+  loadMessageRowsBefore(
+    sessionId: string,
+    beforeMessageId: number,
+    limit: number,
+  ): Array<{ id: number; message: ChatMessage }> {
+    const safeLimit = Math.max(1, Math.floor(limit));
+    const rows = this.db
+      .prepare(
+        `SELECT id, content FROM messages
+         WHERE session_id = ? AND id < ?
+         ORDER BY id DESC LIMIT ?`,
+      )
+      .all(sessionId, beforeMessageId, safeLimit) as Array<{ id: number; content: string }>;
+    return rows.reverse().flatMap((row) => {
+      try {
+        return [{ id: row.id, message: JSON.parse(row.content) as ChatMessage }];
+      } catch {
+        return [];
+      }
+    });
+  }
+
+  hasMessagesBefore(sessionId: string, beforeMessageId: number): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 AS ok FROM messages WHERE session_id = ? AND id < ? LIMIT 1`)
+      .get(sessionId, beforeMessageId) as { ok: number } | undefined;
+    return Boolean(row);
   }
 
   compactSession(sessionId: string, keepLast = 30): CompactSessionResult {

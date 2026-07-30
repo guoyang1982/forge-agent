@@ -13,12 +13,29 @@ export interface MessageToolCall {
   name: string;
 }
 
+export interface MessageAttachment {
+  kind: "image" | "file";
+  name?: string;
+  /** Local preview URI for optimistic bubbles only. */
+  localUri?: string;
+}
+
 export interface MessageItem {
   key: string;
   role: "user" | "assistant" | "tool" | "system";
   text: string;
+  messageId?: number;
   toolCalls?: MessageToolCall[];
   toolCallId?: string;
+  attachments?: MessageAttachment[];
+}
+
+export interface SessionHistoryPage {
+  messages: MessageItem[];
+  events: RunUiEvent[];
+  truncated: boolean;
+  oldestMessageId: number | null;
+  oldestEventSequence: number | null;
 }
 
 export function parseSessions(value: unknown): SessionItem[] {
@@ -48,17 +65,23 @@ export function parseMessages(value: unknown): MessageItem[] {
     const item = row as Record<string, unknown>;
     if (!isRole(item.role)) return [];
     const text = messageText(item.content).slice(0, 20_000);
+    const attachments = messageAttachments(item.content);
     const toolCalls = parseToolCalls(item.tool_calls);
     const toolCallId = typeof item.tool_call_id === "string"
       ? item.tool_call_id.slice(0, 120)
       : undefined;
-    if (!text && toolCalls.length === 0 && !toolCallId) return [];
+    if (!text && toolCalls.length === 0 && !toolCallId && attachments.length === 0) return [];
+    const messageId = typeof item.id === "number" && Number.isFinite(item.id)
+      ? Math.floor(item.id)
+      : undefined;
     return [{
-      key: `${index}:${item.role}`,
+      key: messageId != null ? `m:${messageId}` : `${index}:${item.role}`,
       role: item.role,
       text,
+      ...(messageId != null ? { messageId } : {}),
       ...(toolCalls.length ? { toolCalls } : {}),
       ...(toolCallId ? { toolCallId } : {}),
+      ...(attachments.length ? { attachments } : {}),
     }];
   });
 }
@@ -80,6 +103,25 @@ export function parseSessionEvents(value: unknown): RunUiEvent[] {
     }
   }
   return events;
+}
+
+export function parseSessionHistoryPage(value: unknown): SessionHistoryPage {
+  const root = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const messages = parseMessages(root);
+  const events = parseSessionEvents(root);
+  const oldestMessageId = typeof root.oldestMessageId === "number"
+    ? root.oldestMessageId
+    : messages.find((row) => row.messageId != null)?.messageId ?? null;
+  const oldestEventSequence = typeof root.oldestEventSequence === "number"
+    ? root.oldestEventSequence
+    : null;
+  return {
+    messages,
+    events,
+    truncated: root.truncated === true,
+    oldestMessageId,
+    oldestEventSequence,
+  };
 }
 
 function parseToolCalls(value: unknown): MessageToolCall[] {
@@ -107,6 +149,31 @@ function messageText(content: unknown): string {
       return value.type === "text" && typeof value.text === "string" ? [value.text] : [];
     })
     .join("\n");
+}
+
+function messageAttachments(content: unknown): MessageAttachment[] {
+  if (!Array.isArray(content)) return [];
+  const out: MessageAttachment[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const value = part as Record<string, unknown>;
+    if (value.type === "image_url") {
+      out.push({
+        kind: "image",
+        name: typeof value.name === "string" ? value.name.slice(0, 120) : "图片",
+      });
+      continue;
+    }
+    if (value.type === "file" || value.type === "document") {
+      out.push({
+        kind: "file",
+        name: typeof value.name === "string"
+          ? value.name.slice(0, 120)
+          : (typeof value.filename === "string" ? value.filename.slice(0, 120) : "文件"),
+      });
+    }
+  }
+  return out.slice(0, 8);
 }
 
 function isRole(value: unknown): value is MessageItem["role"] {

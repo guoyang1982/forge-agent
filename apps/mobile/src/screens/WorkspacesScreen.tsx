@@ -5,7 +5,7 @@ import {
   FlatList,
   Pressable,
   RefreshControl,
-  StyleSheet,
+  ScrollView,
   Text,
   TextInput,
   View,
@@ -22,10 +22,11 @@ import {
   WorkspaceGlyph,
 } from "../ui/components";
 import type { MobileHostSummary } from "../storage/host-store";
+import { makeStyles } from "../ui/make-styles";
 import { colors, radii, spacing } from "../ui/theme";
 
 type Api = ReturnType<typeof createForgeMobileApi>;
-type ScopeFilter = "all" | "mine" | "joined";
+type ScopeFilter = "all" | "workspace" | "project";
 
 export function WorkspacesScreen(props: {
   api: Api;
@@ -35,6 +36,7 @@ export function WorkspacesScreen(props: {
   onSelectHost: (hostId: string) => void;
   onOpenWorkspace: (cwd: string) => void;
 }) {
+  const styles = useStyles();
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<ScopeFilter>("all");
@@ -70,9 +72,9 @@ export function WorkspacesScreen(props: {
       if (needle && !item.name.toLowerCase().includes(needle) && !item.path.toLowerCase().includes(needle)) {
         return false;
       }
-      // MVP: device grants don't expose ownership; keep chips visual and treat all as visible.
-      if (scope === "mine") return item.kind === "workspace" || item.kind === "project";
-      if (scope === "joined") return item.kind === "project";
+      // Filter by real project kinds (ownership is not exposed by the mobile grant API).
+      if (scope === "workspace") return item.kind === "workspace";
+      if (scope === "project") return item.kind === "project";
       return true;
     });
   }, [projects, query, scope]);
@@ -102,7 +104,16 @@ export function WorkspacesScreen(props: {
     <View style={styles.page}>
       <View style={styles.header}>
         <Text style={styles.title}>工作空间</Text>
-        <Pressable style={styles.addButton} onPress={() => setCreating((value) => !value)}>
+        <Pressable
+          style={styles.addButton}
+          onPress={() => {
+            setCreating((value) => {
+              const next = !value;
+              if (next && !parentPath && projects[0]?.path) setParentPath(projects[0].path);
+              return next;
+            });
+          }}
+        >
           <Text style={styles.addButtonText}>{creating ? "收起" : "＋"}</Text>
         </Pressable>
       </View>
@@ -120,19 +131,36 @@ export function WorkspacesScreen(props: {
           onChange={setScope}
           options={[
             { key: "all", label: "全部" },
-            { key: "mine", label: "我创建的" },
-            { key: "joined", label: "我参与的" },
+            { key: "workspace", label: "工作空间" },
+            { key: "project", label: "项目" },
           ]}
         />
       </View>
 
       {creating ? (
         <View style={styles.createBox}>
+          <Text style={styles.createLabel}>父目录（从已授权路径选择）</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.parentRow}>
+            {projects.map((item) => {
+              const active = parentPath === item.path;
+              return (
+                <Pressable
+                  key={item.path}
+                  style={[styles.parentChip, active ? styles.parentChipActive : null]}
+                  onPress={() => setParentPath(item.path)}
+                >
+                  <Text style={[styles.parentChipText, active ? styles.parentChipTextActive : null]} numberOfLines={1}>
+                    {item.name}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
           <TextInput
             style={styles.input}
             value={parentPath}
             onChangeText={setParentPath}
-            placeholder="父目录绝对路径"
+            placeholder="或粘贴父目录绝对路径"
             placeholderTextColor={colors.textMuted}
             autoCapitalize="none"
             autoCorrect={false}
@@ -177,7 +205,7 @@ export function WorkspacesScreen(props: {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   page: { flex: 1, paddingTop: spacing.sm, gap: spacing.md },
   header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   title: { color: colors.textPrimary, fontSize: 22, fontWeight: "700" },
@@ -199,6 +227,22 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.surfaceAlt,
   },
+  createLabel: { color: colors.textSecondary, fontSize: 12, fontWeight: "700" },
+  parentRow: { gap: spacing.sm, paddingVertical: spacing.xs },
+  parentChip: {
+    maxWidth: 160,
+    minHeight: 36,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  parentChipActive: { borderColor: colors.brand, backgroundColor: colors.brandSoft },
+  parentChipText: { color: colors.textSecondary, fontSize: 12, fontWeight: "600" },
+  parentChipTextActive: { color: colors.brandActive, fontWeight: "800" },
   input: {
     minHeight: 44,
     borderRadius: radii.md,
@@ -211,4 +255,4 @@ const styles = StyleSheet.create({
   list: { gap: spacing.sm, paddingBottom: spacing.xl },
   empty: { color: colors.textSecondary, textAlign: "center", marginTop: 60 },
   error: { color: colors.danger, fontSize: 13 },
-});
+}));

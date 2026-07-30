@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseMessages, parseSessionEvents, parseSessions } from "./session-sanitize.js";
+import { parseMessages, parseSessionEvents, parseSessionHistoryPage, parseSessions } from "./session-sanitize.js";
 
 describe("Mobile session response sanitization", () => {
   it("keeps only the session fields rendered by the app", () => {
@@ -45,7 +45,12 @@ describe("Mobile session response sanitization", () => {
       }),
     ).toEqual([
       { key: "0:user", role: "user", text: "hello" },
-      { key: "1:assistant", role: "assistant", text: "answer" },
+      {
+        key: "1:assistant",
+        role: "assistant",
+        text: "answer",
+        attachments: [{ kind: "image", name: "图片" }],
+      },
     ]);
   });
 
@@ -134,5 +139,23 @@ describe("Mobile session response sanitization", () => {
         deletions: 0,
       },
     ]);
+  });
+
+  it("parses paginated history cursors for load-older", () => {
+    expect(
+      parseSessionHistoryPage({
+        truncated: true,
+        oldestMessageId: 3,
+        oldestEventSequence: 9,
+        messages: [{ id: 3, role: "user", content: "older" }],
+        events: [],
+      }),
+    ).toEqual({
+      truncated: true,
+      oldestMessageId: 3,
+      oldestEventSequence: 9,
+      messages: [{ key: "m:3", role: "user", text: "older", messageId: 3 }],
+      events: [],
+    });
   });
 });

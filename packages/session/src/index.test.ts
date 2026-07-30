@@ -191,7 +191,37 @@ CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TE
     store.appendMessage(id, { role: "user", content: "u1" });
     store.appendEvent(id, 1, { type: "status", phase: "model", message: "second" }, 20);
     expect(store.listEvents(id).map((row) => row.emittedAtMs)).toEqual([10, 20]);
+    expect(store.listRecentEvents(id, 1).map((row) => row.emittedAtMs)).toEqual([20]);
+    expect(store.listEventsBefore(id, 2, 10).map((row) => row.emittedAtMs)).toEqual([10]);
+    expect(store.hasEventsBefore(id, 2)).toBe(true);
+    expect(store.hasEventsBefore(id, 1)).toBe(false);
     store.truncateAfterTurn(id, 1);
     expect(store.listEvents(id)).toHaveLength(1);
+  });
+
+  it("pages message rows by id for mobile history windows", () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-msgpage-"));
+    const migrations = join(root, "migrations");
+    mkdirSync(migrations, { recursive: true });
+    writeFileSync(
+      join(migrations, "001_init.sql"),
+      `CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE workspace_checkpoints (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, sha TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE session_dispatch_plans (session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, turn_index));
+CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER, event_type TEXT NOT NULL, item_id TEXT, payload TEXT NOT NULL, emitted_at_ms INTEGER NOT NULL);`,
+    );
+    const store = new SessionStore(join(root, "data.db"), migrations);
+    const id = store.createSession("/tmp/p");
+    store.appendMessage(id, { role: "user", content: "a" });
+    store.appendMessage(id, { role: "assistant", content: "b" });
+    store.appendMessage(id, { role: "user", content: "c" });
+    const recent = store.loadRecentMessageRows(id, 2);
+    expect(recent.map((row) => row.message.content)).toEqual(["b", "c"]);
+    const older = store.loadMessageRowsBefore(id, recent[0]!.id, 10);
+    expect(older).toHaveLength(1);
+    expect(older[0]?.message.content).toBe("a");
+    expect(store.hasMessagesBefore(id, recent[0]!.id)).toBe(true);
+    expect(store.hasMessagesBefore(id, older[0]!.id)).toBe(false);
   });
 });

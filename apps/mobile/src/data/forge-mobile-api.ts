@@ -5,9 +5,10 @@ import {
 } from "../screens/project-sanitize";
 import {
   parseMessages,
-  parseSessionEvents,
+  parseSessionHistoryPage,
   parseSessions,
   type MessageItem,
+  type SessionHistoryPage,
   type SessionItem,
 } from "../screens/session-sanitize";
 import type { RunUiEvent } from "../screens/run-event-sanitize";
@@ -79,18 +80,31 @@ export function createForgeMobileApi(client: MobileRelayClient) {
         query?.trim() ? { cwd, query: query.trim(), limit: 50 } : { ...(cwd ? { cwd } : {}), limit: 50 },
       )),
     messages: async (sessionId: string): Promise<MessageItem[]> => {
-      const payload = await client.call("session.messages", { sessionId, limit: 200 });
+      const payload = await client.call("session.messages", { sessionId, limit: 50 });
       return parseMessages(payload);
     },
-    sessionHistory: async (sessionId: string): Promise<{
-      messages: MessageItem[];
-      events: RunUiEvent[];
-    }> => {
-      const payload = await client.call("session.messages", { sessionId, limit: 200 });
-      return {
-        messages: parseMessages(payload),
-        events: parseSessionEvents(payload),
-      };
+    sessionHistory: async (sessionId: string): Promise<SessionHistoryPage> => {
+      const payload = await client.call("session.messages", {
+        sessionId,
+        limit: 50,
+        eventLimit: 120,
+      });
+      return parseSessionHistoryPage(payload);
+    },
+    sessionHistoryPage: async (
+      sessionId: string,
+      cursor: { beforeMessageId?: number | null; beforeEventSequence?: number | null },
+    ): Promise<SessionHistoryPage> => {
+      const payload = await client.call("session.history.page", {
+        sessionId,
+        limit: 40,
+        eventLimit: 100,
+        ...(cursor.beforeMessageId != null ? { beforeMessageId: cursor.beforeMessageId } : {}),
+        ...(cursor.beforeEventSequence != null
+          ? { beforeEventSequence: cursor.beforeEventSequence }
+          : {}),
+      });
+      return parseSessionHistoryPage(payload);
     },
     branches: async (cwd: string): Promise<Branches> =>
       parseBranches(await client.call("git.branches", { cwd })),
@@ -106,7 +120,19 @@ export function createForgeMobileApi(client: MobileRelayClient) {
       parseDiff(await client.call("workspace.diff.get", { cwd, path })),
     startRun: (
       context: RunContext,
-      params: { message: string; sessionId?: string | null },
+      params: {
+        message: string;
+        sessionId?: string | null;
+        attachments?: Array<{
+          kind: "image" | "file";
+          name: string;
+          mimeType: string;
+          dataUrl?: string;
+          text?: string;
+          rawBase64?: string;
+        }>;
+        files?: string[];
+      },
       onEvent: Parameters<MobileRelayClient["startRun"]>[1],
     ) => {
       if (!context.provider.trim()) {
@@ -117,6 +143,8 @@ export function createForgeMobileApi(client: MobileRelayClient) {
           cwd: context.cwd,
           message: params.message,
           ...(params.sessionId !== undefined ? { sessionId: params.sessionId } : {}),
+          ...(params.attachments?.length ? { attachments: params.attachments } : {}),
+          ...(params.files?.length ? { files: params.files } : {}),
           runtime: {
             provider: context.provider,
             ...(context.model.trim() ? { model: context.model } : {}),

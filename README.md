@@ -100,6 +100,66 @@ CI 会为每次通过测试的提交生成安装包：
 
 安装、首次启动和系统安全提示见[桌面端指南](docs/desktop-guide.md)。正式版本发布后会出现在 [GitHub Releases](https://github.com/guoyang1982/forge-agent/releases)。
 
+## 手机端下载（Android）
+
+### 方式 A：Expo EAS 云构建 + 扫码安装（推荐第三方）
+
+Expo 在云端打 APK，构建完成后 **expo.dev 页面自带安装二维码**，手机用流量即可扫码下载，不依赖公司 Wi‑Fi / 隧道 / GitHub。
+
+**一次性设置（约 2 分钟）：**
+
+```bash
+cd apps/mobile
+pnpm install
+pnpm exec eas login          # 注册/登录免费 Expo 账号
+pnpm exec eas init           # 创建 forge-mobile 项目，写入 projectId
+```
+
+**每次发布：**
+
+```bash
+pnpm publish:mobile:expo
+# 或
+cd apps/mobile && pnpm exec eas build --platform android --profile preview
+```
+
+构建完成后终端会打印 `https://expo.dev/accounts/.../builds/...` 链接，打开即可看到 **Install / 二维码**。也可在 [expo.dev](https://expo.dev) → Projects → Forge Mobile → Builds 查看。
+
+> 免费账号有月度构建额度；Android internal 分发 APK 无需 Google Play。
+
+### 方式 B：微信传文件（最稳本地方案）
+
+```bash
+pnpm share:mobile:android
+```
+
+Finder 定位 APK，用**微信文件传输助手**发到手机安装。
+
+### 方式 C：Relay HTTPS 下载（已有阿里云 Relay 时）
+
+```bash
+RELAY_HOST=root@你的ECS公网IP pnpm publish:mobile:apk-relay
+```
+
+### 方式 D：Mac 热点 + 扫码（局域网）
+
+1. **系统设置 → 通用 → 共享 → 互联网共享**，手机连 Mac 热点。
+2. `pnpm serve:mobile:android`，手机打开终端打印的地址。
+
+### 方式 E：仅本地打包
+
+```bash
+pnpm pack:mobile:android
+```
+
+安装时若系统拦截，请在 Android 设置中允许「安装未知应用」。
+
+手机端通过公网 Relay 配对 Desktop；配置见 [Relay 部署说明](services/forge-relay/deploy/DEPLOY-aliyun.md)。当前不提供 iOS 侧载包。
+
+### GitHub CI（可选）
+
+CI 也会上传 `forge-mobile-android` Artifact：[Actions 下载](https://github.com/guoyang1982/forge-agent/actions/workflows/ci.yml)
+
 ## 从源码快速开始
 
 需要 Node.js 22+、pnpm 9+ 和 Git。

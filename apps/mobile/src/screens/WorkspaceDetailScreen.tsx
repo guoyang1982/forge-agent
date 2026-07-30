@@ -5,7 +5,6 @@ import {
   Pressable,
   RefreshControl,
   ScrollView,
-  StyleSheet,
   Text,
   View,
 } from "react-native";
@@ -22,6 +21,7 @@ import {
 } from "../ui/components";
 import { FileTypeIcon } from "../ui/file-type-icon";
 import { filterFileTreeRows, flattenFileTree } from "../ui/file-tree";
+import { makeStyles } from "../ui/make-styles";
 import { colors, radii, spacing } from "../ui/theme";
 
 type Api = ReturnType<typeof createForgeMobileApi>;
@@ -39,6 +39,7 @@ export function WorkspaceDetailScreen(props: {
   onNewSession: () => void;
   onCancelRun?: (sessionId: string) => void;
 }) {
+  const styles = useStyles();
   const [tab, setTab] = useState<DetailTab>("overview");
   const [branch, setBranch] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -393,7 +394,7 @@ function formatRelative(iso: string): string {
   return new Date(time).toLocaleDateString();
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   page: { flex: 1, gap: spacing.md, paddingTop: spacing.xs },
   flex: { flex: 1, gap: spacing.sm },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
@@ -520,4 +521,4 @@ const styles = StyleSheet.create({
   footerCount: { color: colors.textMuted, textAlign: "center", marginTop: spacing.md, fontSize: 12 },
   emptyInline: { color: colors.textSecondary, fontSize: 13, marginVertical: spacing.sm },
   error: { color: colors.danger, fontSize: 13 },
-});
+}));

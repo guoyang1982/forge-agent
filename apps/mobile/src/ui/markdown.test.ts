@@ -23,4 +23,23 @@ describe("MarkdownBody parser", () => {
       { kind: "code", language: "bash", code: "lsof -i :18789" },
     ]);
   });
+
+  it("parses markdown tables", () => {
+    const blocks = parseMarkdownBlocks([
+      "| Name | Value |",
+      "| --- | ---: |",
+      "| port | 18789 |",
+      "| ok | yes |",
+    ].join("\n"));
+    expect(blocks).toEqual([
+      {
+        kind: "table",
+        headers: ["Name", "Value"],
+        rows: [
+          ["port", "18789"],
+          ["ok", "yes"],
+        ],
+      },
+    ]);
+  });
 });

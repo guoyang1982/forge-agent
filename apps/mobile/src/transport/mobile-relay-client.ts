@@ -54,6 +54,15 @@ export type MobileRunStartParams = {
   message: string;
   sessionId?: string | null;
   runtime?: MobileRunRuntime;
+  attachments?: Array<{
+    kind: "image" | "file";
+    name: string;
+    mimeType: string;
+    dataUrl?: string;
+    text?: string;
+    rawBase64?: string;
+  }>;
+  files?: string[];
 };
 
 export class MobileRelayClient {

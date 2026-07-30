@@ -18,6 +18,8 @@ services:
   migrate:
     build:
       context: ..
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,https://proxy.golang.org,direct}
     command: ["migrate", "up"]
     environment:
       FORGE_RELAY_DATABASE_URL: postgresql://forge_relay:${POSTGRES_PASSWORD}@postgres:5432/forge_relay
@@ -30,6 +32,8 @@ services:
   relay:
     build:
       context: ..
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,https://proxy.golang.org,direct}
     restart: unless-stopped
     read_only: true
     tmpfs: [/tmp]
@@ -57,6 +61,7 @@ services:
       - "443:443/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./mobile-dist:/srv/mobile:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on: [relay]
