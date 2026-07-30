@@ -28,12 +28,19 @@ jobs:
           GITLEAKS_ENABLE_COMMENTS: "false"
 
   platform:
-    name: Platform tests (${{ matrix.os }})
+    # Keep check names stable for branch protection (windows-latest label),
+    # but pin the runner to windows-2022: windows-latest/2025 ships VS 18,
+    # which node-gyp cannot resolve for better-sqlite3 native builds.
+    name: Platform tests (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-2022]
+        include:
+          - os: macos-latest
+            label: macos-latest
+          - os: windows-2022
+            label: windows-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -61,13 +68,17 @@ jobs:
         run: pnpm --filter @forge/platform --filter @forge/config --filter @forge/extension-hub --filter @forge/tool-software run test
 
   smoke:
-    name: Smoke (${{ matrix.os }})
+    name: Smoke (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     needs: platform
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-2022]
+        include:
+          - os: macos-latest
+            label: macos-latest
+          - os: windows-2022
+            label: windows-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -90,7 +101,7 @@ jobs:
         run: ./scripts/smoke-test.ps1
 
   desktop-pack:
-    name: Desktop pack (${{ matrix.os }})
+    name: Desktop pack (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     needs: smoke
     strategy:
@@ -98,8 +109,10 @@ jobs:
       matrix:
         include:
           - os: macos-latest
+            label: macos-latest
             pack: pack:mac
           - os: windows-2022
+            label: windows-latest
             pack: pack:win
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -122,7 +135,7 @@ jobs:
       - name: Upload installer artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: forge-desktop-${{ matrix.os }}
+          name: forge-desktop-${{ matrix.label }}
           path: |
             release/Forge-*-mac-*.dmg
             release/Forge-*-win-*.exe
