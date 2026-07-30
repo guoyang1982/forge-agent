@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentEvent } from "@forge/protocol";
+import { emitPermissionDismissedIfNeeded } from "./permission-dismiss.js";
 import { permissionService } from "./permission-service.js";
 
 export type AcpPermissionOutcome =
@@ -74,6 +75,7 @@ export function createAcpPermissionHandler(
       sessionId,
       signal,
     });
+    emitPermissionDismissedIfNeeded(emit, sessionId, id, decision);
 
     if (decision.optionId) {
       return { outcome: "selected", optionId: decision.optionId };

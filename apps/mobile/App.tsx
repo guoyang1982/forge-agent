@@ -176,6 +176,8 @@ function MobileApp(props: {
   const hostsRef = useRef<MobileHostSummary[]>([]);
   const selectedHostIdRef = useRef<string | null>(null);
   const runningSessionIdRef = useRef<string | null>(null);
+  const conversationOpenRef = useRef(false);
+  const backgroundCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appActive = useRef(AppState.currentState === "active");
   const connectingHosts = useRef(new Set<string>());
   const intentionalCloses = useRef(new Set<string>());
@@ -206,6 +208,10 @@ function MobileApp(props: {
   useEffect(() => {
     runningSessionIdRef.current = state.runningSessionId;
   }, [state.runningSessionId]);
+
+  useEffect(() => {
+    conversationOpenRef.current = conversationOpen;
+  }, [conversationOpen]);
 
   useEffect(() => {
     if (
@@ -578,17 +584,39 @@ function MobileApp(props: {
       if (active === appActive.current) return;
       appActive.current = active;
       if (!active) {
-        // Keep sockets alive while a run is in flight so events keep flowing.
-        if (runningSessionIdRef.current) {
-          addDiagnostic("app", "info", "进入后台", "保留运行中任务的连接");
+        if (backgroundCloseTimerRef.current) {
+          clearTimeout(backgroundCloseTimerRef.current);
+          backgroundCloseTimerRef.current = null;
+        }
+        // Keep sockets while a run is live, or while a conversation is open.
+        // Opening the system gallery/camera briefly backgrounds the app; closing
+        // the socket unmounts ConversationScreen and drops in-flight attach picks.
+        if (runningSessionIdRef.current || conversationOpenRef.current) {
+          addDiagnostic("app", "info", "进入后台", "保留会话连接（避免相册/相机返回丢状态）");
           return;
         }
-        for (const host of hostsRef.current) {
-          closeHost(host.hostId);
-          addDiagnostic(host.hostId, "info", "进入后台", "连接已受控关闭");
-        }
+        // Soft delay for other tabs — brief OS interruptions shouldn't flap the socket.
+        backgroundCloseTimerRef.current = setTimeout(() => {
+          backgroundCloseTimerRef.current = null;
+          if (appActive.current) return;
+          if (runningSessionIdRef.current || conversationOpenRef.current) return;
+          for (const host of hostsRef.current) {
+            closeHost(host.hostId);
+            addDiagnostic(host.hostId, "info", "进入后台", "连接已受控关闭");
+          }
+        }, 20_000);
       } else {
+        if (backgroundCloseTimerRef.current) {
+          clearTimeout(backgroundCloseTimerRef.current);
+          backgroundCloseTimerRef.current = null;
+        }
+        let needsReconnectRefresh = false;
         for (const host of hostsRef.current) {
+          if (clients.current.has(host.hostId)) {
+            addDiagnostic(host.hostId, "info", "回到前台", "连接仍有效");
+            continue;
+          }
+          needsReconnectRefresh = true;
           addDiagnostic(host.hostId, "info", "回到前台", "立即恢复连接");
           if (connectingHosts.current.has(host.hostId)) {
             pendingReconnectHostIds.current.add(host.hostId);
@@ -596,13 +624,19 @@ function MobileApp(props: {
             void connectHost(host, { silent: true, select: false });
           }
         }
-        dispatch({ type: "connection.reconnected" });
+        if (needsReconnectRefresh) {
+          dispatch({ type: "connection.reconnected" });
+        }
       }
     });
     return () => {
       disposed = true;
       connectionGenerations.current.dispose();
       subscription.remove();
+      if (backgroundCloseTimerRef.current) {
+        clearTimeout(backgroundCloseTimerRef.current);
+        backgroundCloseTimerRef.current = null;
+      }
       for (const timer of retryTimers.current.values()) clearTimeout(timer);
       for (const timer of probeTimers.current.values()) clearTimeout(timer);
       retryTimers.current.clear();

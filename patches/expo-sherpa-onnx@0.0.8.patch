@@ -1,0 +1,1201 @@
+diff --git a/android/src/main/java/expo/modules/sherpaonnx/ExpoSherpaOnnxModule.kt b/android/src/main/java/expo/modules/sherpaonnx/ExpoSherpaOnnxModule.kt
+index c5a65f12146730616710d2851ec78eba36b4ceca..bc0321afbb832e79b423322e63f0e196330f5674 100644
+--- a/android/src/main/java/expo/modules/sherpaonnx/ExpoSherpaOnnxModule.kt
++++ b/android/src/main/java/expo/modules/sherpaonnx/ExpoSherpaOnnxModule.kt
+@@ -55,6 +55,7 @@ class ExpoSherpaOnnxModule : Module() {
+     }
+   }
+ 
++  // FORGE PATCH: slim ModuleDefinition to avoid Kotlin MethodTooLargeException
+   override fun definition() = ModuleDefinition {
+     Name("ExpoSherpaOnnx")
+ 
+@@ -252,99 +253,6 @@ class ExpoSherpaOnnxModule : Module() {
+     // Online (Streaming) ASR
+     // =========================================================================
+ 
+-    AsyncFunction("createOnlineRecognizer") { config: Map<String, Any?> ->
+-      val recognizerConfig = buildOnlineRecognizerConfig(config)
+-      validateOnlineConfig(recognizerConfig)
+-      Log.i(TAG, "Creating online recognizer (validated)...")
+-      val recognizer = OnlineRecognizer(null, recognizerConfig)
+-      Log.i(TAG, "  recognizer created, isValid=${recognizer.isValid}")
+-      if (!recognizer.isValid) {
+-        throw Exception("Failed to create online recognizer. Native model loading returned null.")
+-      }
+-      val handle = handleCounter.incrementAndGet()
+-      onlineRecognizers[handle] = recognizer
+-      Log.i(TAG, "  online recognizer handle=$handle")
+-      handle
+-    }
+-
+-    AsyncFunction("createOnlineStream") { recognizerHandle: Int, hotwords: String ->
+-      val recognizer = onlineRecognizers[recognizerHandle]
+-        ?: throw IllegalArgumentException("Invalid online recognizer handle: $recognizerHandle")
+-      val stream = recognizer.createStream(hotwords)
+-      val streamHandle = handleCounter.incrementAndGet()
+-      onlineStreams[streamHandle] = stream
+-      streamToRecognizer[streamHandle] = recognizerHandle
+-      streamHandle
+-    }
+-
+-    AsyncFunction("onlineStreamAcceptWaveform") { streamHandle: Int, samples: List<Double>, sampleRate: Int ->
+-      val stream = onlineStreams[streamHandle] ?: return@AsyncFunction
+-      val floatSamples = FloatArray(samples.size) { samples[it].toFloat() }
+-      stream.acceptWaveform(floatSamples, sampleRate)
+-    }
+-
+-    AsyncFunction("onlineStreamInputFinished") { streamHandle: Int ->
+-      val stream = onlineStreams[streamHandle] ?: return@AsyncFunction
+-      stream.inputFinished()
+-    }
+-
+-    AsyncFunction("onlineRecognizerDecode") { recognizerHandle: Int, streamHandle: Int ->
+-      val recognizer = onlineRecognizers[recognizerHandle] ?: return@AsyncFunction
+-      val stream = onlineStreams[streamHandle] ?: return@AsyncFunction
+-      recognizer.decode(stream)
+-    }
+-
+-    AsyncFunction("onlineRecognizerIsReady") { recognizerHandle: Int, streamHandle: Int ->
+-      val recognizer = onlineRecognizers[recognizerHandle] ?: return@AsyncFunction false
+-      val stream = onlineStreams[streamHandle] ?: return@AsyncFunction false
+-      recognizer.isReady(stream)
+-    }
+-
+-    AsyncFunction("onlineRecognizerIsEndpoint") { recognizerHandle: Int, streamHandle: Int ->
+-      val recognizer = onlineRecognizers[recognizerHandle] ?: return@AsyncFunction false
+-      val stream = onlineStreams[streamHandle] ?: return@AsyncFunction false
+-      recognizer.isEndpoint(stream)
+-    }
+-
+-    AsyncFunction("onlineRecognizerGetResult") { recognizerHandle: Int, streamHandle: Int ->
+-      val recognizer = onlineRecognizers[recognizerHandle]
+-        ?: return@AsyncFunction mapOf("text" to "", "tokens" to emptyList<String>(), "timestamps" to emptyList<Float>())
+-      val stream = onlineStreams[streamHandle]
+-        ?: return@AsyncFunction mapOf("text" to "", "tokens" to emptyList<String>(), "timestamps" to emptyList<Float>())
+-      val result = recognizer.getResult(stream)
+-      mapOf(
+-        "text" to result.text,
+-        "tokens" to result.tokens.toList(),
+-        "timestamps" to result.timestamps.toList(),
+-      )
+-    }
+-
+-    AsyncFunction("onlineRecognizerReset") { recognizerHandle: Int, streamHandle: Int ->
+-      val recognizer = onlineRecognizers[recognizerHandle] ?: return@AsyncFunction
+-      val stream = onlineStreams[streamHandle] ?: return@AsyncFunction
+-      recognizer.reset(stream)
+-    }
+-
+-    AsyncFunction("destroyOnlineStream") { streamHandle: Int ->
+-      val stream = onlineStreams.remove(streamHandle) ?: return@AsyncFunction
+-      streamToRecognizer.remove(streamHandle)
+-      stream.release()
+-    }
+-
+-    AsyncFunction("destroyOnlineRecognizer") { recognizerHandle: Int ->
+-      val toRemove = streamToRecognizer.entries.filter { it.value == recognizerHandle }.map { it.key }
+-      for (sh in toRemove) {
+-        onlineStreams.remove(sh)?.release()
+-        streamToRecognizer.remove(sh)
+-      }
+-      val recognizer = onlineRecognizers.remove(recognizerHandle) ?: return@AsyncFunction
+-      recognizer.release()
+-    }
+-
+-    // =========================================================================
+-    // Wave reading
+-    // =========================================================================
+-
+     AsyncFunction("readWaveFile") { filePath: String ->
+       val waveData = WaveReader.readWave(filePath)
+       mapOf(
+@@ -375,1088 +283,6 @@ class ExpoSherpaOnnxModule : Module() {
+     // Offline TTS
+     // =========================================================================
+ 
+-    AsyncFunction("createOfflineTts") { config: Map<String, Any?> ->
+-      Log.i(TAG, "=== createOfflineTts START ===")
+-      Log.i(TAG, "  Raw config keys: ${config.keys}")
+-      val ttsConfig = buildOfflineTtsConfig(config)
+-      Log.i(TAG, "  Built ttsConfig, running validation...")
+-      validateTtsConfig(ttsConfig)
+-      Log.i(TAG, "  Validation passed. Calling OfflineTts constructor...")
+-      val tts = try {
+-        OfflineTts(null, ttsConfig)
+-      } catch (e: Exception) {
+-        Log.e(TAG, "  OfflineTts constructor threw: ${e.message}", e)
+-        throw Exception("Native TTS creation failed: ${e.message}")
+-      } catch (e: Error) {
+-        Log.e(TAG, "  OfflineTts constructor threw Error: ${e.message}", e)
+-        throw Exception("Native TTS creation failed (Error): ${e.message}")
+-      }
+-      Log.i(TAG, "  OfflineTts constructor returned, checking sampleRate...")
+-      val sr = try { tts.sampleRate() } catch (e: Exception) {
+-        Log.e(TAG, "  sampleRate() failed: ${e.message}", e)
+-        tts.release()
+-        throw Exception("TTS engine invalid (sampleRate failed): ${e.message}")
+-      }
+-      Log.i(TAG, "  sampleRate=$sr, checking numSpeakers...")
+-      val ns = try { tts.numSpeakers() } catch (e: Exception) {
+-        Log.e(TAG, "  numSpeakers() failed: ${e.message}", e)
+-        tts.release()
+-        throw Exception("TTS engine invalid (numSpeakers failed): ${e.message}")
+-      }
+-      Log.i(TAG, "  numSpeakers=$ns")
+-      val handle = handleCounter.incrementAndGet()
+-      offlineTtsEngines[handle] = tts
+-      Log.i(TAG, "=== createOfflineTts DONE handle=$handle sr=$sr ns=$ns ===")
+-      mapOf(
+-        "handle" to handle,
+-        "sampleRate" to sr,
+-        "numSpeakers" to ns,
+-      )
+-    }
+-
+-    AsyncFunction("offlineTtsGenerate") { handle: Int, text: String, sid: Int, speed: Double ->
+-      Log.i(TAG, "=== offlineTtsGenerate START handle=$handle textLen=${text.length} sid=$sid speed=$speed ===")
+-      val tts = offlineTtsEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid TTS handle: $handle")
+-      Log.i(TAG, "  Calling tts.generate()...")
+-      val audio = try {
+-        tts.generate(text, sid, speed.toFloat())
+-      } catch (e: Exception) {
+-        Log.e(TAG, "  tts.generate() threw: ${e.message}", e)
+-        throw Exception("TTS generate failed: ${e.message}")
+-      }
+-      Log.i(TAG, "  Generated ${audio.samples.size} samples at ${audio.sampleRate} Hz")
+-      Log.i(TAG, "=== offlineTtsGenerate DONE ===")
+-      mapOf(
+-        "samples" to audio.samples.map { it.toDouble() },
+-        "sampleRate" to audio.sampleRate,
+-      )
+-    }
+-
+-    AsyncFunction("offlineTtsSampleRate") { handle: Int ->
+-      val tts = offlineTtsEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid TTS handle: $handle")
+-      tts.sampleRate()
+-    }
+-
+-    AsyncFunction("offlineTtsNumSpeakers") { handle: Int ->
+-      val tts = offlineTtsEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid TTS handle: $handle")
+-      tts.numSpeakers()
+-    }
+-
+-    AsyncFunction("destroyOfflineTts") { handle: Int ->
+-      Log.i(TAG, "=== destroyOfflineTts handle=$handle ===")
+-      val tts = offlineTtsEngines.remove(handle)
+-      if (tts != null) {
+-        try { tts.release() } catch (e: Exception) {
+-          Log.e(TAG, "  release() threw: ${e.message}", e)
+-        }
+-      }
+-      Log.i(TAG, "=== destroyOfflineTts DONE ===")
+-    }
+-
+-    AsyncFunction("offlineTtsGenerateStreaming") { handle: Int, text: String, sid: Int, speed: Double, requestId: String ->
+-      Log.i(TAG, "=== offlineTtsGenerateStreaming START handle=$handle textLen=${text.length} ===")
+-      val tts = offlineTtsEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid TTS handle: $handle")
+-      try {
+-        val audio = tts.generateWithCallback(text, sid, speed.toFloat()) { samples ->
+-          sendEvent("ttsChunk", mapOf(
+-            "requestId" to requestId,
+-            "samples" to samples.map { it.toDouble() },
+-          ))
+-          0
+-        }
+-        Log.i(TAG, "  Streaming done, ${audio.samples.size} total samples")
+-        sendEvent("ttsComplete", mapOf(
+-          "requestId" to requestId,
+-          "sampleRate" to audio.sampleRate,
+-        ))
+-      } catch (e: Exception) {
+-        Log.e(TAG, "  Streaming generate threw: ${e.message}", e)
+-        sendEvent("ttsError", mapOf(
+-          "requestId" to requestId,
+-          "error" to (e.message ?: "Unknown TTS error"),
+-        ))
+-      }
+-      Log.i(TAG, "=== offlineTtsGenerateStreaming DONE ===")
+-    }
+-
+-    // =========================================================================
+-    // Voice Activity Detection (VAD)
+-    // =========================================================================
+-
+-    AsyncFunction("createVad") { config: Map<String, Any?>, bufferSizeInSeconds: Double ->
+-      val vadConfig = buildVadModelConfig(config)
+-      validateVadConfig(vadConfig)
+-      Log.i(TAG, "=== createVad START ===")
+-      val vad = try {
+-        Vad(null, vadConfig)
+-      } catch (e: Exception) {
+-        Log.e(TAG, "  Vad constructor threw: ${e.message}", e)
+-        throw Exception("Native VAD creation failed: ${e.message}")
+-      }
+-      val handle = handleCounter.incrementAndGet()
+-      vadEngines[handle] = vad
+-      Log.i(TAG, "=== createVad DONE handle=$handle ===")
+-      handle
+-    }
+-
+-    AsyncFunction("vadAcceptWaveform") { handle: Int, samples: List<Double> ->
+-      val vad = vadEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid VAD handle: $handle")
+-      val floatSamples = FloatArray(samples.size) { samples[it].toFloat() }
+-      vad.acceptWaveform(floatSamples)
+-    }
+-
+-    AsyncFunction("vadEmpty") { handle: Int ->
+-      val vad = vadEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid VAD handle: $handle")
+-      vad.empty()
+-    }
+-
+-    AsyncFunction("vadIsSpeechDetected") { handle: Int ->
+-      val vad = vadEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid VAD handle: $handle")
+-      vad.isSpeechDetected()
+-    }
+-
+-    AsyncFunction("vadPop") { handle: Int ->
+-      val vad = vadEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid VAD handle: $handle")
+-      vad.pop()
+-    }
+-
+-    AsyncFunction("vadFront") { handle: Int ->
+-      val vad = vadEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid VAD handle: $handle")
+-      val segment = vad.front()
+-      mapOf(
+-        "start" to segment.start,
+-        "samples" to segment.samples.map { it.toDouble() },
+-      )
+-    }
+-
+-    AsyncFunction("vadClear") { handle: Int ->
+-      val vad = vadEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid VAD handle: $handle")
+-      vad.clear()
+-    }
+-
+-    AsyncFunction("vadReset") { handle: Int ->
+-      val vad = vadEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid VAD handle: $handle")
+-      vad.reset()
+-    }
+-
+-    AsyncFunction("vadFlush") { handle: Int ->
+-      val vad = vadEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid VAD handle: $handle")
+-      vad.flush()
+-    }
+-
+-    AsyncFunction("vadProcessFile") { handle: Int, filePath: String ->
+-      val vad = vadEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid VAD handle: $handle")
+-      Log.i(TAG, "=== vadProcessFile START filePath=$filePath ===")
+-      val waveData = WaveReader.readWave(filePath)
+-      vad.reset()
+-      val windowSize = 512
+-      var i = 0
+-      while (i + windowSize <= waveData.samples.size) {
+-        val chunk = waveData.samples.copyOfRange(i, i + windowSize)
+-        vad.acceptWaveform(chunk)
+-        i += windowSize
+-      }
+-      vad.flush()
+-      val segments = mutableListOf<Map<String, Any>>()
+-      while (!vad.empty()) {
+-        val seg = vad.front()
+-        segments.add(mapOf(
+-          "start" to seg.start,
+-          "samples" to seg.samples.map { it.toDouble() },
+-        ))
+-        vad.pop()
+-      }
+-      Log.i(TAG, "=== vadProcessFile DONE ${segments.size} segments ===")
+-      segments.toList()
+-    }
+-
+-    AsyncFunction("destroyVad") { handle: Int ->
+-      Log.i(TAG, "=== destroyVad handle=$handle ===")
+-      val vad = vadEngines.remove(handle)
+-      if (vad != null) {
+-        try { vad.release() } catch (e: Exception) {
+-          Log.e(TAG, "  VAD release() threw: ${e.message}", e)
+-        }
+-      }
+-    }
+-
+-    // =========================================================================
+-    // Keyword Spotting
+-    // =========================================================================
+-
+-    AsyncFunction("createKeywordSpotter") { config: Map<String, Any?> ->
+-      val kwsConfig = buildKeywordSpotterConfig(config)
+-      validateKwsConfig(kwsConfig)
+-      Log.i(TAG, "=== createKeywordSpotter START ===")
+-      val spotter = try {
+-        KeywordSpotter(null, kwsConfig)
+-      } catch (e: Exception) {
+-        Log.e(TAG, "  KeywordSpotter constructor threw: ${e.message}", e)
+-        throw Exception("Native KeywordSpotter creation failed: ${e.message}")
+-      }
+-      val handle = handleCounter.incrementAndGet()
+-      keywordSpotters[handle] = spotter
+-      Log.i(TAG, "=== createKeywordSpotter DONE handle=$handle ===")
+-      handle
+-    }
+-
+-    AsyncFunction("createKeywordStream") { spotterHandle: Int, keywords: String ->
+-      val spotter = keywordSpotters[spotterHandle]
+-        ?: throw IllegalArgumentException("Invalid KeywordSpotter handle: $spotterHandle")
+-      val stream = spotter.createStream(keywords)
+-      val streamHandle = handleCounter.incrementAndGet()
+-      kwsStreams[streamHandle] = stream
+-      kwsStreamToSpotter[streamHandle] = spotterHandle
+-      streamHandle
+-    }
+-
+-    AsyncFunction("keywordStreamAcceptWaveform") { streamHandle: Int, samples: List<Double>, sampleRate: Int ->
+-      val stream = kwsStreams[streamHandle]
+-        ?: throw IllegalArgumentException("Invalid KWS stream handle: $streamHandle")
+-      val floatSamples = FloatArray(samples.size) { samples[it].toFloat() }
+-      stream.acceptWaveform(floatSamples, sampleRate)
+-    }
+-
+-    AsyncFunction("keywordSpotterIsReady") { spotterHandle: Int, streamHandle: Int ->
+-      val spotter = keywordSpotters[spotterHandle]
+-        ?: throw IllegalArgumentException("Invalid KeywordSpotter handle: $spotterHandle")
+-      val stream = kwsStreams[streamHandle]
+-        ?: throw IllegalArgumentException("Invalid KWS stream handle: $streamHandle")
+-      spotter.isReady(stream)
+-    }
+-
+-    AsyncFunction("keywordSpotterDecode") { spotterHandle: Int, streamHandle: Int ->
+-      val spotter = keywordSpotters[spotterHandle]
+-        ?: throw IllegalArgumentException("Invalid KeywordSpotter handle: $spotterHandle")
+-      val stream = kwsStreams[streamHandle]
+-        ?: throw IllegalArgumentException("Invalid KWS stream handle: $streamHandle")
+-      spotter.decode(stream)
+-    }
+-
+-    AsyncFunction("keywordSpotterGetResult") { spotterHandle: Int, streamHandle: Int ->
+-      val spotter = keywordSpotters[spotterHandle]
+-        ?: throw IllegalArgumentException("Invalid KeywordSpotter handle: $spotterHandle")
+-      val stream = kwsStreams[streamHandle]
+-        ?: throw IllegalArgumentException("Invalid KWS stream handle: $streamHandle")
+-      val result = spotter.getResult(stream)
+-      mapOf(
+-        "keyword" to result.keyword,
+-        "tokens" to result.tokens.toList(),
+-        "timestamps" to result.timestamps.map { it.toDouble() },
+-      )
+-    }
+-
+-    AsyncFunction("keywordSpotterReset") { spotterHandle: Int, streamHandle: Int ->
+-      val spotter = keywordSpotters[spotterHandle]
+-        ?: throw IllegalArgumentException("Invalid KeywordSpotter handle: $spotterHandle")
+-      val stream = kwsStreams[streamHandle]
+-        ?: throw IllegalArgumentException("Invalid KWS stream handle: $streamHandle")
+-      spotter.reset(stream)
+-    }
+-
+-    AsyncFunction("destroyKeywordStream") { streamHandle: Int ->
+-      val stream = kwsStreams.remove(streamHandle)
+-      kwsStreamToSpotter.remove(streamHandle)
+-      if (stream != null) {
+-        try { stream.release() } catch (_: Exception) {}
+-      }
+-    }
+-
+-    AsyncFunction("destroyKeywordSpotter") { spotterHandle: Int ->
+-      Log.i(TAG, "=== destroyKeywordSpotter handle=$spotterHandle ===")
+-      val streamsToRemove = kwsStreamToSpotter.filter { it.value == spotterHandle }.keys
+-      streamsToRemove.forEach { sh ->
+-        kwsStreams.remove(sh)?.let { try { it.release() } catch (_: Exception) {} }
+-        kwsStreamToSpotter.remove(sh)
+-      }
+-      val spotter = keywordSpotters.remove(spotterHandle)
+-      if (spotter != null) {
+-        try { spotter.release() } catch (e: Exception) {
+-          Log.e(TAG, "  KWS release() threw: ${e.message}", e)
+-        }
+-      }
+-    }
+-
+-    // =========================================================================
+-    // Speaker Embedding Extractor
+-    // =========================================================================
+-
+-    AsyncFunction("createSpeakerEmbeddingExtractor") { config: Map<String, Any?> ->
+-      val model = config["model"] as? String ?: ""
+-      if (model.isBlank()) throw Exception("Speaker embedding model path is required")
+-      requireFile(model, "speaker embedding model")
+-
+-      val extractorConfig = SpeakerEmbeddingExtractorConfig(
+-        model = model,
+-        numThreads = (config["numThreads"] as? Number)?.toInt() ?: 1,
+-        debug = config["debug"] as? Boolean ?: false,
+-        provider = config["provider"] as? String ?: "cpu",
+-      )
+-      Log.i(TAG, "=== createSpeakerEmbeddingExtractor START ===")
+-      val extractor = try {
+-        SpeakerEmbeddingExtractor(null, extractorConfig)
+-      } catch (e: Exception) {
+-        Log.e(TAG, "  SpeakerEmbeddingExtractor constructor threw: ${e.message}", e)
+-        throw Exception("Native SpeakerEmbeddingExtractor creation failed: ${e.message}")
+-      }
+-      val handle = handleCounter.incrementAndGet()
+-      speakerExtractors[handle] = extractor
+-      Log.i(TAG, "=== createSpeakerEmbeddingExtractor DONE handle=$handle dim=${extractor.dim()} ===")
+-      handle
+-    }
+-
+-    AsyncFunction("speakerExtractorCreateStream") { extractorHandle: Int ->
+-      val extractor = speakerExtractors[extractorHandle]
+-        ?: throw IllegalArgumentException("Invalid speaker extractor handle: $extractorHandle")
+-      val stream = extractor.createStream()
+-      val streamHandle = handleCounter.incrementAndGet()
+-      speakerStreams[streamHandle] = stream
+-      speakerStreamToExtractor[streamHandle] = extractorHandle
+-      streamHandle
+-    }
+-
+-    AsyncFunction("speakerStreamAcceptWaveform") { streamHandle: Int, samples: List<Double>, sampleRate: Int ->
+-      val stream = speakerStreams[streamHandle]
+-        ?: throw IllegalArgumentException("Invalid speaker stream handle: $streamHandle")
+-      val floatSamples = FloatArray(samples.size) { samples[it].toFloat() }
+-      stream.acceptWaveform(floatSamples, sampleRate)
+-    }
+-
+-    AsyncFunction("speakerExtractorIsReady") { extractorHandle: Int, streamHandle: Int ->
+-      val extractor = speakerExtractors[extractorHandle]
+-        ?: throw IllegalArgumentException("Invalid speaker extractor handle: $extractorHandle")
+-      val stream = speakerStreams[streamHandle]
+-        ?: throw IllegalArgumentException("Invalid speaker stream handle: $streamHandle")
+-      extractor.isReady(stream)
+-    }
+-
+-    AsyncFunction("speakerExtractorCompute") { extractorHandle: Int, streamHandle: Int ->
+-      val extractor = speakerExtractors[extractorHandle]
+-        ?: throw IllegalArgumentException("Invalid speaker extractor handle: $extractorHandle")
+-      val stream = speakerStreams[streamHandle]
+-        ?: throw IllegalArgumentException("Invalid speaker stream handle: $streamHandle")
+-      val embedding = extractor.compute(stream)
+-      embedding.map { it.toDouble() }
+-    }
+-
+-    AsyncFunction("speakerExtractorDim") { extractorHandle: Int ->
+-      val extractor = speakerExtractors[extractorHandle]
+-        ?: throw IllegalArgumentException("Invalid speaker extractor handle: $extractorHandle")
+-      extractor.dim()
+-    }
+-
+-    AsyncFunction("speakerExtractorComputeFromFile") { extractorHandle: Int, filePath: String ->
+-      val extractor = speakerExtractors[extractorHandle]
+-        ?: throw IllegalArgumentException("Invalid speaker extractor handle: $extractorHandle")
+-      Log.i(TAG, "=== speakerExtractorComputeFromFile START filePath=$filePath ===")
+-      val waveData = WaveReader.readWave(filePath)
+-      val stream = extractor.createStream()
+-      stream.acceptWaveform(waveData.samples, waveData.sampleRate)
+-      val embedding = extractor.compute(stream)
+-      stream.release()
+-      Log.i(TAG, "=== speakerExtractorComputeFromFile DONE dim=${embedding.size} ===")
+-      embedding.map { it.toDouble() }
+-    }
+-
+-    AsyncFunction("destroySpeakerStream") { streamHandle: Int ->
+-      val stream = speakerStreams.remove(streamHandle)
+-      speakerStreamToExtractor.remove(streamHandle)
+-      if (stream != null) {
+-        try { stream.release() } catch (_: Exception) {}
+-      }
+-    }
+-
+-    AsyncFunction("destroySpeakerEmbeddingExtractor") { extractorHandle: Int ->
+-      Log.i(TAG, "=== destroySpeakerEmbeddingExtractor handle=$extractorHandle ===")
+-      val streamsToRemove = speakerStreamToExtractor.filter { it.value == extractorHandle }.keys
+-      streamsToRemove.forEach { sh ->
+-        speakerStreams.remove(sh)?.let { try { it.release() } catch (_: Exception) {} }
+-        speakerStreamToExtractor.remove(sh)
+-      }
+-      val extractor = speakerExtractors.remove(extractorHandle)
+-      if (extractor != null) {
+-        try { extractor.release() } catch (e: Exception) {
+-          Log.e(TAG, "  SpeakerEmbeddingExtractor release() threw: ${e.message}", e)
+-        }
+-      }
+-    }
+-
+-    // =========================================================================
+-    // Speaker Embedding Manager
+-    // =========================================================================
+-
+-    AsyncFunction("createSpeakerEmbeddingManager") { dim: Int ->
+-      Log.i(TAG, "=== createSpeakerEmbeddingManager dim=$dim ===")
+-      val manager = SpeakerEmbeddingManager(dim)
+-      val handle = handleCounter.incrementAndGet()
+-      speakerManagers[handle] = manager
+-      handle
+-    }
+-
+-    AsyncFunction("speakerManagerAdd") { handle: Int, name: String, embedding: List<Double> ->
+-      val manager = speakerManagers[handle]
+-        ?: throw IllegalArgumentException("Invalid speaker manager handle: $handle")
+-      val floatEmbedding = FloatArray(embedding.size) { embedding[it].toFloat() }
+-      manager.add(name, floatEmbedding)
+-    }
+-
+-    AsyncFunction("speakerManagerAddList") { handle: Int, name: String, embeddings: List<List<Double>> ->
+-      val manager = speakerManagers[handle]
+-        ?: throw IllegalArgumentException("Invalid speaker manager handle: $handle")
+-      val floatEmbeddings = Array(embeddings.size) { i ->
+-        FloatArray(embeddings[i].size) { j -> embeddings[i][j].toFloat() }
+-      }
+-      manager.add(name, floatEmbeddings)
+-    }
+-
+-    AsyncFunction("speakerManagerRemove") { handle: Int, name: String ->
+-      val manager = speakerManagers[handle]
+-        ?: throw IllegalArgumentException("Invalid speaker manager handle: $handle")
+-      manager.remove(name)
+-    }
+-
+-    AsyncFunction("speakerManagerSearch") { handle: Int, embedding: List<Double>, threshold: Double ->
+-      val manager = speakerManagers[handle]
+-        ?: throw IllegalArgumentException("Invalid speaker manager handle: $handle")
+-      val floatEmbedding = FloatArray(embedding.size) { embedding[it].toFloat() }
+-      manager.search(floatEmbedding, threshold.toFloat())
+-    }
+-
+-    AsyncFunction("speakerManagerVerify") { handle: Int, name: String, embedding: List<Double>, threshold: Double ->
+-      val manager = speakerManagers[handle]
+-        ?: throw IllegalArgumentException("Invalid speaker manager handle: $handle")
+-      val floatEmbedding = FloatArray(embedding.size) { embedding[it].toFloat() }
+-      manager.verify(name, floatEmbedding, threshold.toFloat())
+-    }
+-
+-    AsyncFunction("speakerManagerContains") { handle: Int, name: String ->
+-      val manager = speakerManagers[handle]
+-        ?: throw IllegalArgumentException("Invalid speaker manager handle: $handle")
+-      manager.contains(name)
+-    }
+-
+-    AsyncFunction("speakerManagerNumSpeakers") { handle: Int ->
+-      val manager = speakerManagers[handle]
+-        ?: throw IllegalArgumentException("Invalid speaker manager handle: $handle")
+-      manager.numSpeakers()
+-    }
+-
+-    AsyncFunction("speakerManagerAllSpeakerNames") { handle: Int ->
+-      val manager = speakerManagers[handle]
+-        ?: throw IllegalArgumentException("Invalid speaker manager handle: $handle")
+-      manager.allSpeakerNames().toList()
+-    }
+-
+-    AsyncFunction("destroySpeakerEmbeddingManager") { handle: Int ->
+-      Log.i(TAG, "=== destroySpeakerEmbeddingManager handle=$handle ===")
+-      val manager = speakerManagers.remove(handle)
+-      if (manager != null) {
+-        try { manager.release() } catch (e: Exception) {
+-          Log.e(TAG, "  SpeakerEmbeddingManager release() threw: ${e.message}", e)
+-        }
+-      }
+-    }
+-
+-    // =========================================================================
+-    // Offline Speaker Diarization
+-    // =========================================================================
+-
+-    AsyncFunction("createOfflineSpeakerDiarization") { config: Map<String, Any?> ->
+-      val diarizationConfig = buildOfflineSpeakerDiarizationConfig(config)
+-      Log.i(TAG, "=== createOfflineSpeakerDiarization START ===")
+-      val diarization = try {
+-        OfflineSpeakerDiarization(null, diarizationConfig)
+-      } catch (e: Exception) {
+-        Log.e(TAG, "  OfflineSpeakerDiarization constructor threw: ${e.message}", e)
+-        throw Exception("Native OfflineSpeakerDiarization creation failed: ${e.message}")
+-      }
+-      val handle = handleCounter.incrementAndGet()
+-      diarizationEngines[handle] = diarization
+-      Log.i(TAG, "=== createOfflineSpeakerDiarization DONE handle=$handle sampleRate=${diarization.sampleRate()} ===")
+-      handle
+-    }
+-
+-    AsyncFunction("offlineSpeakerDiarizationGetSampleRate") { handle: Int ->
+-      val diarization = diarizationEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid diarization handle: $handle")
+-      diarization.sampleRate()
+-    }
+-
+-    AsyncFunction("offlineSpeakerDiarizationProcess") { handle: Int, samples: List<Double> ->
+-      val diarization = diarizationEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid diarization handle: $handle")
+-      val floatSamples = FloatArray(samples.size) { samples[it].toFloat() }
+-      val segments = diarization.process(floatSamples)
+-      segments.map { seg ->
+-        mapOf(
+-          "start" to seg.start.toDouble(),
+-          "end" to seg.end.toDouble(),
+-          "speaker" to seg.speaker,
+-        )
+-      }
+-    }
+-
+-    AsyncFunction("offlineSpeakerDiarizationProcessFile") { handle: Int, filePath: String ->
+-      val diarization = diarizationEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid diarization handle: $handle")
+-      Log.i(TAG, "=== offlineSpeakerDiarizationProcessFile START filePath=$filePath ===")
+-      val waveData = WaveReader.readWave(filePath)
+-      val segments = diarization.process(waveData.samples)
+-      Log.i(TAG, "=== offlineSpeakerDiarizationProcessFile DONE ${segments.size} segments ===")
+-      segments.map { seg ->
+-        mapOf(
+-          "start" to seg.start.toDouble(),
+-          "end" to seg.end.toDouble(),
+-          "speaker" to seg.speaker,
+-        )
+-      }
+-    }
+-
+-    AsyncFunction("transcribeAndDiarizeFile") { diarizationHandle: Int, asrHandle: Int, filePath: String ->
+-      val diarization = diarizationEngines[diarizationHandle]
+-        ?: throw IllegalArgumentException("Invalid diarization handle: $diarizationHandle")
+-      val recognizer = offlineRecognizers[asrHandle]
+-        ?: throw IllegalArgumentException("Invalid offline recognizer handle: $asrHandle")
+-      Log.i(TAG, "=== transcribeAndDiarizeFile START filePath=$filePath ===")
+-      val waveData = WaveReader.readWave(filePath)
+-      val segments = diarization.process(waveData.samples)
+-      Log.i(TAG, "  Diarization found ${segments.size} segments, transcribing each...")
+-      val results = segments.map { seg ->
+-        val startSample = (seg.start * waveData.sampleRate).toInt().coerceIn(0, waveData.samples.size)
+-        val endSample = (seg.end * waveData.sampleRate).toInt().coerceIn(0, waveData.samples.size)
+-        val segSamples = waveData.samples.copyOfRange(startSample, endSample)
+-        val stream = recognizer.createStream()
+-        stream.acceptWaveform(segSamples, waveData.sampleRate)
+-        recognizer.decode(stream)
+-        val result = recognizer.getResult(stream)
+-        stream.release()
+-        mapOf(
+-          "speaker" to seg.speaker,
+-          "start" to seg.start.toDouble(),
+-          "end" to seg.end.toDouble(),
+-          "text" to result.text,
+-        )
+-      }
+-      Log.i(TAG, "=== transcribeAndDiarizeFile DONE ${results.size} transcribed segments ===")
+-      results
+-    }
+-
+-    @Suppress("UNCHECKED_CAST")
+-    AsyncFunction("offlineSpeakerDiarizationSetConfig") { handle: Int, config: Map<String, Any?> ->
+-      val diarization = diarizationEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid diarization handle: $handle")
+-      val newConfig = buildOfflineSpeakerDiarizationConfig(config)
+-      diarization.setConfig(newConfig)
+-    }
+-
+-    AsyncFunction("destroyOfflineSpeakerDiarization") { handle: Int ->
+-      Log.i(TAG, "=== destroyOfflineSpeakerDiarization handle=$handle ===")
+-      val diarization = diarizationEngines.remove(handle)
+-      if (diarization != null) {
+-        try { diarization.release() } catch (e: Exception) {
+-          Log.e(TAG, "  OfflineSpeakerDiarization release() threw: ${e.message}", e)
+-        }
+-      }
+-    }
+-
+-    // =========================================================================
+-    // Spoken Language Identification
+-    // =========================================================================
+-
+-    AsyncFunction("createSpokenLanguageIdentification") { config: Map<String, Any?> ->
+-      val whisperMap = config["whisper"] as? Map<String, Any?> ?: emptyMap()
+-      val slidConfig = SpokenLanguageIdentificationConfig(
+-        whisper = SpokenLanguageIdentificationWhisperConfig(
+-          encoder = whisperMap["encoder"] as? String ?: "",
+-          decoder = whisperMap["decoder"] as? String ?: "",
+-          tailPaddings = (whisperMap["tailPaddings"] as? Number)?.toInt() ?: -1,
+-        ),
+-        numThreads = (config["numThreads"] as? Number)?.toInt() ?: 1,
+-        debug = config["debug"] as? Boolean ?: false,
+-        provider = config["provider"] as? String ?: "cpu",
+-      )
+-      Log.i(TAG, "=== createSpokenLanguageIdentification START ===")
+-      val slid = try {
+-        SpokenLanguageIdentification(config = slidConfig)
+-      } catch (e: Exception) {
+-        Log.e(TAG, "  SLID constructor threw: ${e.message}", e)
+-        throw Exception("Native SLID creation failed: ${e.message}")
+-      }
+-      val handle = handleCounter.incrementAndGet()
+-      slidEngines[handle] = slid
+-      Log.i(TAG, "=== createSpokenLanguageIdentification DONE handle=$handle ===")
+-      handle
+-    }
+-
+-    AsyncFunction("spokenLanguageIdentificationCompute") { handle: Int, samples: List<Double>, sampleRate: Int ->
+-      val slid = slidEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid SLID handle: $handle")
+-      val stream = slid.createStream()
+-      val floatSamples = FloatArray(samples.size) { samples[it].toFloat() }
+-      stream.acceptWaveform(floatSamples, sampleRate)
+-      val lang = slid.compute(stream)
+-      stream.release()
+-      lang
+-    }
+-
+-    AsyncFunction("spokenLanguageIdentificationComputeFromFile") { handle: Int, filePath: String ->
+-      val slid = slidEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid SLID handle: $handle")
+-      Log.i(TAG, "=== spokenLanguageIdentificationComputeFromFile START ===")
+-      val waveData = WaveReader.readWave(filePath)
+-      val stream = slid.createStream()
+-      stream.acceptWaveform(waveData.samples, waveData.sampleRate)
+-      val lang = slid.compute(stream)
+-      stream.release()
+-      Log.i(TAG, "=== spokenLanguageIdentificationComputeFromFile DONE lang=$lang ===")
+-      lang
+-    }
+-
+-    AsyncFunction("destroySpokenLanguageIdentification") { handle: Int ->
+-      Log.i(TAG, "=== destroySpokenLanguageIdentification handle=$handle ===")
+-      val slid = slidEngines.remove(handle)
+-      if (slid != null) {
+-        try { slid.release() } catch (e: Exception) {
+-          Log.e(TAG, "  SLID release() threw: ${e.message}", e)
+-        }
+-      }
+-    }
+-
+-    // =========================================================================
+-    // Audio Tagging
+-    // =========================================================================
+-
+-    @Suppress("UNCHECKED_CAST")
+-    AsyncFunction("createAudioTagging") { config: Map<String, Any?> ->
+-      val modelMap = config["model"] as? Map<String, Any?> ?: emptyMap()
+-      val zipformerMap = modelMap["zipformer"] as? Map<String, Any?> ?: emptyMap()
+-      val taggingConfig = AudioTaggingConfig(
+-        model = AudioTaggingModelConfig(
+-          zipformer = OfflineZipformerAudioTaggingModelConfig(
+-            model = zipformerMap["model"] as? String ?: "",
+-          ),
+-          ced = modelMap["ced"] as? String ?: "",
+-          numThreads = (modelMap["numThreads"] as? Number)?.toInt() ?: 1,
+-          debug = modelMap["debug"] as? Boolean ?: false,
+-          provider = modelMap["provider"] as? String ?: "cpu",
+-        ),
+-        labels = config["labels"] as? String ?: "",
+-        topK = (config["topK"] as? Number)?.toInt() ?: 5,
+-      )
+-      Log.i(TAG, "=== createAudioTagging START ===")
+-      val tagger = try {
+-        AudioTagging(config = taggingConfig)
+-      } catch (e: Exception) {
+-        Log.e(TAG, "  AudioTagging constructor threw: ${e.message}", e)
+-        throw Exception("Native AudioTagging creation failed: ${e.message}")
+-      }
+-      val handle = handleCounter.incrementAndGet()
+-      audioTaggingEngines[handle] = tagger
+-      Log.i(TAG, "=== createAudioTagging DONE handle=$handle ===")
+-      handle
+-    }
+-
+-    AsyncFunction("audioTaggingCompute") { handle: Int, samples: List<Double>, sampleRate: Int, topK: Int ->
+-      val tagger = audioTaggingEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid AudioTagging handle: $handle")
+-      val stream = tagger.createStream()
+-      val floatSamples = FloatArray(samples.size) { samples[it].toFloat() }
+-      stream.acceptWaveform(floatSamples, sampleRate)
+-      val events = tagger.compute(stream, topK)
+-      stream.release()
+-      events.map { ev ->
+-        mapOf("name" to ev.name, "index" to ev.index, "prob" to ev.prob.toDouble())
+-      }
+-    }
+-
+-    AsyncFunction("audioTaggingComputeFromFile") { handle: Int, filePath: String, topK: Int ->
+-      val tagger = audioTaggingEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid AudioTagging handle: $handle")
+-      Log.i(TAG, "=== audioTaggingComputeFromFile START ===")
+-      val waveData = WaveReader.readWave(filePath)
+-      val stream = tagger.createStream()
+-      stream.acceptWaveform(waveData.samples, waveData.sampleRate)
+-      val events = tagger.compute(stream, topK)
+-      stream.release()
+-      Log.i(TAG, "=== audioTaggingComputeFromFile DONE ${events.size} events ===")
+-      events.map { ev ->
+-        mapOf("name" to ev.name, "index" to ev.index, "prob" to ev.prob.toDouble())
+-      }
+-    }
+-
+-    AsyncFunction("destroyAudioTagging") { handle: Int ->
+-      Log.i(TAG, "=== destroyAudioTagging handle=$handle ===")
+-      val tagger = audioTaggingEngines.remove(handle)
+-      if (tagger != null) {
+-        try { tagger.release() } catch (e: Exception) {
+-          Log.e(TAG, "  AudioTagging release() threw: ${e.message}", e)
+-        }
+-      }
+-    }
+-
+-    // =========================================================================
+-    // Punctuation (Offline + Online)
+-    // =========================================================================
+-
+-    AsyncFunction("createOfflinePunctuation") { config: Map<String, Any?> ->
+-      val modelMap = config["model"] as? Map<String, Any?> ?: emptyMap()
+-      val ctTransformer = modelMap["ctTransformer"] as? String ?: ""
+-      requireFile(ctTransformer, "offline punctuation ctTransformer model")
+-      val punctConfig = OfflinePunctuationConfig(
+-        model = OfflinePunctuationModelConfig(
+-          ctTransformer = ctTransformer,
+-          numThreads = (modelMap["numThreads"] as? Number)?.toInt() ?: 1,
+-          debug = modelMap["debug"] as? Boolean ?: false,
+-          provider = modelMap["provider"] as? String ?: "cpu",
+-        ),
+-      )
+-      Log.i(TAG, "=== createOfflinePunctuation START ===")
+-      val punct = try {
+-        OfflinePunctuation(config = punctConfig)
+-      } catch (e: Exception) {
+-        Log.e(TAG, "  OfflinePunctuation constructor threw: ${e.message}", e)
+-        throw Exception("Native OfflinePunctuation creation failed: ${e.message}")
+-      }
+-      val handle = handleCounter.incrementAndGet()
+-      offlinePunctuationEngines[handle] = punct
+-      Log.i(TAG, "=== createOfflinePunctuation DONE handle=$handle ===")
+-      handle
+-    }
+-
+-    AsyncFunction("offlinePunctuationAddPunct") { handle: Int, text: String ->
+-      val punct = offlinePunctuationEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid OfflinePunctuation handle: $handle")
+-      punct.addPunctuation(text)
+-    }
+-
+-    AsyncFunction("destroyOfflinePunctuation") { handle: Int ->
+-      Log.i(TAG, "=== destroyOfflinePunctuation handle=$handle ===")
+-      val punct = offlinePunctuationEngines.remove(handle)
+-      if (punct != null) {
+-        try { punct.release() } catch (e: Exception) {
+-          Log.e(TAG, "  OfflinePunctuation release() threw: ${e.message}", e)
+-        }
+-      }
+-    }
+-
+-    AsyncFunction("createOnlinePunctuation") { config: Map<String, Any?> ->
+-      val modelMap = config["model"] as? Map<String, Any?> ?: emptyMap()
+-      val cnnBilstm = modelMap["cnnBilstm"] as? String ?: ""
+-      val bpeVocab = modelMap["bpeVocab"] as? String ?: ""
+-      requireFile(cnnBilstm, "online punctuation cnnBilstm model")
+-      requireFile(bpeVocab, "online punctuation bpeVocab")
+-      val punctConfig = OnlinePunctuationConfig(
+-        model = OnlinePunctuationModelConfig(
+-          cnnBilstm = cnnBilstm,
+-          bpeVocab = bpeVocab,
+-          numThreads = (modelMap["numThreads"] as? Number)?.toInt() ?: 1,
+-          debug = modelMap["debug"] as? Boolean ?: false,
+-          provider = modelMap["provider"] as? String ?: "cpu",
+-        ),
+-      )
+-      Log.i(TAG, "=== createOnlinePunctuation START ===")
+-      val punct = try {
+-        OnlinePunctuation(config = punctConfig)
+-      } catch (e: Exception) {
+-        Log.e(TAG, "  OnlinePunctuation constructor threw: ${e.message}", e)
+-        throw Exception("Native OnlinePunctuation creation failed: ${e.message}")
+-      }
+-      val handle = handleCounter.incrementAndGet()
+-      onlinePunctuationEngines[handle] = punct
+-      Log.i(TAG, "=== createOnlinePunctuation DONE handle=$handle ===")
+-      handle
+-    }
+-
+-    AsyncFunction("onlinePunctuationAddPunct") { handle: Int, text: String ->
+-      val punct = onlinePunctuationEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid OnlinePunctuation handle: $handle")
+-      punct.addPunctuation(text)
+-    }
+-
+-    AsyncFunction("destroyOnlinePunctuation") { handle: Int ->
+-      Log.i(TAG, "=== destroyOnlinePunctuation handle=$handle ===")
+-      val punct = onlinePunctuationEngines.remove(handle)
+-      if (punct != null) {
+-        try { punct.release() } catch (e: Exception) {
+-          Log.e(TAG, "  OnlinePunctuation release() threw: ${e.message}", e)
+-        }
+-      }
+-    }
+-
+-    // =========================================================================
+-    // Speech Denoising (Offline + Online)
+-    // =========================================================================
+-
+-    @Suppress("UNCHECKED_CAST")
+-    AsyncFunction("createOfflineSpeechDenoiser") { config: Map<String, Any?> ->
+-      val modelMap = config["model"] as? Map<String, Any?> ?: emptyMap()
+-      val gtcrnMap = modelMap["gtcrn"] as? Map<String, Any?> ?: emptyMap()
+-      val dpdfnetMap = modelMap["dpdfnet"] as? Map<String, Any?> ?: emptyMap()
+-      val denoiserConfig = OfflineSpeechDenoiserConfig(
+-        model = OfflineSpeechDenoiserModelConfig(
+-          gtcrn = OfflineSpeechDenoiserGtcrnModelConfig(
+-            model = gtcrnMap["model"] as? String ?: "",
+-          ),
+-          dpdfnet = OfflineSpeechDenoiserDpdfNetModelConfig(
+-            model = dpdfnetMap["model"] as? String ?: "",
+-          ),
+-          numThreads = (modelMap["numThreads"] as? Number)?.toInt() ?: 1,
+-          debug = modelMap["debug"] as? Boolean ?: false,
+-          provider = modelMap["provider"] as? String ?: "cpu",
+-        ),
+-      )
+-      Log.i(TAG, "=== createOfflineSpeechDenoiser START ===")
+-      val denoiser = try {
+-        OfflineSpeechDenoiser(config = denoiserConfig)
+-      } catch (e: Exception) {
+-        Log.e(TAG, "  OfflineSpeechDenoiser constructor threw: ${e.message}", e)
+-        throw Exception("Native OfflineSpeechDenoiser creation failed: ${e.message}")
+-      }
+-      val handle = handleCounter.incrementAndGet()
+-      offlineSpeechDenoiserEngines[handle] = denoiser
+-      Log.i(TAG, "=== createOfflineSpeechDenoiser DONE handle=$handle sampleRate=${denoiser.sampleRate} ===")
+-      handle
+-    }
+-
+-    AsyncFunction("offlineSpeechDenoiserRun") { handle: Int, samples: List<Double>, sampleRate: Int ->
+-      val denoiser = offlineSpeechDenoiserEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid OfflineSpeechDenoiser handle: $handle")
+-      val floatSamples = FloatArray(samples.size) { samples[it].toFloat() }
+-      val result = denoiser.run(floatSamples, sampleRate)
+-      mapOf(
+-        "samples" to result.samples.map { it.toDouble() },
+-        "sampleRate" to result.sampleRate,
+-      )
+-    }
+-
+-    AsyncFunction("offlineSpeechDenoiserRunFromFile") { handle: Int, filePath: String ->
+-      val denoiser = offlineSpeechDenoiserEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid OfflineSpeechDenoiser handle: $handle")
+-      Log.i(TAG, "=== offlineSpeechDenoiserRunFromFile START ===")
+-      val waveData = WaveReader.readWave(filePath)
+-      val result = denoiser.run(waveData.samples, waveData.sampleRate)
+-      Log.i(TAG, "=== offlineSpeechDenoiserRunFromFile DONE ${result.samples.size} samples ===")
+-      mapOf(
+-        "samples" to result.samples.map { it.toDouble() },
+-        "sampleRate" to result.sampleRate,
+-      )
+-    }
+-
+-    AsyncFunction("offlineSpeechDenoiserSaveToFile") { handle: Int, inputPath: String, outputPath: String ->
+-      val denoiser = offlineSpeechDenoiserEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid OfflineSpeechDenoiser handle: $handle")
+-      Log.i(TAG, "=== offlineSpeechDenoiserSaveToFile START ===")
+-      val waveData = WaveReader.readWave(inputPath)
+-      val result = denoiser.run(waveData.samples, waveData.sampleRate)
+-      val saved = result.save(outputPath)
+-      Log.i(TAG, "=== offlineSpeechDenoiserSaveToFile DONE saved=$saved ===")
+-      mapOf(
+-        "outputPath" to outputPath,
+-        "sampleRate" to result.sampleRate,
+-      )
+-    }
+-
+-    AsyncFunction("destroyOfflineSpeechDenoiser") { handle: Int ->
+-      Log.i(TAG, "=== destroyOfflineSpeechDenoiser handle=$handle ===")
+-      val denoiser = offlineSpeechDenoiserEngines.remove(handle)
+-      if (denoiser != null) {
+-        try { denoiser.release() } catch (e: Exception) {
+-          Log.e(TAG, "  OfflineSpeechDenoiser release() threw: ${e.message}", e)
+-        }
+-      }
+-    }
+-
+-    @Suppress("UNCHECKED_CAST")
+-    AsyncFunction("createOnlineSpeechDenoiser") { config: Map<String, Any?> ->
+-      val modelMap = config["model"] as? Map<String, Any?> ?: emptyMap()
+-      val gtcrnMap = modelMap["gtcrn"] as? Map<String, Any?> ?: emptyMap()
+-      val dpdfnetMap = modelMap["dpdfnet"] as? Map<String, Any?> ?: emptyMap()
+-      val denoiserConfig = OnlineSpeechDenoiserConfig(
+-        model = OfflineSpeechDenoiserModelConfig(
+-          gtcrn = OfflineSpeechDenoiserGtcrnModelConfig(
+-            model = gtcrnMap["model"] as? String ?: "",
+-          ),
+-          dpdfnet = OfflineSpeechDenoiserDpdfNetModelConfig(
+-            model = dpdfnetMap["model"] as? String ?: "",
+-          ),
+-          numThreads = (modelMap["numThreads"] as? Number)?.toInt() ?: 1,
+-          debug = modelMap["debug"] as? Boolean ?: false,
+-          provider = modelMap["provider"] as? String ?: "cpu",
+-        ),
+-      )
+-      Log.i(TAG, "=== createOnlineSpeechDenoiser START ===")
+-      val denoiser = try {
+-        OnlineSpeechDenoiser(config = denoiserConfig)
+-      } catch (e: Exception) {
+-        Log.e(TAG, "  OnlineSpeechDenoiser constructor threw: ${e.message}", e)
+-        throw Exception("Native OnlineSpeechDenoiser creation failed: ${e.message}")
+-      }
+-      val handle = handleCounter.incrementAndGet()
+-      onlineSpeechDenoiserEngines[handle] = denoiser
+-      Log.i(TAG, "=== createOnlineSpeechDenoiser DONE handle=$handle sampleRate=${denoiser.sampleRate} ===")
+-      handle
+-    }
+-
+-    AsyncFunction("onlineSpeechDenoiserRun") { handle: Int, samples: List<Double>, sampleRate: Int ->
+-      val denoiser = onlineSpeechDenoiserEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid OnlineSpeechDenoiser handle: $handle")
+-      val floatSamples = FloatArray(samples.size) { samples[it].toFloat() }
+-      val result = denoiser.run(floatSamples, sampleRate)
+-      mapOf(
+-        "samples" to result.samples.map { it.toDouble() },
+-        "sampleRate" to result.sampleRate,
+-      )
+-    }
+-
+-    AsyncFunction("onlineSpeechDenoiserFlush") { handle: Int ->
+-      val denoiser = onlineSpeechDenoiserEngines[handle]
+-        ?: throw IllegalArgumentException("Invalid OnlineSpeechDenoiser handle: $handle")
+-      val result = denoiser.flush()
+-      mapOf(
+-        "samples" to result.samples.map { it.toDouble() },
+-        "sampleRate" to result.sampleRate,
+-      )
+-    }
+-
+-    AsyncFunction("destroyOnlineSpeechDenoiser") { handle: Int ->
+-      Log.i(TAG, "=== destroyOnlineSpeechDenoiser handle=$handle ===")
+-      val denoiser = onlineSpeechDenoiserEngines.remove(handle)
+-      if (denoiser != null) {
+-        try { denoiser.release() } catch (e: Exception) {
+-          Log.e(TAG, "  OnlineSpeechDenoiser release() threw: ${e.message}", e)
+-        }
+-      }
+-    }
+-
+-    // =========================================================================
+-    // Streaming Pipeline
+-    // =========================================================================
+-
+-    @Suppress("UNCHECKED_CAST")
+-    AsyncFunction("createStreamingPipeline") { config: Map<String, Any?> ->
+-      val asrConfig = config["asr"] as? Map<String, Any?> ?: emptyMap()
+-      val recognizerConfig = buildOnlineRecognizerConfig(asrConfig)
+-      val recognizer = OnlineRecognizer(null, recognizerConfig)
+-      if (!recognizer.isValid) {
+-        throw Exception("Failed to create pipeline ASR recognizer.")
+-      }
+-
+-      var denoiser: OnlineSpeechDenoiser? = null
+-      val denoiserMap = config["denoiser"] as? Map<String, Any?>
+-      if (denoiserMap != null) {
+-        val modelMap = denoiserMap["model"] as? Map<String, Any?> ?: emptyMap()
+-        val gtcrnMap = modelMap["gtcrn"] as? Map<String, Any?> ?: emptyMap()
+-        val dpdfnetMap = modelMap["dpdfnet"] as? Map<String, Any?> ?: emptyMap()
+-        val denoiserCfg = OnlineSpeechDenoiserConfig(
+-          model = OfflineSpeechDenoiserModelConfig(
+-            gtcrn = OfflineSpeechDenoiserGtcrnModelConfig(model = gtcrnMap["model"] as? String ?: ""),
+-            dpdfnet = OfflineSpeechDenoiserDpdfNetModelConfig(model = dpdfnetMap["model"] as? String ?: ""),
+-            numThreads = (modelMap["numThreads"] as? Number)?.toInt() ?: 1,
+-            debug = modelMap["debug"] as? Boolean ?: false,
+-            provider = modelMap["provider"] as? String ?: "cpu",
+-          ),
+-        )
+-        denoiser = OnlineSpeechDenoiser(config = denoiserCfg)
+-      }
+-
+-      var punctuator: OnlinePunctuation? = null
+-      val punctMap = config["punctuator"] as? Map<String, Any?>
+-      if (punctMap != null) {
+-        val modelMap = punctMap["model"] as? Map<String, Any?> ?: emptyMap()
+-        val cnnBilstm = modelMap["cnnBilstm"] as? String ?: ""
+-        val bpeVocab = modelMap["bpeVocab"] as? String ?: ""
+-        requireFile(cnnBilstm, "pipeline punctuator cnnBilstm model")
+-        requireFile(bpeVocab, "pipeline punctuator bpeVocab")
+-        val punctCfg = OnlinePunctuationConfig(
+-          model = OnlinePunctuationModelConfig(
+-            cnnBilstm = cnnBilstm,
+-            bpeVocab = bpeVocab,
+-            numThreads = (modelMap["numThreads"] as? Number)?.toInt() ?: 1,
+-            debug = modelMap["debug"] as? Boolean ?: false,
+-            provider = modelMap["provider"] as? String ?: "cpu",
+-          ),
+-        )
+-        punctuator = OnlinePunctuation(config = punctCfg)
+-      }
+-
+-      val handle = handleCounter.incrementAndGet()
+-      val pipeline = StreamingPipeline(handle, denoiser, recognizer, punctuator)
+-      pipeline.listener = pipelineListener
+-      streamingPipelines[handle] = pipeline
+-      handle
+-    }
+-
+-    AsyncFunction("startStreamingPipeline") { handle: Int ->
+-      val pipeline = streamingPipelines[handle]
+-        ?: throw IllegalArgumentException("Invalid StreamingPipeline handle: $handle")
+-      val ctx = appContext.reactContext ?: throw Exception("No react context available")
+-      pipeline.start(ctx)
+-    }
+-
+-    AsyncFunction("stopStreamingPipeline") { handle: Int ->
+-      val pipeline = streamingPipelines[handle]
+-        ?: throw IllegalArgumentException("Invalid StreamingPipeline handle: $handle")
+-      val segments = pipeline.stop()
+-      mapOf("segments" to segments)
+-    }
+-
+-    AsyncFunction("destroyStreamingPipeline") { handle: Int ->
+-      val pipeline = streamingPipelines.remove(handle)
+-      pipeline?.destroy()
+-    }
+-
+-    // =========================================================================
+-    // File Utilities
+-    // =========================================================================
+-
+-    AsyncFunction("saveAudioToFile") { samples: List<Double>, sampleRate: Int, filePath: String ->
+-      Log.i(TAG, "=== saveAudioToFile START filePath=$filePath ===")
+-      val floatSamples = FloatArray(samples.size) { samples[it].toFloat() }
+-      val audio = DenoisedAudio(floatSamples, sampleRate)
+-      val saved = audio.save(filePath)
+-      Log.i(TAG, "=== saveAudioToFile DONE saved=$saved ===")
+-      saved
+-    }
+-
+-    AsyncFunction("shareAudioFile") { filePath: String, mimeType: String ->
+-      Log.i(TAG, "=== shareAudioFile START filePath=$filePath ===")
+-      val context = appContext.reactContext ?: throw IllegalStateException("React context not available")
+-      val file = File(filePath)
+-      if (!file.exists()) throw IllegalArgumentException("File not found: $filePath")
+-      val uri = androidx.core.content.FileProvider.getUriForFile(
+-        context,
+-        "${context.packageName}.fileprovider",
+-        file
+-      )
+-      val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+-        type = mimeType.ifBlank { "audio/wav" }
+-        putExtra(android.content.Intent.EXTRA_STREAM, uri)
+-        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+-        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+-      }
+-      context.startActivity(android.content.Intent.createChooser(intent, "Share Audio").apply {
+-        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+-      })
+-      Log.i(TAG, "=== shareAudioFile DONE ===")
+-    }
+-
+-    // =========================================================================
+-    // Download Manager Native Utilities
+-    // =========================================================================
+-
+     AsyncFunction("extractZip") { sourcePath: String, targetPath: String ->
+       Log.i(TAG, "=== extractZip START source=$sourcePath target=$targetPath ===")
+       val sourceFile = File(sourcePath)

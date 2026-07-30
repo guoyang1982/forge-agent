@@ -16,10 +16,10 @@
   },
   "dependencies": {
     "@forge/protocol": "workspace:*",
-    "better-sqlite3": "^11.8.1"
+    "better-sqlite3": "^13.0.2"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
+    "@types/better-sqlite3": "^7.6.13",
     "vitest": "^3.0.9"
   }
 }

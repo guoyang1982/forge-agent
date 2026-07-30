@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentEvent } from "@forge/protocol";
 import type { NetworkConfirmRequest, SoftwareConfirmRequest } from "@forge/tools";
+import { emitPermissionDismissedIfNeeded } from "./permission-dismiss.js";
 import { permissionService } from "./permission-service.js";
 
 export function createNetworkConfirmHandler(
@@ -23,6 +24,7 @@ export function createNetworkConfirmHandler(
       sessionId,
       signal,
     });
+    emitPermissionDismissedIfNeeded(emit, sessionId, id, decision);
     return decision.approved;
   };
 }
@@ -47,6 +49,7 @@ export function createSoftwareConfirmHandler(
       sessionId,
       signal,
     });
+    emitPermissionDismissedIfNeeded(emit, sessionId, id, decision);
     return decision.approved;
   };
 }
@@ -72,6 +75,7 @@ export function createCommandConfirmHandler(
       sessionId,
       signal,
     });
+    emitPermissionDismissedIfNeeded(emit, sessionId, id, decision);
     if (decision.approved && decision.remember) {
       permissionService.allowCommandsForSession(sessionId);
     }

@@ -26,6 +26,7 @@ export type RunUiEvent =
       summary: string;
       options: Array<{ optionId: string; name: string; allow: boolean }>;
     }
+  | { kind: "permission_dismissed"; requestId: string; sessionId?: string }
   | { kind: "done"; sessionId: string; finalText?: string }
   | { kind: "error"; message: string };
 
@@ -169,6 +170,14 @@ export function parseRunEvent(value: unknown): RunUiEvent | null {
             sessionId: typeof event.sessionId === "string" ? event.sessionId : undefined,
             summary: event.summary.slice(0, 300),
             options: parsePermissionOptions(event.options),
+          }
+        : null;
+    case "permission_dismissed":
+      return typeof event.id === "string"
+        ? {
+            kind: "permission_dismissed",
+            requestId: event.id,
+            sessionId: typeof event.sessionId === "string" ? event.sessionId : undefined,
           }
         : null;
     case "done":

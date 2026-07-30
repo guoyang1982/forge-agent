@@ -83,8 +83,10 @@ describe("Sessions and conversation UI contract", () => {
     expect(appSource).toContain("hideTabs=");
     expect(conversationSource).toContain("pickImagesFromLibrary");
     expect(conversationSource).toContain("pasteClipboardImage");
-    expect(conversationSource).toContain("startDictation");
-    expect(conversationSource).toContain("onPressIn");
+    expect(conversationSource).toContain("startSenseVoiceRecording");
+    expect(conversationSource).toContain("prepareSenseVoiceEngine");
+    expect(conversationSource).toContain("subscribeSenseVoiceLevels");
+    expect(conversationSource).toContain("toggleDictation");
     expect(conversationSource).toContain("朗读");
     expect(conversationSource).toContain("attachments");
     expect(conversationSource).toContain("attachProgress");
@@ -350,6 +352,14 @@ describe("Mobile shell design system contract", () => {
     expect(connectHost).toContain("client.close()");
     expect(connectHost).toContain("clearConnectionState(host.hostId)");
     expect(appSource).toContain("removedHostIds.current.delete(offer.hostId)");
+  });
+
+  it("keeps the relay socket alive while a conversation is open in the background", () => {
+    expect(appSource).toContain("conversationOpenRef");
+    expect(appSource).toContain("保留会话连接（避免相册/相机返回丢状态）");
+    expect(appSource).toContain("连接仍有效");
+    expect(appSource).toContain("needsReconnectRefresh");
+    expect(appSource).toContain("backgroundCloseTimerRef");
   });
 
   it("guards callbacks and resolved clients with per-host generations", () => {

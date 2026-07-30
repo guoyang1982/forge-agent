@@ -2,7 +2,14 @@ import * as Clipboard from "expo-clipboard";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
-import { EncodingType, readAsStringAsync, writeAsStringAsync, cacheDirectory } from "expo-file-system/legacy";
+import { Platform } from "react-native";
+import {
+  EncodingType,
+  copyAsync,
+  readAsStringAsync,
+  writeAsStringAsync,
+  cacheDirectory,
+} from "expo-file-system/legacy";
 import {
   estimateAttachmentChars,
   extensionOf,
@@ -33,16 +40,22 @@ export async function pickImagesFromLibrary(
   const room = MAX_PENDING_ATTACHMENTS - currentCount;
   if (room <= 0) throw new Error(`最多附带 ${MAX_PENDING_ATTACHMENTS} 个文件`);
   onProgress?.({ phase: "picking", label: "打开相册…", current: 0, total: 1 });
-  const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-  if (!permission.granted) throw new Error("需要相册权限才能选择图片");
+  // Android system photo picker does not need READ_MEDIA_*; forcing that permission
+  // blocks picking on devices where the user denied broad gallery access.
+  if (Platform.OS === "ios") {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) throw new Error("需要相册权限才能选择图片");
+  }
   const result = await ImagePicker.launchImageLibraryAsync({
     mediaTypes: ["images"],
     allowsMultipleSelection: true,
     selectionLimit: room,
     quality: 1,
+    exif: false,
   });
   if (result.canceled) return [];
-  const assets = result.assets.slice(0, room);
+  const assets = (result.assets ?? []).slice(0, room);
+  if (!assets.length) return [];
   const out: PendingAttachment[] = [];
   for (let index = 0; index < assets.length; index += 1) {
     const asset = assets[index]!;
@@ -147,12 +160,34 @@ async function encodeImageFromClipboardData(data: string): Promise<PendingAttach
   return encodeImageAsset(tempUri, `paste_${Date.now()}.jpg`);
 }
 
+async function ensureReadableImageUri(uri: string): Promise<string> {
+  if (uri.startsWith("file://") || uri.startsWith("/")) return uri;
+  const cacheRoot = cacheDirectory;
+  if (!cacheRoot) return uri;
+  const dest = `${cacheRoot}forge-pick-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+  try {
+    await copyAsync({ from: uri, to: dest });
+    return dest;
+  } catch {
+    // Fall back to original URI — ImageManipulator may still accept content://.
+    return uri;
+  }
+}
+
 async function encodeImageAsset(uri: string, name: string): Promise<PendingAttachment> {
-  const manipulated = await ImageManipulator.manipulateAsync(
-    uri,
-    [{ resize: { width: MAX_IMAGE_EDGE } }],
-    { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG, base64: true },
-  );
+  const localUri = await ensureReadableImageUri(uri);
+  let manipulated: ImageManipulator.ImageResult;
+  try {
+    manipulated = await ImageManipulator.manipulateAsync(
+      localUri,
+      [{ resize: { width: MAX_IMAGE_EDGE } }],
+      { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG, base64: true },
+    );
+  } catch (cause) {
+    throw new Error(
+      cause instanceof Error ? `图片处理失败：${cause.message}` : "图片处理失败",
+    );
+  }
   const base64 = manipulated.base64;
   if (!base64) throw new Error("图片编码失败");
   const dataUrl = `data:image/jpeg;base64,${base64}`;
@@ -164,7 +199,7 @@ async function encodeImageAsset(uri: string, name: string): Promise<PendingAttac
     kind: "image",
     name: ensureImageName(name),
     mimeType: "image/jpeg",
-    localUri: manipulated.uri || uri,
+    localUri: manipulated.uri || localUri,
     dataUrl,
   };
 }

@@ -48,15 +48,23 @@ import {
 import { toRpcAttachments, type PendingAttachment } from "../composer/attachment-types";
 import { extractMentionedPaths, formatMentionToken } from "../composer/mentions";
 import {
-  abortDictation,
-  isSpeechRecognitionAvailable,
   speakText,
-  startDictation,
-  stopDictation,
   stopSpeaking,
   textForSpeech,
-  useSpeechRecognitionEvent,
 } from "../voice/speech";
+import {
+  cancelSenseVoiceRecording,
+  prepareSenseVoiceEngine,
+  SENSEVOICE_WAVE_BARS,
+  startSenseVoiceRecording,
+  stopSenseVoiceRecordingAndTranscribe,
+  subscribeSenseVoiceLevels,
+} from "../voice/sensevoice-dictation";
+import {
+  formatSenseVoiceSizeHint,
+  isSenseVoiceReady,
+  subscribeSenseVoiceModel,
+} from "../voice/sensevoice-model";
 import {
   clearComposerDraft,
   loadComposerDraft,
@@ -171,12 +179,18 @@ export function ConversationScreen(props: {
   const [mentionLoading, setMentionLoading] = useState(false);
   const [dictating, setDictating] = useState(false);
   const [dictationPreview, setDictationPreview] = useState("");
+  const [voiceWave, setVoiceWave] = useState<number[]>(() =>
+    Array.from({ length: SENSEVOICE_WAVE_BARS }, () => 0.08),
+  );
   const [attachProgress, setAttachProgress] = useState<string | null>(null);
+  const [modelProgress, setModelProgress] = useState<string | null>(null);
   const [sendProgress, setSendProgress] = useState<string | null>(null);
   const [retryHint, setRetryHint] = useState<string | null>(null);
   const [speakingKey, setSpeakingKey] = useState<string | null>(null);
   const dictationBaseRef = useRef("");
-  const dictationHoldRef = useRef(false);
+  const dictationBusyRef = useRef(false);
+  const pendingAttachTaskRef = useRef<(() => Promise<PendingAttachment[] | PendingAttachment | null>) | null>(null);
+  const attachLaunchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const draftHydratedRef = useRef(false);
   const [running, setRunning] = useState(
     Boolean(props.runningSessionId && props.sessionId && props.runningSessionId === props.sessionId),
@@ -216,35 +230,38 @@ export function ConversationScreen(props: {
   } | null>(null);
   const keyboardLift = useKeyboardLift();
 
-  useSpeechRecognitionEvent("result", (event) => {
-    const transcript = event.results?.[0]?.transcript?.trim();
-    if (!transcript) return;
-    if (event.isFinal) {
-      const base = dictationBaseRef.current.trim();
-      const next = base ? `${base} ${transcript}` : transcript;
-      setPrompt(next);
-      dictationBaseRef.current = next;
-      setDictationPreview("");
+  useEffect(() => {
+    return subscribeSenseVoiceModel((state) => {
+      if (state.status === "DOWNLOADING") {
+        setModelProgress(`下载语音模型 ${Math.round(state.progress?.percent ?? 0)}%…`);
+        return;
+      }
+      if (state.status === "EXTRACTING") {
+        setModelProgress("解压语音模型…");
+        return;
+      }
+      if (state.status === "READY" || state.status === "MISSING") {
+        setModelProgress(null);
+        return;
+      }
+      if (state.status === "ERROR") {
+        setModelProgress(null);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!dictating) {
+      setVoiceWave(Array.from({ length: SENSEVOICE_WAVE_BARS }, () => 0.08));
       return;
     }
-    setDictationPreview(transcript);
-  });
-  useSpeechRecognitionEvent("end", () => {
-    setDictating(false);
-    setDictationPreview("");
-    dictationHoldRef.current = false;
-  });
-  useSpeechRecognitionEvent("error", (event) => {
-    setDictating(false);
-    setDictationPreview("");
-    dictationHoldRef.current = false;
-    if (event.error === "aborted" || event.error === "no-speech") return;
-    Alert.alert("听写失败", event.message || "请检查麦克风权限，或稍后重试");
-  });
+    // Live mic levels from SenseVoice recording analysis (not a fake animation).
+    return subscribeSenseVoiceLevels(setVoiceWave);
+  }, [dictating]);
 
   useEffect(() => {
     return () => {
-      abortDictation();
+      void cancelSenseVoiceRecording();
       stopSpeaking();
     };
   }, []);
@@ -256,7 +273,7 @@ export function ConversationScreen(props: {
       if (cancelled || seen) return;
       Alert.alert(
         "会话小提示",
-        "可以附加图片/文件，用 @ 提及工作区文件，按住麦克风说话转文字，助手回复可点「朗读」。",
+        "可以附加图片/文件，用 @ 提及工作区文件，点麦克风离线听写（首次需下载模型），助手回复可点「朗读」。",
         [{ text: "知道了", onPress: () => void saveComposerTipsSeen(true) }],
       );
     })();
@@ -979,6 +996,10 @@ export function ConversationScreen(props: {
     try {
       const result = await task();
       if (!result) return;
+      if (Array.isArray(result) && result.length === 0) {
+        Alert.alert("未添加附件", "你还没有选择文件或图片。");
+        return;
+      }
       addAttachments(Array.isArray(result) ? result : [result]);
     } catch (cause) {
       Alert.alert("添加失败", cause instanceof Error ? cause.message : "无法添加附件");
@@ -989,40 +1010,85 @@ export function ConversationScreen(props: {
 
   /** Android ImagePicker/Camera often no-ops if launched while a Modal is still dismissing. */
   const queueAttachTask = (task: () => Promise<PendingAttachment[] | PendingAttachment | null>) => {
+    pendingAttachTaskRef.current = task;
     setAttachSheetOpen(false);
-    setTimeout(() => {
-      void runAttachTask(task);
-    }, Platform.OS === "android" ? 400 : 50);
+    if (attachLaunchTimerRef.current) clearTimeout(attachLaunchTimerRef.current);
+    attachLaunchTimerRef.current = setTimeout(() => {
+      attachLaunchTimerRef.current = null;
+      const next = pendingAttachTaskRef.current;
+      pendingAttachTaskRef.current = null;
+      if (next) void runAttachTask(next);
+    }, Platform.OS === "android" ? 700 : 80);
+  };
+
+  const startSenseVoiceSession = async () => {
+    if (dictating || running || dictationBusyRef.current) return;
+    dictationBusyRef.current = true;
+    try {
+      dictationBaseRef.current = prompt;
+      setDictationPreview("");
+      setModelProgress("准备语音模型…");
+      await prepareSenseVoiceEngine((percent, status) => {
+        setModelProgress(`${status} ${percent}%`);
+      });
+      setModelProgress(null);
+      setDictating(true);
+      setDictationPreview("听写中，点话筒结束");
+      await startSenseVoiceRecording();
+    } catch (cause) {
+      setDictating(false);
+      setDictationPreview("");
+      setModelProgress(null);
+      Alert.alert("无法听写", cause instanceof Error ? cause.message : "请检查麦克风权限");
+    } finally {
+      dictationBusyRef.current = false;
+    }
   };
 
   const beginDictation = async () => {
-    if (dictating || running || !connected) return;
-    if (!isSpeechRecognitionAvailable()) {
-      Alert.alert("无法听写", "当前安装包未启用语音识别，请更新到最新版 App");
+    if (dictating || running || dictationBusyRef.current) return;
+    const ready = await isSenseVoiceReady();
+    if (ready) {
+      await startSenseVoiceSession();
       return;
     }
-    try {
-      dictationBaseRef.current = prompt;
-      dictationHoldRef.current = true;
-      setDictationPreview("");
-      setDictating(true);
-      await startDictation({ lang: "zh-CN", continuous: true });
-    } catch (cause) {
-      setDictating(false);
-      dictationHoldRef.current = false;
-      Alert.alert("无法听写", cause instanceof Error ? cause.message : "请检查麦克风权限");
-    }
+    Alert.alert(
+      "下载离线语音模型",
+      `首次听写需要下载 SenseVoice 模型（${formatSenseVoiceSizeHint()}）。下载后可离线使用，无需 Google 语音服务。`,
+      [
+        { text: "取消", style: "cancel" },
+        { text: "开始下载", onPress: () => void startSenseVoiceSession() },
+      ],
+    );
   };
 
-  const endDictation = () => {
-    if (!dictating && !dictationHoldRef.current) return;
-    dictationHoldRef.current = false;
-    stopDictation();
+  const endDictation = async () => {
+    if (!dictating || dictationBusyRef.current) return;
+    dictationBusyRef.current = true;
     setDictating(false);
+    setDictationPreview("识别中…");
+    setModelProgress("识别中…");
+    try {
+      const transcript = await stopSenseVoiceRecordingAndTranscribe();
+      if (transcript) {
+        const base = dictationBaseRef.current.trim();
+        const next = base ? `${base} ${transcript}` : transcript;
+        setPrompt(next);
+        dictationBaseRef.current = next;
+      } else {
+        Alert.alert("未识别到语音", "没有听清内容，请靠近麦克风再说一次");
+      }
+    } catch (cause) {
+      Alert.alert("听写失败", cause instanceof Error ? cause.message : "识别失败，请重试");
+    } finally {
+      setDictationPreview("");
+      setModelProgress(null);
+      dictationBusyRef.current = false;
+    }
   };
 
   const toggleDictation = () => {
-    if (dictating) endDictation();
+    if (dictating) void endDictation();
     else void beginDictation();
   };
 
@@ -1552,21 +1618,91 @@ export function ConversationScreen(props: {
           />
         </ScrollView>
 
-        {(attachProgress || sendProgress || dictating) ? (
+        {(attachProgress || sendProgress || modelProgress || dictating) ? (
           <View style={styles.progressBanner}>
-            {attachProgress || sendProgress ? (
-              <Text style={styles.progressBannerText}>{attachProgress || sendProgress}</Text>
+            {attachProgress || sendProgress || modelProgress ? (
+              <Text style={styles.progressBannerText}>
+                {attachProgress || sendProgress || modelProgress}
+              </Text>
             ) : null}
             {dictating ? (
-              <Text style={styles.progressBannerText} numberOfLines={2}>
-                {dictationPreview
-                  ? `听写中：${dictationPreview}`
-                  : "听写中，点话筒结束"}
-              </Text>
+              <View style={styles.waveWrap}>
+                <View style={styles.waveRow}>
+                  {voiceWave.map((level, index) => (
+                    <View
+                      // eslint-disable-next-line react/no-array-index-key
+                      key={`wave:${index}`}
+                      style={[styles.waveBar, { height: 4 + Math.round(level * 16) }]}
+                    />
+                  ))}
+                </View>
+                <Text style={styles.progressBannerText} numberOfLines={2}>
+                  {dictationPreview || "听写中，点话筒结束"}
+                </Text>
+              </View>
             ) : null}
           </View>
         ) : null}
 
+        <View style={styles.composerColumn}>
+          <TextInput
+            style={styles.input}
+            value={prompt}
+            onChangeText={setPrompt}
+            placeholder={COMPOSER_PLACEHOLDER}
+            placeholderTextColor={colors.textMuted}
+            multiline
+            textAlignVertical="top"
+            editable={!running}
+          />
+          <View style={styles.composerToolbar}>
+            <View style={styles.composerTools}>
+              <Pressable
+                style={[styles.iconSquare, (running || Boolean(attachProgress)) ? styles.disabled : null]}
+                disabled={running || Boolean(attachProgress)}
+                onPress={() => setAttachSheetOpen(true)}
+                accessibilityLabel="添加附件"
+              >
+                <Text style={styles.iconGlyph}>＋</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.iconSquare, (!connected || running) ? styles.disabled : null]}
+                disabled={!connected || running}
+                onPress={() => void openMentionPicker()}
+                accessibilityLabel="提及工作区文件"
+              >
+                <Text style={styles.iconGlyph}>@</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.iconSquare,
+                  dictating ? styles.iconSquareActive : null,
+                  running ? styles.disabled : null,
+                ]}
+                disabled={running}
+                onPress={toggleDictation}
+                accessibilityLabel={dictating ? "结束语音输入" : "开始语音输入"}
+                accessibilityHint="点按开始或结束听写"
+              >
+                <Text style={styles.iconGlyph}>{dictating ? "■" : "🎤"}</Text>
+              </Pressable>
+            </View>
+            {running ? (
+              <Pressable style={styles.stopSquare} onPress={() => void cancelRun()} accessibilityLabel="停止">
+                <View style={styles.stopSquareInner} />
+              </Pressable>
+            ) : (
+              <Pressable
+                style={[styles.sendSquare, (!canSend || Boolean(attachProgress)) ? styles.disabled : null]}
+                disabled={!canSend || Boolean(attachProgress)}
+                onPress={() => void startRun(!session?.id)}
+                accessibilityLabel="发送"
+              >
+                <Text style={styles.sendGlyph}>✈</Text>
+              </Pressable>
+            )}
+          </View>
+        </View>
         {mentionedFiles.length ? (
           <ScrollView
             horizontal
@@ -1609,66 +1745,6 @@ export function ConversationScreen(props: {
             ))}
           </ScrollView>
         ) : null}
-
-        <View style={styles.composerColumn}>
-          <TextInput
-            style={styles.input}
-            value={prompt}
-            onChangeText={setPrompt}
-            placeholder={COMPOSER_PLACEHOLDER}
-            placeholderTextColor={colors.textMuted}
-            multiline
-            textAlignVertical="top"
-            editable={!running && connected}
-          />
-          <View style={styles.composerToolbar}>
-            <View style={styles.composerTools}>
-              <Pressable
-                style={[styles.iconSquare, (!connected || running || Boolean(attachProgress)) ? styles.disabled : null]}
-                disabled={!connected || running || Boolean(attachProgress)}
-                onPress={() => setAttachSheetOpen(true)}
-                accessibilityLabel="添加附件"
-              >
-                <Text style={styles.iconGlyph}>＋</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.iconSquare, (!connected || running) ? styles.disabled : null]}
-                disabled={!connected || running}
-                onPress={() => void openMentionPicker()}
-                accessibilityLabel="提及工作区文件"
-              >
-                <Text style={styles.iconGlyph}>@</Text>
-              </Pressable>
-              <Pressable
-                style={[
-                  styles.iconSquare,
-                  dictating ? styles.iconSquareActive : null,
-                  (!connected || running) ? styles.disabled : null,
-                ]}
-                disabled={!connected || running}
-                onPress={toggleDictation}
-                accessibilityLabel={dictating ? "结束语音输入" : "开始语音输入"}
-                accessibilityHint="点按开始或结束听写"
-              >
-                <Text style={styles.iconGlyph}>{dictating ? "■" : "🎤"}</Text>
-              </Pressable>
-            </View>
-            {running ? (
-              <Pressable style={styles.stopSquare} onPress={() => void cancelRun()} accessibilityLabel="停止">
-                <View style={styles.stopSquareInner} />
-              </Pressable>
-            ) : (
-              <Pressable
-                style={[styles.sendSquare, (!canSend || Boolean(attachProgress)) ? styles.disabled : null]}
-                disabled={!canSend || Boolean(attachProgress)}
-                onPress={() => void startRun(!session?.id)}
-                accessibilityLabel="发送"
-              >
-                <Text style={styles.sendGlyph}>✈</Text>
-              </Pressable>
-            )}
-          </View>
-        </View>
       </View>
 
       <Modal
@@ -1773,7 +1849,7 @@ export function ConversationScreen(props: {
 
       <Modal visible={attachSheetOpen} transparent animationType="fade" onRequestClose={() => setAttachSheetOpen(false)}>
         <View style={styles.modalBackdrop}>
-          <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setAttachSheetOpen(false)} />
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setAttachSheetOpen(false)} />
           <View style={styles.modalSheet}>
             <Text style={styles.modalTitle}>添加附件</Text>
             <Pressable
@@ -2162,6 +2238,23 @@ const useStyles = makeStyles((colors) => ({
     paddingVertical: spacing.sm,
     marginBottom: spacing.sm,
     gap: 4,
+  },
+  waveWrap: {
+    width: "100%",
+    gap: spacing.xs,
+  },
+  waveRow: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    minHeight: 24,
+  },
+  waveBar: {
+    flex: 1,
+    borderRadius: radii.pill,
+    backgroundColor: colors.brand,
+    opacity: 0.9,
   },
   progressBannerText: { color: colors.textSecondary, fontSize: 12, fontWeight: "600" },
   retryBanner: {
