@@ -41,5 +41,10 @@
     "@types/node": "^22.13.10",
     "qrcode": "^1.5.4",
     "typescript": "^5.8.3"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "expo-sherpa-onnx@0.0.8": "patches/expo-sherpa-onnx@0.0.8.patch"
+    }
   }
 }

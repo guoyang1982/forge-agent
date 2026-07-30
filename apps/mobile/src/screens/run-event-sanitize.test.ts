@@ -137,6 +137,18 @@ describe("Mobile run event sanitization", () => {
       summary: "允许执行命令？",
       options: [{ optionId: "allow_once", name: "允许一次", allow: true }],
     });
+    expect(
+      parseRunEvent({
+        type: "permission_dismissed",
+        id: "permission_01",
+        sessionId: "session_01",
+        reason: "timeout",
+      }),
+    ).toEqual({
+      kind: "permission_dismissed",
+      requestId: "permission_01",
+      sessionId: "session_01",
+    });
   });
 
   it("maps Codex approval options onto the sticky permission card", () => {

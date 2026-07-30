@@ -2,7 +2,7 @@
   "expo": {
     "name": "Forge",
     "slug": "forge-mobile",
-    "version": "0.2.5",
+    "version": "0.2.12",
     "orientation": "portrait",
     "icon": "./assets/forge-icon.png",
     "scheme": "forge",
@@ -14,13 +14,12 @@
       "infoPlist": {
         "NSCameraUsageDescription": "扫描配对二维码，或为会话拍照附加图片。",
         "NSPhotoLibraryUsageDescription": "从相册选择图片附加到会话。",
-        "NSMicrophoneUsageDescription": "语音输入：将说话内容转为文字填入输入框。",
-        "NSSpeechRecognitionUsageDescription": "将语音识别为文字，方便快速输入需求。"
+        "NSMicrophoneUsageDescription": "语音输入：将说话内容转为文字填入输入框。"
       }
     },
     "android": {
       "package": "dev.forge.mobile",
-      "versionCode": 8,
+      "versionCode": 15,
       "permissions": [
         "CAMERA",
         "android.permission.CAMERA",
@@ -49,10 +48,9 @@
         }
       ],
       [
-        "expo-speech-recognition",
+        "@siteed/audio-studio",
         {
-          "microphonePermission": "语音输入需要麦克风权限。",
-          "speechRecognitionPermission": "将语音转为文字填入输入框。"
+          "microphonePermission": "语音输入需要麦克风权限。"
         }
       ],
       [

@@ -164,13 +164,37 @@ function clearNetworkPermissionBanner() {
   renderNetworkPermissionBanner();
 }
 
+/** Drop pending permission cards for one session (or all if sessionId omitted). */
+function clearNetworkPermissionsForSession(sessionId) {
+  if (!sessionId) {
+    clearNetworkPermissionBanner();
+    return;
+  }
+  let changed = false;
+  for (const [id, ev] of [...state.pendingNetworkPermissions.entries()]) {
+    if (!ev?.sessionId || ev.sessionId === sessionId) {
+      state.pendingNetworkPermissions.delete(id);
+      changed = true;
+    }
+  }
+  if (changed) renderNetworkPermissionBanner();
+}
+
+function dismissNetworkPermission(id) {
+  if (!id || !state.pendingNetworkPermissions.has(id)) return;
+  state.pendingNetworkPermissions.delete(id);
+  renderNetworkPermissionBanner();
+}
+
 async function respondAcpPermission(id, optionId) {
   if (!id || !optionId || !state.pendingNetworkPermissions.has(id)) return;
   const ev = state.pendingNetworkPermissions.get(id);
   try {
     const res = await requireBridge().respondPermission({ id, optionId });
     if (res?.ok === false) {
-      notifyUser("权限响应未被 Daemon 接受（可能已超时）", "warn");
+      notifyUser("授权已失效（超时或任务已结束），请重新触发需要授权的操作", "warn");
+      dismissNetworkPermission(id);
+      return;
     }
   } catch (e) {
     notifyUser(`发送权限响应失败: ${String(e)}`, "err");
@@ -189,7 +213,9 @@ async function respondNetworkPermission(id, approved, remember = false) {
   try {
     const res = await requireBridge().respondPermission({ id, approved, remember });
     if (res?.ok === false) {
-      notifyUser("权限响应未被 Daemon 接受（可能已超时）", "warn");
+      notifyUser("授权已失效（超时或任务已结束），请重新触发需要授权的操作", "warn");
+      dismissNetworkPermission(id);
+      return;
     }
   } catch (e) {
     notifyUser(`发送权限响应失败: ${String(e)}`, "err");
@@ -2702,11 +2728,20 @@ function timelineHasPromptText(label) {
   return false;
 }
 
-function renderUserPromptOnce(preview) {
+function renderUserPromptOnce(preview, imageUrls = []) {
   const label = formatUserPromptForDisplay(preview);
   const text = label || preview;
-  if (!text || timelineHasPromptText(text)) return;
-  pushEvent(`开始执行: ${text}`);
+  if (!text || timelineHasPromptText(text)) {
+    if (imageUrls.length) {
+      const mount = getTimelineMount();
+      const prompts = mount?.querySelectorAll?.(":scope > .event.user-prompt");
+      const last = prompts?.[prompts.length - 1];
+      appendPromptImageGallery(last, imageUrls);
+    }
+    return;
+  }
+  const line = pushEvent(`开始执行: ${text}`);
+  appendPromptImageGallery(line, imageUrls);
 }
 
 function normalizeRuntimeProvider(runtime) {
@@ -8206,15 +8241,35 @@ function formatUserPromptForDisplay(text) {
   return stripped || t;
 }
 
+/** Collect displayable image URLs from multimodal user message content. */
+function imageUrlsFromUserContent(content) {
+  if (!Array.isArray(content)) return [];
+  const urls = [];
+  for (const part of content) {
+    if (part?.type !== "image_url") continue;
+    const url =
+      typeof part.image_url === "string"
+        ? part.image_url
+        : part.image_url?.url;
+    if (typeof url !== "string" || !url) continue;
+    // Mobile history relay may replace payloads with about:blank placeholders.
+    if (url.startsWith("about:")) continue;
+    urls.push(url);
+  }
+  return urls;
+}
 
-function plainUserContent(content) {
+function plainUserContent(content, options = {}) {
+  const includeImagePlaceholders = options.includeImagePlaceholders !== false;
   if (content == null) return "";
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content
       .map((p) => {
         if (p.type === "text") return p.text ?? "";
-        if (p.type === "image_url") return "🖼️ [图片]";
+        if (p.type === "image_url") {
+          return includeImagePlaceholders ? "🖼️ [图片]" : "";
+        }
         return "";
       })
       .filter(Boolean)
@@ -8222,6 +8277,69 @@ function plainUserContent(content) {
       .trim();
   }
   return String(content);
+}
+
+/** In-app lightbox — Electron blanks data: URLs opened via window.open. */
+function closePromptImageLightbox() {
+  const overlay = document.getElementById("promptImageLightbox");
+  if (!overlay) return;
+  overlay.classList.add("hidden");
+  const img = overlay.querySelector("img");
+  if (img) img.removeAttribute("src");
+}
+
+function openPromptImageLightbox(url) {
+  if (!url) return;
+  let overlay = document.getElementById("promptImageLightbox");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "promptImageLightbox";
+    overlay.className = "prompt-image-lightbox hidden";
+    overlay.innerHTML = `
+      <div class="prompt-image-lightbox-mask" data-close="1"></div>
+      <figure class="prompt-image-lightbox-frame">
+        <button type="button" class="prompt-image-lightbox-close" data-close="1" aria-label="关闭">×</button>
+        <img alt="附件图片" />
+      </figure>
+    `;
+    overlay.addEventListener("click", (event) => {
+      if (event.target?.closest?.("[data-close='1']") || event.target === overlay) {
+        closePromptImageLightbox();
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closePromptImageLightbox();
+    });
+    document.body.appendChild(overlay);
+  }
+  const img = overlay.querySelector("img");
+  if (img) img.src = url;
+  overlay.classList.remove("hidden");
+}
+
+/** Attach image thumbnails under a user-prompt timeline row. */
+function appendPromptImageGallery(promptLine, urls) {
+  if (!promptLine || !urls?.length) return;
+  if (promptLine.querySelector(".user-prompt-images")) return;
+  const gallery = document.createElement("div");
+  gallery.className = "user-prompt-images";
+  for (const url of urls) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "user-prompt-image-btn";
+    btn.title = "查看大图";
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = "附件图片";
+    img.loading = "lazy";
+    btn.appendChild(img);
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openPromptImageLightbox(url);
+    });
+    gallery.appendChild(btn);
+  }
+  promptLine.appendChild(gallery);
 }
 
 function composerAttachmentId() {
@@ -10278,8 +10396,11 @@ function renderRestoredSession(sessionId, messages, checkpoints = [], dispatchPl
       if (timelineState) timelineState.activeRunEntry = null;
     }
 
+    const imageUrls = imageUrlsFromUserContent(turn.user?.content);
     const rawUser =
-      plainUserContent(turn.user?.content).trim() ||
+      plainUserContent(turn.user?.content, {
+        includeImagePlaceholders: imageUrls.length === 0,
+      }).trim() ||
       (!turn.user && turns.length === 1
         ? formatUserPromptForDisplay(sessionPreviewForRestore(sid))
         : "");
@@ -10289,12 +10410,15 @@ function renderRestoredSession(sessionId, messages, checkpoints = [], dispatchPl
     }
 
     const userText = formatUserPromptForDisplay(rawUser);
-    if (userText) {
+    if (userText || imageUrls.length) {
       const isSummary = rawUser.startsWith("Conversation summary");
       const promptLine = pushEvent(
-        isSummary ? "会话摘要（已压缩历史）" : `开始执行: ${userText}`,
+        isSummary
+          ? "会话摘要（已压缩历史）"
+          : `开始执行: ${userText || "（图片附件）"}`,
       );
       if (!isSummary) {
+        appendPromptImageGallery(promptLine, imageUrls);
         const sha = checkpointByTurn.get(userTurnOrdinal);
         if (sha) decoratePromptWithCheckpoint(promptLine, sha, userTurnOrdinal);
         applyRestoredDispatchPlan(turnState, userTurnOrdinal, dispatchByTurn);
@@ -10428,8 +10552,12 @@ function renderPersistedSessionEvents(sessionId, records) {
       if (event.type === "done") {
         flushStreamText();
         clearLiveStatusLine();
-        clearNetworkPermissionBanner();
+        clearNetworkPermissionsForSession(sessionId);
         renderRunConclusion(event.finalText || "", sessionId);
+        continue;
+      }
+      // Historical permission prompts are not live waiters — never re-arm the banner.
+      if (event.type === "permission_request" || event.type === "permission_dismissed") {
         continue;
       }
       handleLiveAgentEvent({ ...event, sessionId });
@@ -10445,6 +10573,20 @@ function renderPersistedSessionEvents(sessionId, records) {
   } finally {
     state.eventRouteSessionId = previousRoute;
     state.liveRunSessionId = previousLive;
+  }
+}
+
+/** After any restore path, attach stored image_url thumbs onto user-prompt rows. */
+function hydratePromptImagesFromMessages(messages) {
+  const mount = getTimelineMount() || $("timeline");
+  if (!mount || !Array.isArray(messages) || !messages.length) return;
+  const prompts = [...mount.querySelectorAll(":scope > .event.user-prompt")];
+  if (!prompts.length) return;
+  const turns = turnsWithDedupedPrompts(messages).filter((turn) => turn.user);
+  const count = Math.min(prompts.length, turns.length);
+  for (let i = 0; i < count; i += 1) {
+    const urls = imageUrlsFromUserContent(turns[i].user.content);
+    if (urls.length) appendPromptImageGallery(prompts[i], urls);
   }
 }
 
@@ -10503,6 +10645,9 @@ async function restoreSessionTimeline(sessionId, switchGen, options = {}) {
       sanitizeStructuredTimelineCache(sessionId);
       realignRunActivitiesToTurns($("timeline"));
     }
+    // Persisted-event / structured-cache paths only restore text previews.
+    // Always rehydrate image_url parts from session messages onto prompt rows.
+    hydratePromptImagesFromMessages(messages);
     if (!isViewSwitchCurrent(switchGen)) return;
     if (sessionId !== state.viewingTimelineSessionId) return;
     repairTimelineDomStructure($("timeline"));
@@ -16491,6 +16636,9 @@ function bindActions() {
     const routeSid = active.sessionId || null;
     const viewingThis =
       !routeSid || sessionRuns.isViewingSession(routeSid);
+    const promptImageUrls = (attachments || [])
+      .filter((item) => item?.kind === "image" && item?.dataUrl)
+      .map((item) => item.dataUrl);
 
     if (routeSid) {
       state.runtimeBySession.set(routeSid, runtimeProvider);
@@ -16507,14 +16655,14 @@ function bindActions() {
         sessionRuns.withEventRoute(routeSid, () => {
           // Existing sessions may skip an immediate session_start event for follow-up turns.
           // Render this turn's prompt now so run-activity/tools/conclusion anchor correctly.
-          renderUserPromptOnce(preview);
+          renderUserPromptOnce(preview, promptImageUrls);
           updateStatusLine({
             message: `已请求 ${runtimeName}，等待后端确认…`,
             elapsedSec: 0,
           });
         });
       } else {
-        renderUserPromptOnce(preview);
+        renderUserPromptOnce(preview, promptImageUrls);
         updateStatusLine({
           message: `已请求 ${runtimeName}，等待后端确认…`,
           elapsedSec: 0,
@@ -17141,6 +17289,10 @@ function handleLiveAgentEventBody(ev, opts = {}) {
       }
       return;
     }
+    if (ev.type === "permission_dismissed") {
+      dismissNetworkPermission(ev.id);
+      return;
+    }
     if (ev.type === "patch_proposed") {
       finishStreamTextSegment();
       recordRunPatch(ev);
@@ -17364,7 +17516,7 @@ function handleLiveAgentEventBody(ev, opts = {}) {
     }
     if (ev.type === "error") {
       finishStreamTextSegment();
-      clearNetworkPermissionBanner();
+      clearNetworkPermissionsForSession(ev.sessionId);
       return pushEvent(`✖ ${ev.message}`, "err");
     }
     if (ev.type === "reflection_start" || ev.type === "reflection_verdict") {
@@ -17375,6 +17527,7 @@ function handleLiveAgentEventBody(ev, opts = {}) {
       return;
     }
     if (ev.type === "done") {
+      clearNetworkPermissionsForSession(ev.sessionId);
       if (opts.offscreen) {
         sessionRuns.markSessionRunning(ev.sessionId, false);
         sessionRuns.runOffscreen(ev.sessionId, () => {
@@ -17398,7 +17551,6 @@ function handleLiveAgentEventBody(ev, opts = {}) {
       }
       flushStreamText();
       clearLiveStatusLine();
-      clearNetworkPermissionBanner();
       renderRunConclusion(ev.finalText, ev.sessionId);
       markReflectionDelivered(ev.sessionId);
       syncTimelineCacheForSession(ev.sessionId);

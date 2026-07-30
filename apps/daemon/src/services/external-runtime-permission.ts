@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentEvent } from "@forge/protocol";
+import { emitPermissionDismissedIfNeeded } from "./permission-dismiss.js";
 import { permissionService } from "./permission-service.js";
 
 export type ExternalRuntimePermissionKind = "codex" | "claude-code";
@@ -132,6 +133,12 @@ export function createExternalRuntimePermissionBridge(options: {
         sessionId: options.sessionId,
         signal: options.signal,
       });
+      emitPermissionDismissedIfNeeded(
+        options.emit,
+        options.sessionId,
+        id,
+        decision,
+      );
 
       if (decision.optionId) return decision.optionId;
       if (!decision.approved) return "deny";

@@ -135,6 +135,10 @@ function applyRunEvent(
     next.runningSessionId = action.event.sessionId;
   } else if (action.event.kind === "permission") {
     next.pendingPermission = action.event;
+  } else if (action.event.kind === "permission_dismissed") {
+    if (state.pendingPermission?.requestId === action.event.requestId) {
+      next.pendingPermission = null;
+    }
   } else if (action.event.kind === "done") {
     next.runningSessionId = action.event.sessionId;
     if (action.event.finalText && !next.liveText) next.liveText = action.event.finalText.slice(-100_000);

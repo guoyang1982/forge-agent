@@ -1,6 +1,6 @@
 {
   "name": "@forge/mobile",
-  "version": "0.2.5",
+  "version": "0.2.12",
   "private": true,
   "main": "expo/AppEntry.js",
   "scripts": {
@@ -18,6 +18,7 @@
   "dependencies": {
     "@forge/mobile-crypto": "workspace:*",
     "@forge/mobile-protocol": "workspace:*",
+    "@siteed/audio-studio": "^3.2.1",
     "expo": "~57.0.9",
     "expo-camera": "~57.0.3",
     "expo-clipboard": "~57.0.1",
@@ -27,8 +28,8 @@
     "expo-image-manipulator": "~57.0.7",
     "expo-image-picker": "~57.0.7",
     "expo-secure-store": "~57.0.1",
+    "expo-sherpa-onnx": "^0.0.8",
     "expo-speech": "~57.0.1",
-    "expo-speech-recognition": "56.0.1",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
     "react-native": "0.86.2",

@@ -4,6 +4,11 @@ export interface PermissionDecision {
   remember: boolean;
   /** ACP permission option selected by the user. */
   optionId?: string;
+  /**
+   * Set when the waiter ended without a user respondPermission call.
+   * Callers should emit `permission_dismissed` so UIs clear stale banners.
+   */
+  dismissReason?: "timeout" | "abort" | "cancelled";
 }
 
 interface PendingPermission {
@@ -34,9 +39,10 @@ export class PermissionService {
         resolve(decision);
       };
 
-      const onAbort = () => finish({ approved: false, remember: false });
+      const onAbort = () =>
+        finish({ approved: false, remember: false, dismissReason: "abort" });
       const timer = setTimeout(
-        () => finish({ approved: false, remember: false }),
+        () => finish({ approved: false, remember: false, dismissReason: "timeout" }),
         timeoutMs,
       );
       options?.signal?.addEventListener("abort", onAbort, { once: true });
@@ -47,7 +53,9 @@ export class PermissionService {
         sessionId: options?.sessionId,
       });
 
-      if (options?.signal?.aborted) finish({ approved: false, remember: false });
+      if (options?.signal?.aborted) {
+        finish({ approved: false, remember: false, dismissReason: "abort" });
+      }
     });
   }
 
@@ -71,12 +79,20 @@ export class PermissionService {
     if (sessionId) this.commandAllowedSessions.add(sessionId);
   }
 
-  cancelSession(sessionId: string): void {
-    for (const entry of this.pending.values()) {
+  /** Resolve all waiters for a session as denied; returns dismissed ids. */
+  cancelSession(sessionId: string): string[] {
+    const dismissed: string[] = [];
+    for (const [id, entry] of [...this.pending.entries()]) {
       if (entry.sessionId === sessionId) {
-        entry.resolve({ approved: false, remember: false });
+        dismissed.push(id);
+        entry.resolve({
+          approved: false,
+          remember: false,
+          dismissReason: "cancelled",
+        });
       }
     }
+    return dismissed;
   }
 }
 

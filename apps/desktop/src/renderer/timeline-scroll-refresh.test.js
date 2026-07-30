@@ -17,6 +17,21 @@ describe("timeline refresh scroll position", () => {
     );
   });
 
+  it("hydrates prompt image galleries after every session restore path", () => {
+    const source = appSource();
+    expect(source).toContain("hydratePromptImagesFromMessages");
+    expect(source).toContain("imageUrlsFromUserContent");
+    expect(source).toContain("appendPromptImageGallery");
+    expect(source).toContain("openPromptImageLightbox");
+    expect(source).not.toContain('window.open(url, "_blank"');
+    const restoreFn =
+      source.match(/async function restoreSessionTimeline[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(restoreFn).toContain("hydratePromptImagesFromMessages(messages)");
+    expect(restoreFn.indexOf("hydratePromptImagesFromMessages(messages)")).toBeGreaterThan(
+      restoreFn.indexOf("renderPersistedSessionEvents"),
+    );
+  });
+
   it("preserves run-activity body scroll across innerHTML repaints", () => {
     const source = appSource();
 

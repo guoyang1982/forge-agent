@@ -150,6 +150,9 @@ describe("command confirmation", () => {
     // remember flag flows through to the daemon.
     const respond = source.match(/async function respondNetworkPermission[\s\S]*?\n}\n/)?.[0] ?? "";
     expect(respond).toContain("respondPermission({ id, approved, remember })");
+    expect(respond).toContain("授权已失效");
+    expect(source).toContain("permission_dismissed");
+    expect(source).toContain("clearNetworkPermissionsForSession");
     // The settings toggle persists ui.confirmCommands.
     expect(source).toContain("confirmCommands: $(\"settingsConfirmCommandsCheck\")?.checked");
   });

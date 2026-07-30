@@ -1057,6 +1057,13 @@ export type AgentEvent =
         name: string;
         kind?: string;
       }>;
+    }
+  | {
+      /** Daemon closed a pending permission without a UI respond (timeout/abort/cancel). */
+      type: "permission_dismissed";
+      sessionId?: string;
+      id: string;
+      reason: "timeout" | "abort" | "cancelled";
     };
 
 export interface ToolCall {
@@ -1094,7 +1101,7 @@ export function plainTextFromChatContent(content: ChatContent | undefined): stri
   return content
     .map((p) => {
       if (p.type === "text") return p.text ?? "";
-      if (p.type === "image_url") return "[image]";
+      if (p.type === "image_url") return "🖼️";
       return "";
     })
     .filter(Boolean)

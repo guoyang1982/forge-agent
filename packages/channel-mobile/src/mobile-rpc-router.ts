@@ -564,6 +564,12 @@ export class MobileRpcRouter {
           event,
         });
       }
+      if (
+        permissionId &&
+        objectString(event, "type") === "permission_dismissed"
+      ) {
+        this.permissionOwners.delete(permissionId);
+      }
       for (const [subscriptionId, sink] of provisional.subscribers) {
         sink({
           type: "rpc.event",
