@@ -4,12 +4,21 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
-  "scripts": { "build": "tsc" },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc"
+  },
   "dependencies": {
     "@forge/protocol": "workspace:*",
     "@forge/tools": "workspace:*",
-    "better-sqlite3": "^11.8.1"
+    "better-sqlite3": "^13.0.2"
   },
-  "devDependencies": { "@types/better-sqlite3": "^7.6.12" }
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13"
+  }
 }
