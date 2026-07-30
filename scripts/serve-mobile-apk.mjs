@@ -3,8 +3,9 @@
  * Serve a Forge Mobile APK on the local network with a QR install page.
  *
  * Usage:
- *   node scripts/serve-mobile-apk.mjs [--apk path/to.apk] [--port 8765]
+ *   node scripts/serve-mobile-apk.mjs [--apk path/to.apk] [--port 8765] [--tunnel]
  */
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
@@ -19,6 +20,7 @@ const DEFAULT_PORT = Number.parseInt(process.env.PORT ?? "8765", 10);
 function parseArgs(argv) {
   let apkPath = null;
   let port = DEFAULT_PORT;
+  let tunnel = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--apk" && argv[i + 1]) {
@@ -29,12 +31,16 @@ function parseArgs(argv) {
       port = Number.parseInt(argv[++i], 10);
       continue;
     }
+    if (arg === "--tunnel") {
+      tunnel = true;
+      continue;
+    }
     if (arg === "--help" || arg === "-h") {
-      console.log(`Usage: node scripts/serve-mobile-apk.mjs [--apk path] [--port ${DEFAULT_PORT}]`);
+      console.log(`Usage: node scripts/serve-mobile-apk.mjs [--apk path] [--port ${DEFAULT_PORT}] [--tunnel]`);
       process.exit(0);
     }
   }
-  return { apkPath, port };
+  return { apkPath, port, tunnel };
 }
 
 function resolveApk(explicitPath) {
@@ -58,20 +64,29 @@ function resolveApk(explicitPath) {
   return candidates[0];
 }
 
-function getLanIp() {
-  const nets = networkInterfaces();
+function getLanIps() {
   const preferred = ["en0", "en1", "wlan0", "eth0"];
+  const seen = new Set();
+  const ips = [];
+
+  const pushIp = (address) => {
+    if (!address || seen.has(address)) return;
+    seen.add(address);
+    ips.push(address);
+  };
+
+  const nets = networkInterfaces();
   for (const name of preferred) {
     for (const net of nets[name] ?? []) {
-      if (net.family === "IPv4" && !net.internal) return net.address;
+      if (net.family === "IPv4" && !net.internal) pushIp(net.address);
     }
   }
   for (const ifaces of Object.values(nets)) {
     for (const net of ifaces ?? []) {
-      if (net.family === "IPv4" && !net.internal) return net.address;
+      if (net.family === "IPv4" && !net.internal) pushIp(net.address);
     }
   }
-  return "127.0.0.1";
+  return ips;
 }
 
 function formatBytes(bytes) {
@@ -79,7 +94,11 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function buildInstallPage({ title, downloadUrl, qrDataUrl, sizeLabel }) {
+function looksLikeCorporateNetwork(ips) {
+  return ips.some((ip) => ip.startsWith("10.") || ip.startsWith("172.") || ip.startsWith("192.168."));
+}
+
+function buildInstallPage({ title, downloadUrl, qrDataUrl, sizeLabel, modeLabel }) {
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -96,12 +115,14 @@ function buildInstallPage({ title, downloadUrl, qrDataUrl, sizeLabel }) {
     a.button { display: inline-block; margin-top: 8px; padding: 12px 18px; border-radius: 999px; background: #3b82f6; color: #fff; text-decoration: none; font-weight: 600; }
     code { word-break: break-all; color: #cbd5e1; }
     .meta { font-size: .92rem; margin-top: 16px; }
+    .badge { display: inline-block; margin-bottom: 10px; padding: 4px 10px; border-radius: 999px; background: #1f2937; color: #93c5fd; font-size: .82rem; }
   </style>
 </head>
 <body>
   <main>
+    <div class="badge">${modeLabel}</div>
     <h1>Forge Mobile</h1>
-    <p>手机与电脑连接同一 Wi‑Fi，用浏览器或扫码下载 APK 后安装。</p>
+    <p>手机扫码或点击下方按钮下载 APK，下载完成后安装。</p>
     <img src="${qrDataUrl}" alt="安装二维码" />
     <p class="meta">${sizeLabel}</p>
     <a class="button" href="${downloadUrl}">下载 APK</a>
@@ -112,32 +133,88 @@ function buildInstallPage({ title, downloadUrl, qrDataUrl, sizeLabel }) {
 </html>`;
 }
 
-async function main() {
-  const { apkPath: explicitApk, port } = parseArgs(process.argv.slice(2));
-  const apkPath = resolveApk(explicitApk);
-  const fileName = basename(apkPath);
-  const fileSize = statSync(apkPath).size;
-  const host = getLanIp();
-  const baseUrl = `http://${host}:${port}`;
+async function makeInstallHtml({ baseUrl, fileName, fileSize, modeLabel }) {
   const downloadUrl = `${baseUrl}/download/${encodeURIComponent(fileName)}`;
   const qrDataUrl = await QRCode.toDataURL(downloadUrl, {
     errorCorrectionLevel: "M",
     margin: 1,
     width: 480,
   });
-  const installHtml = buildInstallPage({
+  return buildInstallPage({
     title: "Forge Mobile 安装",
     downloadUrl,
     qrDataUrl,
     sizeLabel: `${fileName} · ${formatBytes(fileSize)}`,
+    modeLabel,
   });
+}
 
-  const server = createServer((req, res) => {
-    const url = new URL(req.url ?? "/", baseUrl);
+function startCloudflaredTunnel(port) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("cloudflared", ["tunnel", "--url", `http://127.0.0.1:${port}`, "--protocol", "http2"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let settled = false;
+    const handleOutput = (chunk) => {
+      const text = chunk.toString();
+      process.stderr.write(text);
+      const match = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+      if (match && !settled) {
+        settled = true;
+        resolve({ publicUrl: match[0], child });
+      }
+    };
+
+    child.stdout.on("data", handleOutput);
+    child.stderr.on("data", handleOutput);
+    child.on("error", (error) => {
+      if (!settled) reject(error);
+    });
+    child.on("exit", (code) => {
+      if (!settled) reject(new Error(`cloudflared exited (${code ?? "unknown"})`));
+    });
+
+    setTimeout(() => {
+      if (!settled) reject(new Error("cloudflared tunnel timed out after 30s"));
+    }, 30_000);
+  });
+}
+
+async function main() {
+  const { apkPath: explicitApk, port, tunnel } = parseArgs(process.argv.slice(2));
+  const apkPath = resolveApk(explicitApk);
+  const fileName = basename(apkPath);
+  const fileSize = statSync(apkPath).size;
+  const lanIps = getLanIps();
+  const primaryLanIp = lanIps[0] ?? "127.0.0.1";
+
+  let publicBaseUrl = null;
+  let tunnelChild = null;
+
+  const pageCache = new Map();
+  async function getInstallHtml(baseUrl, modeLabel) {
+    const key = `${baseUrl}|${modeLabel}`;
+    if (!pageCache.has(key)) {
+      pageCache.set(key, await makeInstallHtml({ baseUrl, fileName, fileSize, modeLabel }));
+    }
+    return pageCache.get(key);
+  }
+
+  const server = createServer(async (req, res) => {
+    const hostHeader = req.headers.host ?? `127.0.0.1:${port}`;
+    const reqBaseUrl = `${req.headers["x-forwarded-proto"] === "https" ? "https" : "http"}://${hostHeader}`;
+    const clientIp = req.socket.remoteAddress ?? "unknown";
+    console.log(`[${new Date().toISOString()}] ${clientIp} ${req.method} ${req.url ?? "/"}`);
+
+    const url = new URL(req.url ?? "/", reqBaseUrl);
 
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/install")) {
+      const modeLabel = publicBaseUrl ? "公网隧道下载" : "局域网下载";
+      const pageBaseUrl = publicBaseUrl ?? reqBaseUrl.replace(/\/$/, "");
+      const html = await getInstallHtml(pageBaseUrl, modeLabel);
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(installHtml);
+      res.end(html);
       return;
     }
 
@@ -155,14 +232,60 @@ async function main() {
     res.end("Not found");
   });
 
-  server.listen(port, "0.0.0.0", () => {
+  const shutdown = () => {
+    tunnelChild?.kill("SIGTERM");
+    server.close(() => process.exit(0));
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
+  server.listen(port, "0.0.0.0", async () => {
+    const lanBaseUrl = `http://${primaryLanIp}:${port}`;
+    const lanDownloadUrl = `${lanBaseUrl}/download/${encodeURIComponent(fileName)}`;
+
+    if (tunnel) {
+      try {
+        const tunnelInfo = await startCloudflaredTunnel(port);
+        publicBaseUrl = tunnelInfo.publicUrl;
+        tunnelChild = tunnelInfo.child;
+      } catch (error) {
+        console.error(
+          `公网隧道启动失败: ${error.message}\n` +
+            "Cloudflare 隧道在国内/公司网常不可用。请改用:\n" +
+            "  pnpm share:mobile:android          # 微信/ Finder 传文件\n" +
+            "  pnpm publish:mobile:apk-relay      # 上传到 relay 域名 HTTPS 下载\n" +
+            "  Mac 开热点 + pnpm serve:mobile:android",
+        );
+      }
+    }
+
     console.log("");
-    console.log("Forge Mobile 本机安装页已启动");
-    console.log(`  电脑浏览器: ${baseUrl}/`);
-    console.log(`  手机扫码/访问: ${downloadUrl}`);
+    console.log("Forge Mobile 安装页已启动");
     console.log(`  APK: ${apkPath}`);
+    console.log(`  本机: http://127.0.0.1:${port}/`);
+    if (lanIps.length > 0) {
+      console.log("  局域网地址（可逐个尝试）:");
+      for (const ip of lanIps) {
+        console.log(`    http://${ip}:${port}/`);
+      }
+    }
+    if (publicBaseUrl) {
+      console.log(`  公网隧道: ${publicBaseUrl}/`);
+      console.log(`  公网下载: ${publicBaseUrl}/download/${encodeURIComponent(fileName)}`);
+    }
+    console.log(`  默认下载: ${lanDownloadUrl}`);
     console.log("");
-    console.log("保持此终端运行，直到手机安装完成。Ctrl+C 停止。");
+    if (!publicBaseUrl && looksLikeCorporateNetwork(lanIps)) {
+      console.log("提示: 当前像是公司/办公 Wi‑Fi，常见「客户端隔离」会导致手机扫局域网二维码仍打不开。");
+      console.log("推荐改用:");
+      console.log("  1) pnpm share:mobile:android              # 微信发 APK 到手机（最稳）");
+      console.log("  2) pnpm publish:mobile:apk-relay           # 上传到 relay 域名 HTTPS 下载");
+      console.log("  3) Mac 开热点 + pnpm serve:mobile:android  # 手机连 Mac 热点后扫码");
+      console.log("  4) pnpm serve:mobile:android -- --tunnel   # Cloudflare（国内/公司网常失败）");
+      console.log("");
+    }
+    console.log("终端会打印每次手机访问记录。看到记录说明已经连上；没有记录说明网络仍被隔离。");
+    console.log("Ctrl+C 停止。");
     console.log("");
   });
 }

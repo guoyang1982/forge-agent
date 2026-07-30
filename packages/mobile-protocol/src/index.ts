@@ -117,6 +117,7 @@ export const mobileRpcMethodSchema = z.enum([
   "session.list",
   "session.search",
   "session.messages",
+  "session.history.page",
   "run.start",
   "run.cancel",
   "run.subscribe",

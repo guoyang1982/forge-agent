@@ -1,11 +1,19 @@
 {$FORGE_RELAY_DOMAIN} {
     encode zstd gzip
 
-    reverse_proxy relay:8080 {
-        transport http {
-            versions 1.1
-            read_timeout 120s
-            write_timeout 120s
+    handle_path /mobile/* {
+        root * /srv/mobile
+        header Content-Disposition "attachment"
+        file_server
+    }
+
+    handle {
+        reverse_proxy relay:8080 {
+            transport http {
+                versions 1.1
+                read_timeout 120s
+                write_timeout 120s
+            }
         }
     }
 

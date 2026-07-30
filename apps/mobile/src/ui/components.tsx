@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
+import { useState } from "react";
 import {
   Image,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,6 +15,7 @@ import {
 import type { MobileHostSummary } from "../storage/host-store";
 import type { MobileConnectionState } from "../transport/mobile-relay-client";
 import type { MobileWorkbenchState } from "../state/mobile-workbench-state";
+import { makeStyles } from "./make-styles";
 import { colors, radii, spacing } from "./theme";
 
 const forgeIcon = require("../../assets/forge-icon.png");
@@ -33,6 +36,7 @@ const TABS: Array<{
 ];
 
 export function BottomTabs(props: { activeTab: TabKey; onChange: (tab: TabKey) => void }) {
+  const styles = useStyles();
   return (
     <View style={styles.tabBar}>
       {TABS.map((tab) => {
@@ -269,6 +273,7 @@ const FORGE_MARK_SIZES = {
 } as const;
 
 export function ForgeMark(props: { size?: ForgeMarkSize }) {
+  const styles = useStyles();
   const size = typeof props.size === "number" ? props.size : FORGE_MARK_SIZES[props.size ?? "md"];
   const radius = size * 0.28;
   return (
@@ -294,6 +299,7 @@ export function MobileShell(props: {
   hideTabs?: boolean;
   children: ReactNode;
 }) {
+  const styles = useStyles();
   return (
     <View style={styles.shell}>
       {!props.hideHeader && props.title ? (
@@ -324,9 +330,12 @@ export function HostPicker(props: {
   onSelect: (hostId: string) => void;
   compact?: boolean;
 }) {
+  const styles = useStyles();
+  const [sheetOpen, setSheetOpen] = useState(false);
   if (props.hosts.length === 0) return null;
   const selected = props.hosts.find((host) => host.hostId === props.selectedHostId) ?? props.hosts[0];
   const state = selected ? props.connections[selected.hostId] : undefined;
+  const multi = props.hosts.length > 1;
 
   if (props.compact && selected) {
     return (
@@ -334,10 +343,9 @@ export function HostPicker(props: {
         <Pressable
           style={styles.compactHostButton}
           onPress={() => {
-            const index = props.hosts.findIndex((host) => host.hostId === selected.hostId);
-            const next = props.hosts[(index + 1) % props.hosts.length];
-            if (next) props.onSelect(next.hostId);
+            if (multi) setSheetOpen(true);
           }}
+          disabled={!multi}
         >
           <ForgeMark size="md" />
           <View style={styles.compactHostCopy}>
@@ -345,7 +353,7 @@ export function HostPicker(props: {
               <Text style={styles.compactBrand}>Forge</Text>
               <Text style={styles.compactSep}>·</Text>
               <Text style={styles.compactHostName} numberOfLines={1}>{selected.displayName}</Text>
-              <Text style={styles.compactChevron}>▾</Text>
+              {multi ? <Text style={styles.compactChevron}>▾</Text> : null}
             </View>
             <View style={styles.e2eeRow}>
               <View style={[styles.hostDot, connectionDotStyle(state)]} />
@@ -355,6 +363,33 @@ export function HostPicker(props: {
             </View>
           </View>
         </Pressable>
+        <Modal visible={sheetOpen} transparent animationType="fade" onRequestClose={() => setSheetOpen(false)}>
+          <Pressable style={styles.hostSheetBackdrop} onPress={() => setSheetOpen(false)}>
+            <View style={styles.hostSheet}>
+              <Text style={styles.hostSheetTitle}>选择电脑</Text>
+              {props.hosts.map((host) => {
+                const active = host.hostId === selected.hostId;
+                return (
+                  <Pressable
+                    key={host.hostId}
+                    style={[styles.hostSheetRow, active ? styles.hostSheetRowActive : null]}
+                    onPress={() => {
+                      props.onSelect(host.hostId);
+                      setSheetOpen(false);
+                    }}
+                  >
+                    <View style={[styles.hostDot, connectionDotStyle(props.connections[host.hostId])]} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.hostSheetName}>{host.displayName}</Text>
+                      <Text style={styles.hostSheetMeta} numberOfLines={1}>{host.relayOrigin}</Text>
+                    </View>
+                    {active ? <Text style={styles.hostSheetCurrent}>当前</Text> : null}
+                  </Pressable>
+                );
+              })}
+            </View>
+          </Pressable>
+        </Modal>
       </View>
     );
   }
@@ -378,13 +413,24 @@ export function HostPicker(props: {
   );
 }
 
-export function ConnectionBanner(props: { state: MobileConnectionState | undefined; label?: string }) {
+export function ConnectionBanner(props: {
+  state: MobileConnectionState | undefined;
+  label?: string;
+  onPress?: () => void;
+}) {
+  const styles = useStyles();
   if (!props.state || props.state === "authenticated") return null;
   const tone = props.state === "error" ? styles.bannerError : props.state === "closed" ? styles.bannerWarn : styles.bannerInfo;
-  return (
+  const body = (
     <View style={[styles.banner, tone]}>
       <Text style={styles.bannerText}>{props.label ?? connectionStateLabel(props.state)}</Text>
     </View>
+  );
+  if (!props.onPress || props.state === "connecting") return body;
+  return (
+    <Pressable onPress={props.onPress} accessibilityRole="button" accessibilityLabel="重新连接">
+      {body}
+    </Pressable>
   );
 }
 
@@ -410,6 +456,7 @@ export function PrimaryButton(props: {
   style?: StyleProp<ViewStyle>;
   tone?: "brand" | "danger" | "warning";
 }) {
+  const styles = useStyles();
   const tone = props.tone ?? "brand";
   return (
     <Pressable
@@ -434,6 +481,7 @@ export function SecondaryButton(props: {
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
+  const styles = useStyles();
   return (
     <Pressable
       disabled={props.disabled}
@@ -446,6 +494,7 @@ export function SecondaryButton(props: {
 }
 
 export function Card(props: { children: ReactNode; style?: StyleProp<ViewStyle> }) {
+  const styles = useStyles();
   return <View style={[styles.card, props.style]}>{props.children}</View>;
 }
 
@@ -454,6 +503,7 @@ export function SectionTitle(props: {
   actionLabel?: string;
   onAction?: () => void;
 }) {
+  const styles = useStyles();
   return (
     <View style={styles.sectionTitleRow}>
       <Text style={styles.sectionTitle}>{props.label}</Text>
@@ -467,10 +517,12 @@ export function SectionTitle(props: {
 }
 
 export function EmptyState(props: { message: string }) {
+  const styles = useStyles();
   return <Text style={styles.empty}>{props.message}</Text>;
 }
 
 export function PlaceholderScreen(props: { title: string; description: string }) {
+  const styles = useStyles();
   return (
     <View style={styles.placeholder}>
       <Text style={styles.placeholderTitle}>{props.title}</Text>
@@ -483,6 +535,7 @@ export function StatusPill(props: {
   label: string;
   tone?: "neutral" | "success" | "warning" | "danger" | "brand";
 }) {
+  const styles = useStyles();
   const tone = props.tone ?? "neutral";
   return (
     <View style={[styles.pill, tone === "success" ? styles.pillSuccess
@@ -500,6 +553,7 @@ export function StatusPill(props: {
 }
 
 export function ProgressStages(props: { stages: string[]; activeIndex: number }) {
+  const styles = useStyles();
   return (
     <View style={styles.stages}>
       {props.stages.map((stage, index) => {
@@ -534,6 +588,7 @@ export function QuickAction(props: {
   onPress: () => void;
   primary?: boolean;
 }) {
+  const styles = useStyles();
   return (
     <Pressable
       style={[styles.quickAction, props.primary ? styles.quickActionPrimary : null]}
@@ -556,6 +611,7 @@ export function SearchField(props: {
   placeholder: string;
   onSubmit?: () => void;
 }) {
+  const styles = useStyles();
   return (
     <View style={styles.searchWrap}>
       <Text style={styles.searchIcon}>⌕</Text>
@@ -579,6 +635,7 @@ export function SegmentedControl<T extends string>(props: {
   value: T;
   onChange: (value: T) => void;
 }) {
+  const styles = useStyles();
   return (
     <View style={styles.segmented}>
       {props.options.map((option) => {
@@ -602,6 +659,7 @@ export function FilterChips<T extends string>(props: {
   value: T;
   onChange: (value: T) => void;
 }) {
+  const styles = useStyles();
   return (
     <ScrollView
       horizontal
@@ -632,7 +690,11 @@ export function ListRow(props: {
   leading?: ReactNode;
   trailing?: ReactNode;
   onPress?: () => void;
+  onLongPress?: () => void;
+  accessibilityLabel?: string;
+  accessibilityHint?: string;
 }) {
+  const styles = useStyles();
   const body = (
     <>
       {props.leading}
@@ -644,11 +706,23 @@ export function ListRow(props: {
       {props.trailing}
     </>
   );
-  if (!props.onPress) return <View style={styles.listRow}>{body}</View>;
-  return <Pressable style={styles.listRow} onPress={props.onPress}>{body}</Pressable>;
+  if (!props.onPress && !props.onLongPress) return <View style={styles.listRow}>{body}</View>;
+  return (
+    <Pressable
+      style={styles.listRow}
+      onPress={props.onPress}
+      onLongPress={props.onLongPress}
+      accessibilityRole="button"
+      accessibilityLabel={props.accessibilityLabel || props.title}
+      accessibilityHint={props.accessibilityHint}
+    >
+      {body}
+    </Pressable>
+  );
 }
 
 export function WorkspaceGlyph(props: { name: string }) {
+  const styles = useStyles();
   return (
     <View style={styles.workspaceGlyph}>
       <Text style={styles.workspaceGlyphText}>{props.name.slice(0, 1).toUpperCase()}</Text>
@@ -656,7 +730,7 @@ export function WorkspaceGlyph(props: { name: string }) {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   shell: { flex: 1, backgroundColor: colors.background },
   header: {
     paddingTop: spacing.lg,
@@ -710,6 +784,35 @@ const styles = StyleSheet.create({
   compactChevron: { color: colors.textSecondary, fontSize: 14, marginLeft: spacing.xs },
   e2eeRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   e2eeText: { color: colors.textSecondary, fontSize: 12, fontWeight: "600" },
+  hostSheetBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "flex-end",
+  },
+  hostSheet: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radii.sheet,
+    borderTopRightRadius: radii.sheet,
+    padding: spacing.lg,
+    gap: spacing.sm,
+    maxHeight: "70%",
+  },
+  hostSheetTitle: { color: colors.textPrimary, fontSize: 16, fontWeight: "700", marginBottom: spacing.sm },
+  hostSheetRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    minHeight: 52,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.md,
+    backgroundColor: colors.surfaceAlt,
+  },
+  hostSheetRowActive: { borderColor: colors.brand, backgroundColor: colors.brandSoft },
+  hostSheetName: { color: colors.textPrimary, fontWeight: "700", fontSize: 14 },
+  hostSheetMeta: { color: colors.textSecondary, fontSize: 11, marginTop: 2 },
+  hostSheetCurrent: { color: colors.brandActive, fontSize: 12, fontWeight: "700" },
   hostRow: { flexGrow: 0, marginBottom: spacing.md },
   hostRowContent: { gap: spacing.sm },
   hostChip: {
@@ -934,4 +1037,4 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   workspaceGlyphText: { color: colors.brandActive, fontWeight: "800", fontSize: 16 },
-});
+}));

@@ -52,9 +52,11 @@ afterEach(() => {
 describe("MobileRpcRouter", () => {
   it("filters session results and rejects a symlink escape", async () => {
     const { root, outside, escape, registry } = fixture();
+    let listSessionCalls = 0;
     const daemon: AdapterDaemonBridge = {
       async request(method) {
         if (method === "list_sessions") {
+          listSessionCalls += 1;
           return {
             sessions: [
               { id: "session_01", cwd: root },
@@ -77,6 +79,31 @@ describe("MobileRpcRouter", () => {
         ok: true,
         result: { sessions: [{ id: "session_01", cwd: root }] },
       });
+      await expect(
+        router.handle(
+          "device_000001",
+          {
+            type: "rpc.request",
+            id: "request_history",
+            method: "session.messages",
+            params: { sessionId: "session_01", limit: 20 },
+          },
+          () => undefined,
+        ),
+      ).resolves.toMatchObject({ ok: true });
+      expect(listSessionCalls).toBe(1);
+      await expect(
+        router.handle(
+          "device_000001",
+          {
+            type: "rpc.request",
+            id: "request_forbidden_history",
+            method: "session.messages",
+            params: { sessionId: "session_02", limit: 20 },
+          },
+          () => undefined,
+        ),
+      ).resolves.toMatchObject({ ok: false, error: { code: "forbidden" } });
       await expect(
         router.handle(
           "device_000001",
@@ -790,19 +817,43 @@ describe("MobileRpcRouter", () => {
     }
   });
 
-  it("exposes the same persisted session.messages payload mobile and desktop both reload", async () => {
+  it("exposes a mobile-capped session.messages payload without desktop-only journals", async () => {
     const { root, registry } = fixture();
     const desktopPersistedMessages = {
+      sessionId: "session_shared_01",
       messages: [
         { role: "user", content: "fix login" },
         { role: "assistant", content: [{ type: "text", text: "Fixed the auth guard." }] },
       ],
+      events: [
+        {
+          sequence: 1,
+          sessionId: "session_shared_01",
+          turnIndex: 0,
+          eventType: "status",
+          emittedAtMs: 10,
+          event: { type: "status", phase: "model", message: "running" },
+        },
+      ],
+      page: {
+        truncated: false,
+        messageIds: [10, 11],
+        oldestMessageId: 10,
+        oldestEventSequence: 1,
+      },
+      checkpoints: [{ turnIndex: 0, sha: "abc" }],
+      dispatchPlans: [{ turnIndex: 0, intent: "x", source: "heuristic", runKind: "coordinator", waves: [] }],
     };
-    const request = vi.fn(async (method: string) => {
+    const request = vi.fn(async (method: string, params: unknown) => {
       if (method === "list_sessions") {
         return { sessions: [{ id: "session_shared_01", cwd: root }] };
       }
       if (method === "get_session_messages") {
+        expect(params).toEqual({
+          sessionId: "session_shared_01",
+          limit: 200,
+          eventLimit: 120,
+        });
         return desktopPersistedMessages;
       }
       return {};
@@ -823,9 +874,153 @@ describe("MobileRpcRouter", () => {
         },
         () => undefined,
       );
-      expect(response).toMatchObject({ ok: true, result: desktopPersistedMessages });
-      const mobileMessages = (response as { result: typeof desktopPersistedMessages }).result;
-      expect(mobileMessages).toEqual(desktopPersistedMessages);
+      expect(response).toMatchObject({
+        ok: true,
+        result: {
+          sessionId: "session_shared_01",
+          truncated: false,
+          oldestMessageId: 10,
+          oldestEventSequence: 1,
+          messages: [
+            { role: "user", content: "fix login", id: 10 },
+            { role: "assistant", content: [{ type: "text", text: "Fixed the auth guard." }], id: 11 },
+          ],
+          events: desktopPersistedMessages.events,
+        },
+      });
+      const mobileMessages = (response as { result: Record<string, unknown> }).result;
+      expect(mobileMessages.checkpoints).toBeUndefined();
+      expect(mobileMessages.dispatchPlans).toBeUndefined();
+    } finally {
+      registry.close();
+    }
+  });
+
+  it("pages older history through session.history.page", async () => {
+    const { root, registry } = fixture();
+    const request = vi.fn(async (method: string, params: unknown) => {
+      if (method === "list_sessions") {
+        return { sessions: [{ id: "session_page_01", cwd: root }] };
+      }
+      if (method === "get_session_messages") {
+        expect(params).toEqual({
+          sessionId: "session_page_01",
+          limit: 40,
+          eventLimit: 100,
+          beforeMessageId: 20,
+          beforeEventSequence: 50,
+        });
+        return {
+          sessionId: "session_page_01",
+          messages: [{ role: "user", content: "older" }],
+          events: [{
+            sequence: 40,
+            sessionId: "session_page_01",
+            turnIndex: 0,
+            eventType: "status",
+            emittedAtMs: 1,
+            event: { type: "status", phase: "model", message: "old" },
+          }],
+          page: {
+            truncated: true,
+            messageIds: [9],
+            oldestMessageId: 9,
+            oldestEventSequence: 40,
+          },
+        };
+      }
+      return {};
+    });
+    const router = new MobileRpcRouter({
+      daemon: { request },
+      registry,
+      allowedProjects: [root],
+    });
+    try {
+      const response = await router.handle(
+        "device_000001",
+        {
+          type: "rpc.request",
+          id: "request_history_page",
+          method: "session.history.page",
+          params: {
+            sessionId: "session_page_01",
+            beforeMessageId: 20,
+            beforeEventSequence: 50,
+          },
+        },
+        () => undefined,
+      );
+      expect(response).toMatchObject({
+        ok: true,
+        result: {
+          truncated: true,
+          oldestMessageId: 9,
+          oldestEventSequence: 40,
+          messages: [{ role: "user", content: "older", id: 9 }],
+        },
+      });
+    } finally {
+      registry.close();
+    }
+  });
+
+  it("truncates oversized session.messages event windows before leaving the host", async () => {
+    const { root, registry } = fixture();
+    const events = Array.from({ length: 450 }, (_, index) => ({
+      sequence: index + 1,
+      sessionId: "session_heavy_01",
+      turnIndex: 0,
+      eventType: "status",
+      emittedAtMs: index + 1,
+      event: {
+        type: "status",
+        phase: "model",
+        message: `step-${index + 1}-${"x".repeat(8_000)}`,
+      },
+    }));
+    const request = vi.fn(async (method: string) => {
+      if (method === "list_sessions") {
+        return { sessions: [{ id: "session_heavy_01", cwd: root }] };
+      }
+      if (method === "get_session_messages") {
+        return {
+          sessionId: "session_heavy_01",
+          messages: [{ role: "user", content: "analyze everything" }],
+          events,
+          page: {
+            truncated: true,
+            messageIds: [1],
+            oldestMessageId: 1,
+            oldestEventSequence: 1,
+          },
+        };
+      }
+      return {};
+    });
+    const router = new MobileRpcRouter({
+      daemon: { request },
+      registry,
+      allowedProjects: [root],
+    });
+    try {
+      const response = await router.handle(
+        "device_000001",
+        {
+          type: "rpc.request",
+          id: "request_messages_heavy",
+          method: "session.messages",
+          params: { sessionId: "session_heavy_01", limit: 200 },
+        },
+        () => undefined,
+      );
+      expect(response).toMatchObject({ ok: true });
+      const result = (response as { result: { events: Array<{ event: { message: string }; emittedAtMs: number }>; truncated: boolean } }).result;
+      expect(result.events).toHaveLength(400);
+      expect(result.events[0]?.emittedAtMs).toBe(51);
+      expect(result.events.at(-1)?.emittedAtMs).toBe(450);
+      expect(result.events.at(-1)?.event.message.length).toBeLessThanOrEqual(4_001);
+      expect(result.truncated).toBe(true);
     } finally {
       registry.close();
     }
@@ -897,6 +1092,104 @@ describe("MobileRpcRouter", () => {
             },
           ],
         },
+      });
+    } finally {
+      registry.close();
+    }
+  });
+
+  it("forwards normalized attachments on run.start", async () => {
+    const { root, registry } = fixture();
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const daemon: AdapterDaemonBridge = {
+      async request(method, params) {
+        calls.push({ method, params });
+        if (method === "run") return { sessionId: "session_att_01", finalText: "ok" };
+        return {};
+      },
+    };
+    const router = new MobileRpcRouter({
+      daemon,
+      registry,
+      allowedProjects: [root],
+      runPermission: "allow",
+    });
+    try {
+      await expect(
+        router.handle(
+          "device_000001",
+          {
+            type: "rpc.request",
+            id: "request_att_01",
+            method: "run.start",
+            params: {
+              cwd: root,
+              message: "",
+              subscriptionId: "subscription_att_01",
+              attachments: [
+                {
+                  kind: "file",
+                  name: "note.txt",
+                  mimeType: "text/plain",
+                  text: "from phone",
+                },
+              ],
+            },
+          },
+          () => undefined,
+        ),
+      ).resolves.toMatchObject({ ok: true });
+      const runCall = calls.find((item) => item.method === "run");
+      expect(runCall?.params).toMatchObject({
+        message: "请查看附件",
+        attachments: [
+          { kind: "file", name: "note.txt", mimeType: "text/plain", text: "from phone" },
+        ],
+        autoApply: true,
+      });
+    } finally {
+      registry.close();
+    }
+  });
+
+  it("forwards workspace file mentions on run.start", async () => {
+    const { root, registry } = fixture();
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const daemon: AdapterDaemonBridge = {
+      async request(method, params) {
+        calls.push({ method, params });
+        if (method === "run") return { sessionId: "session_files_01", finalText: "ok" };
+        return {};
+      },
+    };
+    const router = new MobileRpcRouter({
+      daemon,
+      registry,
+      allowedProjects: [root],
+      runPermission: "allow",
+    });
+    try {
+      await expect(
+        router.handle(
+          "device_000001",
+          {
+            type: "rpc.request",
+            id: "request_files_01",
+            method: "run.start",
+            params: {
+              cwd: root,
+              message: "请检查 `src/a.ts`",
+              subscriptionId: "subscription_files_01",
+              files: ["src/a.ts", "README.md"],
+            },
+          },
+          () => undefined,
+        ),
+      ).resolves.toMatchObject({ ok: true });
+      const runCall = calls.find((item) => item.method === "run");
+      expect(runCall?.params).toMatchObject({
+        files: ["src/a.ts", "README.md"],
+        autoApply: true,
       });
     } finally {
       registry.close();

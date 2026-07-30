@@ -990,7 +990,7 @@ mobile_rpc_requests_total{method,result}
 2. Stable Logical Client，在 direct/relay 间迁移并重放 subscriptions。
 3. 文件浏览、Diff、Git 操作和安全编辑。
 4. 二进制终端流、viewport 和 backpressure。
-5. APNs/FCM 推送，只传不敏感 notification id。
+5. APNs/FCM 推送，只传不敏感 notification id（待开发设计：`docs/superpowers/specs/2026-07-29-mobile-remote-push-design.md`）。
 6. Director + 多 Cell + Redis 租约，实现多地域和滚动迁移。
 7. Forge Cloud 账号、团队组织、设备策略和 Relay entitlement。
 

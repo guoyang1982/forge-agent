@@ -82,6 +82,19 @@ export async function removeHost(hostId: string): Promise<void> {
   await writeHostIndex(hosts);
 }
 
+export async function renameHost(hostId: string, displayName: string): Promise<MobileHostSummary | null> {
+  const nextName = displayName.trim().slice(0, 64);
+  if (!nextName) return null;
+  const hosts = await listHosts();
+  const index = hosts.findIndex((host) => host.hostId === hostId);
+  if (index < 0) return null;
+  const updated = { ...hosts[index]!, displayName: nextName };
+  const next = [...hosts];
+  next[index] = updated;
+  await writeHostIndex(next);
+  return updated;
+}
+
 async function writeHostIndex(hosts: MobileHostSummary[]): Promise<void> {
   await SecureStore.setItemAsync(HOST_INDEX_KEY, JSON.stringify(hosts), {
     keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,

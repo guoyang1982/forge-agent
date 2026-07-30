@@ -20,7 +20,7 @@ export type FileView = {
 };
 
 export type TimelineItem =
-  | { kind: "user"; key: string; text: string }
+  | { kind: "user"; key: string; text: string; attachments?: MessageItem["attachments"] }
   | { kind: "agent"; key: string; answers: string[]; tools: ToolView[] }
   | { kind: "system"; key: string; text: string };
 
@@ -251,7 +251,12 @@ export function buildTimelineItems(
     if (message.role === "tool") continue;
     if (message.role === "user") {
       flushAgent();
-      items.push({ kind: "user", key: message.key, text: message.text });
+      items.push({
+        kind: "user",
+        key: message.key,
+        text: message.text,
+        ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+      });
       continue;
     }
     if (message.role === "assistant") {

@@ -1,0 +1,18 @@
+# Trim upload size for EAS monorepo builds.
+.git/
+**/.git/
+**/node_modules/
+**/.expo/
+**/.gradle/
+**/build/
+**/.forge-electron/
+**/.electron-staging/
+apps/desktop/
+apps/daemon/
+apps/cli/
+apps/channel-gateway/
+docs/
+release/
+.superpowers/
+*.db
+*.db-*

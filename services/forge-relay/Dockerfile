@@ -1,6 +1,10 @@
 # syntax=docker/dockerfile:1.7
 FROM golang:1.25.12-bookworm AS build
 WORKDIR /src
+# Default includes goproxy.cn for China ECS; override with --build-arg GOPROXY=...
+ARG GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY} \
+    GOSUMDB=sum.golang.google.cn
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .

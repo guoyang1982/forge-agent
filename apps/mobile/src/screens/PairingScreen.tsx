@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
-import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, Text, TextInput, View } from "react-native";
 import { ForgeMark } from "../ui/components";
-import { colors, radii, spacing } from "../ui/theme";
+import { makeStyles } from "../ui/make-styles";
+import { radii, spacing } from "../ui/theme";
 
 type PairingMode = "scan" | "manual";
 
@@ -15,11 +16,24 @@ export function PairingScreen(props: {
   pendingPairing: { hostId: string; relayOrigin: string } | null;
   onCompletePairing: () => void;
 }) {
+  const styles = useStyles();
   const [mode, setMode] = useState<PairingMode>("scan");
   const [permission, requestPermission] = useCameraPermissions();
+  const scannedLock = useRef(false);
+
+  useEffect(() => {
+    if (!props.pendingPairing) scannedLock.current = false;
+  }, [props.pendingPairing]);
+
+  useEffect(() => {
+    if (mode === "manual") scannedLock.current = false;
+  }, [mode]);
 
   const scan = (result: BarcodeScanningResult) => {
-    if (result.data.startsWith("forge://pair")) props.onScanned(result.data);
+    if (scannedLock.current) return;
+    if (!result.data.startsWith("forge://pair")) return;
+    scannedLock.current = true;
+    props.onScanned(result.data);
   };
 
   return (
@@ -101,7 +115,7 @@ export function PairingScreen(props: {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   sheet: {
     position: "absolute",
     left: 12,
@@ -173,4 +187,4 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   secondaryButtonText: { color: "#c5ceda", fontWeight: "600" },
-});
+}));

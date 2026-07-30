@@ -15,6 +15,7 @@ Channel Gateway 是统一的渠道层，不绑定某个特定平台。微信 iLi
 | 微信 iLink 文字消息入站与回复 | 已接入 |
 | Forge Mobile Relay、配对与设备撤销 | 已接入（测试客户端可用） |
 | Forge Mobile iOS / Android App | MVP 工作台已实现（配对、工作空间只读浏览、完整会话执行、多电脑） |
+| Forge Mobile 远程推送（APNs/FCM） | 暂未支持；仅本机本地通知。待开发见 `docs/superpowers/specs/2026-07-29-mobile-remote-push-design.md` |
 | 微信图片、语音和文件消息 | 暂未支持 |
 | 飞书、钉钉、自研 App HTTP Webhook | 自动化通知渠道 |
 

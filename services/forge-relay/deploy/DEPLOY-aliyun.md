@@ -2,6 +2,9 @@
 
 本文说明如何在阿里云 ECS 上部署公网 Forge Relay，以及部署完成后如何在 Forge Desktop / 手机端完成连接。
 
+若本机已有代码、不想先推 Git，可直接用 SSH/rsync 同步后起容器，见 [DEPLOY-aliyun-ssh.md](./DEPLOY-aliyun-ssh.md)。  
+**已上线环境的日常运维与发版更新**见 [RUNBOOK.md](./RUNBOOK.md)。
+
 Relay 只做外层认证与端到端加密帧转发，不解析、不持久化 Mobile RPC 正文。生产环境必须使用 HTTPS 公网 Origin。
 
 ## 1. 架构
@@ -293,6 +296,7 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml \
 ## 11. 相关文档
 
 - 本目录 [`README`](../README.md)（本地 compose 概览）
+- [SSH 本机代码部署](./DEPLOY-aliyun-ssh.md)、[`ssh-sync.sh`](./ssh-sync.sh)
 - [`docker-compose.yml`](./docker-compose.yml)、[`.env.example`](./.env.example)、[`Caddyfile`](./Caddyfile)
 - [移动端与消息渠道指南](../../../docs/mobile-access.md)
 - [配置参考 · 渠道与 Forge Mobile](../../../docs/configuration.md)

@@ -4,7 +4,6 @@ import {
   Pressable,
   RefreshControl,
   ScrollView,
-  StyleSheet,
   Text,
   View,
 } from "react-native";
@@ -15,11 +14,11 @@ import type { MobileConnectionState } from "../transport/mobile-relay-client";
 import {
   Card,
   HostPicker,
-  ProgressStages,
   QuickAction,
   SectionTitle,
 } from "../ui/components";
 import type { MobileHostSummary } from "../storage/host-store";
+import { makeStyles } from "../ui/make-styles";
 import { colors, radii, spacing } from "../ui/theme";
 
 function formatClock(totalSeconds: number): string {
@@ -50,6 +49,7 @@ export function WorkbenchScreen(props: {
   onViewAllWorkspaces?: () => void;
   onCancelRun?: (sessionId: string) => void;
 }) {
+  const styles = useStyles();
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [status, setStatus] = useState<{ activeRun: boolean; runtime: string } | null>(null);
@@ -91,7 +91,7 @@ export function WorkbenchScreen(props: {
     : false;
 
   useEffect(() => {
-    if (!showRunning) {
+    if (!props.runningSessionId) {
       setElapsedSeconds(0);
       return;
     }
@@ -100,7 +100,7 @@ export function WorkbenchScreen(props: {
       setElapsedSeconds((value) => value + 1);
     }, 1000);
     return () => clearInterval(timer);
-  }, [showRunning, props.runningSessionId]);
+  }, [props.runningSessionId]);
 
   const recentSessions = sessions.slice(0, 3);
   const frequentProjects = projects.slice(0, 3);
@@ -138,10 +138,10 @@ export function WorkbenchScreen(props: {
                 </Text>
               </View>
             </View>
-            <ProgressStages stages={["规划中", "执行中", "整理中"]} activeIndex={1} />
             <View style={styles.timerRow}>
-              <Text style={styles.timerText}>已用时 {formatClock(elapsedSeconds)}</Text>
-              <Text style={styles.timerText}>预计剩余 {formatClock(Math.max(90, 180 - elapsedSeconds))}</Text>
+              <Text style={styles.timerText}>
+                {props.runningSessionId ? `已用时 ${formatClock(elapsedSeconds)}` : "电脑端有任务在运行"}
+              </Text>
               {props.runningSessionId && props.onCancelRun ? (
                 <Pressable
                   style={styles.stopSquare}
@@ -266,7 +266,7 @@ function formatRelative(iso: string): string {
   return new Date(time).toLocaleDateString();
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   page: { flex: 1, paddingTop: spacing.sm },
   content: { gap: spacing.md, paddingBottom: spacing.xl },
   error: { color: colors.danger, fontSize: 13 },
@@ -361,4 +361,4 @@ const styles = StyleSheet.create({
   statusDotRun: { backgroundColor: colors.brand },
   statusDotDone: { backgroundColor: colors.success },
   statusDotOff: { backgroundColor: colors.textMuted },
-});
+}));

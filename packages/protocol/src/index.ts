@@ -286,6 +286,21 @@ export interface ListSessionsResult {
 export interface GetSessionMessagesRequest {
   sessionId: string;
   limit?: number;
+  /** When set, return only the most recent N session_events (tail), or a page before a cursor. */
+  eventLimit?: number;
+  /** Load messages with id strictly less than this (older page). */
+  beforeMessageId?: number;
+  /** Load events with sequence strictly less than this (older page). */
+  beforeEventSequence?: number;
+}
+
+export interface SessionHistoryPageInfo {
+  /** True when older messages and/or events exist before this page. */
+  truncated: boolean;
+  /** DB ids aligned with `messages` (same length), oldest → newest. */
+  messageIds: number[];
+  oldestMessageId: number | null;
+  oldestEventSequence: number | null;
 }
 
 export interface GetSessionMessagesResult {
@@ -293,6 +308,8 @@ export interface GetSessionMessagesResult {
   messages: ChatMessage[];
   /** Durable UI event journal. Empty for sessions created before migration 007. */
   events?: SessionEventRecord[];
+  /** Present for bounded/paginated reads (e.g. mobile). */
+  page?: SessionHistoryPageInfo;
   /** Pre-run worktree snapshots: turnIndex = 0-based ordinal among user messages. */
   checkpoints?: Array<{ turnIndex: number; sha: string }>;
   /** Latest persisted coordinator dispatch plans keyed by user-turn ordinal. */

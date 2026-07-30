@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { StatusBar } from "expo-status-bar";
-import { Alert, AppState, StyleSheet, Text, View } from "react-native";
+import { Alert, Appearance, AppState, Text, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import type { ForgeMobilePairingOfferV1 } from "@forge/mobile-protocol";
 import { parsePairingUri } from "./src/pairing/parse-pairing";
@@ -9,11 +9,33 @@ import {
   loadHostSecret,
   reconcileHostsWithSecrets,
   removeHost,
+  renameHost,
   saveHost,
   assertSecureStoreAvailable,
   type MobileHostSummary,
 } from "./src/storage/host-store";
-import { loadLastHostId, saveLastHostId } from "./src/storage/preferences-store";
+import {
+  loadLastHostId,
+  loadNotificationsEnabled,
+  loadThemeId,
+  saveLastHostId,
+  saveNotificationsEnabled,
+  saveThemeId,
+  type ThemePreference,
+} from "./src/storage/preferences-store";
+import { resolveThemePreference } from "./src/ui/theme-preference";
+import {
+  ensureAndroidNotificationChannel,
+  ensureNotificationPermission,
+} from "./src/notifications/local-notify";
+import {
+  DEFAULT_THEME_ID,
+  ThemeProvider,
+  spacing,
+  useTheme,
+  type ThemeId,
+} from "./src/ui/theme";
+import { makeStyles } from "./src/ui/make-styles";
 import {
   MobileRelayClient,
   type MobileConnectionState,
@@ -48,17 +70,83 @@ import {
   MobileShell,
   PrimaryButton,
 } from "./src/ui/components";
-import { colors, spacing } from "./src/ui/theme";
-
-type NavTarget =
-  | { kind: "workspace"; cwd: string }
-  | { kind: "file"; cwd: string; path: string }
-  | { kind: "diff"; cwd: string; path: string };
+import { popNavToRoot, reduceNavStack, type NavTarget } from "./src/navigation/nav-stack";
 
 export default function App() {
+  const [themePreference, setThemePreference] = useState<ThemePreference>(DEFAULT_THEME_ID);
+  const [colorScheme, setColorScheme] = useState(Appearance.getColorScheme());
+  const [themeReady, setThemeReady] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const themeId = resolveThemePreference(themePreference, colorScheme);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [storedTheme, notifyEnabled] = await Promise.all([
+          loadThemeId(),
+          loadNotificationsEnabled(),
+        ]);
+        if (cancelled) return;
+        setThemePreference(storedTheme);
+        setNotificationsEnabled(notifyEnabled);
+        if (notifyEnabled) {
+          void ensureAndroidNotificationChannel();
+          void ensureNotificationPermission();
+        }
+      } catch {
+        // Prefer a usable UI over a blank forever splash if prefs fail.
+      } finally {
+        if (!cancelled) setThemeReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const sub = Appearance.addChangeListener(({ colorScheme: next }) => {
+      setColorScheme(next);
+    });
+    return () => sub.remove();
+  }, []);
+
+  const setThemeId = (id: ThemePreference) => {
+    setThemePreference(id);
+    void saveThemeId(id);
+  };
+
+  const onNotificationsEnabledChange = (enabled: boolean) => {
+    setNotificationsEnabled(enabled);
+    void saveNotificationsEnabled(enabled);
+    if (enabled) {
+      void ensureAndroidNotificationChannel();
+      void ensureNotificationPermission();
+    }
+  };
+
+  if (!themeReady) {
+    return (
+      <SafeAreaProvider>
+        <View style={{ flex: 1, backgroundColor: "#080B10" }} />
+      </SafeAreaProvider>
+    );
+  }
+
   return (
     <SafeAreaProvider>
-      <MobileApp />
+      <ThemeProvider
+        themeId={themeId}
+        preference={themePreference}
+        onThemeIdChange={setThemeId}
+      >
+        <MobileApp
+          key={`${themePreference}:${themeId}`}
+          notificationsEnabled={notificationsEnabled}
+          onNotificationsEnabledChange={onNotificationsEnabledChange}
+        />
+      </ThemeProvider>
     </SafeAreaProvider>
   );
 }
@@ -66,7 +154,12 @@ export default function App() {
 /** Tracks how the remembered host from the last launch has resolved, to decide auto-selection fallback. */
 type RememberedHostStatus = "none" | "pending" | "resolved";
 
-function MobileApp() {
+function MobileApp(props: {
+  notificationsEnabled: boolean;
+  onNotificationsEnabledChange: (enabled: boolean) => void;
+}) {
+  const styles = useStyles();
+  const { mode: themeMode } = useTheme();
   const [hosts, setHosts] = useState<MobileHostSummary[]>([]);
   const [pairing, setPairing] = useState(false);
   const [manualCode, setManualCode] = useState("");
@@ -76,11 +169,13 @@ function MobileApp() {
   const [diagnostics, setDiagnostics] = useState<ConnectionDiagnostic[]>([]);
   const [navStack, setNavStack] = useState<NavTarget[]>([]);
   const [conversationOpen, setConversationOpen] = useState(false);
+  const [pendingMention, setPendingMention] = useState<string | null>(null);
   const [state, dispatch] = useReducer(mobileWorkbenchReducer, initialMobileWorkbenchState);
   const clients = useRef(new Map<string, MobileRelayClient>());
   const pendingOffer = useRef<ForgeMobilePairingOfferV1 | null>(null);
   const hostsRef = useRef<MobileHostSummary[]>([]);
   const selectedHostIdRef = useRef<string | null>(null);
+  const runningSessionIdRef = useRef<string | null>(null);
   const appActive = useRef(AppState.currentState === "active");
   const connectingHosts = useRef(new Set<string>());
   const intentionalCloses = useRef(new Set<string>());
@@ -107,6 +202,10 @@ function MobileApp() {
   useEffect(() => {
     selectedHostIdRef.current = state.selectedHostId;
   }, [state.selectedHostId]);
+
+  useEffect(() => {
+    runningSessionIdRef.current = state.runningSessionId;
+  }, [state.runningSessionId]);
 
   useEffect(() => {
     if (
@@ -479,6 +578,11 @@ function MobileApp() {
       if (active === appActive.current) return;
       appActive.current = active;
       if (!active) {
+        // Keep sockets alive while a run is in flight so events keep flowing.
+        if (runningSessionIdRef.current) {
+          addDiagnostic("app", "info", "进入后台", "保留运行中任务的连接");
+          return;
+        }
         for (const host of hostsRef.current) {
           closeHost(host.hostId);
           addDiagnostic(host.hostId, "info", "进入后台", "连接已受控关闭");
@@ -492,6 +596,7 @@ function MobileApp() {
             void connectHost(host, { silent: true, select: false });
           }
         }
+        dispatch({ type: "connection.reconnected" });
       }
     });
     return () => {
@@ -532,6 +637,16 @@ function MobileApp() {
     clearConnectionState(hostId);
     dispatch({ type: "host.forgotten", hostId });
     void removeHost(hostId).then(refresh);
+  };
+
+  const renameHostDisplay = (hostId: string, displayName: string) => {
+    void renameHost(hostId, displayName).then((updated) => {
+      if (!updated) {
+        Alert.alert("重命名失败", "名称无效或主机不存在");
+        return;
+      }
+      refresh();
+    });
   };
 
   const selectedHost = hosts.find((host) => host.hostId === state.selectedHostId);
@@ -577,8 +692,9 @@ function MobileApp() {
     if (state.activeTab !== "sessions") setConversationOpen(false);
   }, [state.selectedHostId, state.activeTab]);
 
-  const pushNav = (target: NavTarget) => setNavStack((current) => [...current, target]);
+  const pushNav = (target: NavTarget) => setNavStack((current) => reduceNavStack(current, target));
   const popNav = () => setNavStack((current) => current.slice(0, -1));
+  const popToRoot = () => setNavStack((current) => popNavToRoot(current));
 
   const openSession = (session: SessionItem) => {
     setNavStack([]);
@@ -601,13 +717,13 @@ function MobileApp() {
     setNavStack([]);
     dispatch({ type: "tab.selected", tab: "sessions" });
     setConversationOpen(true);
-    Alert.alert("已准备提及", `可在会话输入中引用：${path}`);
+    setPendingMention(path);
   };
 
   if (showDiagnostics) {
     return (
       <SafeAreaView style={styles.page}>
-        <StatusBar style="light" />
+        <StatusBar style={themeMode === "dark" ? "light" : "dark"} />
         <DiagnosticsScreen
           entries={diagnostics}
           onBack={() => setShowDiagnostics(false)}
@@ -619,7 +735,7 @@ function MobileApp() {
 
   return (
     <SafeAreaView style={styles.page}>
-      <StatusBar style="light" />
+      <StatusBar style={themeMode === "dark" ? "light" : "dark"} />
       <MobileShell
         hideHeader={
           state.activeTab === "workbench"
@@ -642,6 +758,7 @@ function MobileApp() {
               cwd={navTop.cwd}
               path={navTop.path}
               onBack={popNav}
+              onBackToRoot={popToRoot}
               onMentionInSession={mentionPathInSession}
               onOpenDiff={(path) => pushNav({ kind: "diff", cwd: navTop.cwd, path })}
             />
@@ -651,6 +768,7 @@ function MobileApp() {
               cwd={navTop.cwd}
               path={navTop.path}
               onBack={popNav}
+              onBackToRoot={popToRoot}
               onMentionInSession={mentionPathInSession}
               onOpenFile={(path) => pushNav({ kind: "file", cwd: navTop.cwd, path })}
             />
@@ -677,8 +795,11 @@ function MobileApp() {
             hosts={hosts}
             connections={connections}
             selectedHostId={state.selectedHostId}
+            notificationsEnabled={props.notificationsEnabled}
             onSelectHost={selectHost}
             onRemoveHost={removeHostAndForget}
+            onRenameHost={renameHostDisplay}
+            onNotificationsEnabledChange={props.onNotificationsEnabledChange}
             onAddHost={() => setPairing(true)}
             onOpenDiagnostics={() => setShowDiagnostics(true)}
           />
@@ -687,17 +808,28 @@ function MobileApp() {
             conversationOpen ? (
               <ConversationScreen
                 api={api}
+                hostId={selectedHost.hostId}
                 hostName={selectedHost.displayName}
                 connectionState={connections[selectedHost.hostId]}
                 sessionId={state.activeSessionId}
                 cwd={state.workspaceId}
+                runningSessionId={state.runningSessionId}
+                notificationsEnabled={props.notificationsEnabled}
+                pendingMention={pendingMention}
+                onConsumeMention={() => setPendingMention(null)}
                 needsHistoryRefresh={state.needsHistoryRefresh}
+                initialMessages={
+                  state.activeSessionId
+                    ? state.messagesBySession[state.activeSessionId]
+                    : undefined
+                }
                 dispatch={dispatch}
                 onBack={() => {
                   setConversationOpen(false);
                   dispatch({ type: "session.active", sessionId: null });
                 }}
                 onOpenDiff={(cwd, path) => pushNav({ kind: "diff", cwd, path })}
+                onOpenFile={(cwd, path) => pushNav({ kind: "file", cwd, path })}
               />
             ) : (
               <SessionsScreen
@@ -721,7 +853,10 @@ function MobileApp() {
                 connections={connections}
                 onSelect={selectHost}
               />
-              <ConnectionBanner state={selectedConnection} />
+              <ConnectionBanner
+                state={selectedConnection}
+                onPress={() => selectedHost && void connectHost(selectedHost, { select: true })}
+              />
               <EmptyState message={connectionHelpMessage} />
               {selectedHost ? (
                 <PrimaryButton label="重新连接" onPress={() => void connectHost(selectedHost, { select: true })} />
@@ -746,7 +881,10 @@ function MobileApp() {
               connections={connections}
               onSelect={selectHost}
             />
-            <ConnectionBanner state={selectedConnection} />
+            <ConnectionBanner
+              state={selectedConnection}
+              onPress={() => selectedHost && void connectHost(selectedHost, { select: true })}
+            />
             <EmptyState message={connectionHelpMessage} />
             {selectedHost ? (
               <PrimaryButton
@@ -813,9 +951,9 @@ function MobileApp() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   page: { flex: 1, backgroundColor: colors.background },
   tabBody: { flex: 1, gap: spacing.md, paddingTop: spacing.md },
   emptyTitle: { color: colors.textPrimary, fontSize: 20, fontWeight: "700", textAlign: "center", marginTop: 80 },
   emptyText: { color: colors.textSecondary, fontSize: 13, textAlign: "center", lineHeight: 20, paddingHorizontal: spacing.lg },
-});
+}));

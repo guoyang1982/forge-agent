@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Pressable,
   RefreshControl,
   ScrollView,
-  StyleSheet,
+  Share,
   Text,
   View,
 } from "react-native";
+import * as Clipboard from "expo-clipboard";
 import type { createForgeMobileApi } from "../data/forge-mobile-api";
 import type { ProjectItem } from "./project-sanitize";
 import type { SessionItem } from "./session-sanitize";
@@ -21,6 +23,8 @@ import {
   WorkspaceGlyph,
 } from "../ui/components";
 import type { MobileHostSummary } from "../storage/host-store";
+import { hideSessionId, loadHiddenSessionIds } from "../storage/hidden-sessions-store";
+import { makeStyles } from "../ui/make-styles";
 import { colors, radii, spacing } from "../ui/theme";
 
 type Api = ReturnType<typeof createForgeMobileApi>;
@@ -38,8 +42,10 @@ export function SessionsScreen(props: {
   onOpenSession: (session: SessionItem) => void;
   onNewSession: (cwd?: string) => void;
 }) {
+  const styles = useStyles();
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
+  const [hiddenIds, setHiddenIds] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [workspaceId, setWorkspaceId] = useState<string | null>(props.workspaceFilter ?? null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -50,18 +56,14 @@ export function SessionsScreen(props: {
     setLoading(true);
     setError("");
     try {
-      const nextProjects = await props.api.projects();
+      const [nextProjects, nextSessions, hidden] = await Promise.all([
+        props.api.projects(),
+        props.api.sessions(undefined, query.trim() || undefined),
+        loadHiddenSessionIds(),
+      ]);
       setProjects(nextProjects);
-      const lists = await Promise.all(
-        nextProjects.map((project) =>
-          props.api.sessions(project.path, query.trim() || undefined).catch(() => [] as SessionItem[]),
-        ),
-      );
-      const byId = new Map<string, SessionItem>();
-      for (const list of lists) {
-        for (const session of list) byId.set(session.id, session);
-      }
-      setSessions([...byId.values()].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)));
+      setHiddenIds(hidden);
+      setSessions(nextSessions.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "加载失败");
     } finally {
@@ -71,7 +73,7 @@ export function SessionsScreen(props: {
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [props.api]); // eslint-disable-line react-hooks/exhaustive-deps -- search runs on submit, not every keystroke
 
   useEffect(() => {
     setWorkspaceId(props.workspaceFilter ?? null);
@@ -79,6 +81,7 @@ export function SessionsScreen(props: {
 
   const filtered = useMemo(() => {
     return sessions.filter((session) => {
+      if (hiddenIds.includes(session.id)) return false;
       if (workspaceId && session.cwd !== workspaceId) return false;
       if (statusFilter === "running") return session.id === props.runningSessionId;
       if (statusFilter === "unread") return props.unreadSessionIds.includes(session.id);
@@ -87,7 +90,7 @@ export function SessionsScreen(props: {
       }
       return true;
     });
-  }, [sessions, workspaceId, statusFilter, props.runningSessionId, props.unreadSessionIds]);
+  }, [sessions, hiddenIds, workspaceId, statusFilter, props.runningSessionId, props.unreadSessionIds]);
 
   const workspaceOptions = useMemo(
     () => [{ path: null as string | null, name: "全部工作空间" }, ...projects.map((p) => ({ path: p.path, name: p.name }))],
@@ -153,8 +156,19 @@ export function SessionsScreen(props: {
         ListEmptyComponent={
           loading ? (
             <ActivityIndicator color={colors.brand} style={{ marginTop: 40 }} />
+          ) : sessions.length === 0 && statusFilter === "all" && !workspaceId && !query.trim() ? (
+            <View style={styles.emptyBox}>
+              <Text style={styles.empty}>还没有会话</Text>
+              <Text style={styles.emptyHint}>新建会话后即可开始与 Agent 对话</Text>
+              <Pressable style={styles.emptyCta} onPress={() => props.onNewSession(workspaceId ?? undefined)}>
+                <Text style={styles.emptyCtaText}>新建会话</Text>
+              </Pressable>
+            </View>
           ) : (
-            <Text style={styles.empty}>没有匹配的会话。</Text>
+            <View style={styles.emptyBox}>
+              <Text style={styles.empty}>没有匹配的会话</Text>
+              <Text style={styles.emptyHint}>试试清除筛选，或切换工作空间</Text>
+            </View>
           )
         }
         renderItem={({ item }) => {
@@ -173,6 +187,38 @@ export function SessionsScreen(props: {
                 />
               }
               onPress={() => props.onOpenSession(item)}
+              onLongPress={() => {
+                Alert.alert(
+                  item.lastPreview?.slice(0, 40) || "会话操作",
+                  "远端暂不支持永久删除。可在本机隐藏，或分享会话 ID。",
+                  [
+                    { text: "取消", style: "cancel" },
+                    {
+                      text: "本机隐藏",
+                      style: "destructive",
+                      onPress: () => {
+                        void hideSessionId(item.id).then((ids) => {
+                          setHiddenIds(ids);
+                        });
+                      },
+                    },
+                    {
+                      text: "分享会话 ID",
+                      onPress: () => void Share.share({ message: item.id }),
+                    },
+                    {
+                      text: "复制预览",
+                      onPress: () => {
+                        void Clipboard.setStringAsync(item.lastPreview || item.id).then(() => {
+                          Alert.alert("已复制", item.lastPreview || item.id);
+                        });
+                      },
+                    },
+                  ],
+                );
+              }}
+              accessibilityLabel={`会话 ${item.lastPreview || item.id.slice(0, 8)}`}
+              accessibilityHint="长按可隐藏或分享"
             />
           );
         }}
@@ -186,7 +232,7 @@ function basename(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   page: { flex: 1, paddingTop: spacing.sm },
   header: {
     flexDirection: "row",
@@ -228,6 +274,18 @@ const styles = StyleSheet.create({
   workspaceChipTextActive: { color: colors.brandActive, fontWeight: "800" },
   list: { flex: 1, zIndex: 1 },
   listContent: { gap: spacing.sm, paddingBottom: spacing.xl, flexGrow: 1 },
-  empty: { color: colors.textSecondary, textAlign: "center", marginTop: 40 },
+  empty: { color: colors.textPrimary, textAlign: "center", fontSize: 16, fontWeight: "700" },
+  emptyBox: { alignItems: "center", gap: spacing.sm, marginTop: 60, paddingHorizontal: spacing.xl },
+  emptyHint: { color: colors.textSecondary, textAlign: "center", fontSize: 13, lineHeight: 18 },
+  emptyCta: {
+    marginTop: spacing.sm,
+    minHeight: 44,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radii.md,
+    backgroundColor: colors.brand,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  emptyCtaText: { color: "white", fontWeight: "800" },
   error: { color: colors.danger, fontSize: 13 },
-});
+}));

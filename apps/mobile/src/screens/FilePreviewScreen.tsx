@@ -1,10 +1,10 @@
+import * as Clipboard from "expo-clipboard";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   ScrollView,
-  Share,
-  StyleSheet,
   Text,
   View,
 } from "react-native";
@@ -12,6 +12,7 @@ import type { createForgeMobileApi, WorkspaceContent } from "../data/forge-mobil
 import { SegmentedControl, StatusPill } from "../ui/components";
 import { CodeHighlight } from "../ui/code-highlight";
 import { MarkdownBody } from "../ui/markdown";
+import { makeStyles } from "../ui/make-styles";
 import { colors, radii, spacing } from "../ui/theme";
 
 type Api = ReturnType<typeof createForgeMobileApi>;
@@ -21,9 +22,12 @@ export function FilePreviewScreen(props: {
   cwd: string;
   path: string;
   onBack: () => void;
+  /** Long-press back: jump out of file/diff stack in one step. */
+  onBackToRoot?: () => void;
   onMentionInSession?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
+  const styles = useStyles();
   const [content, setContent] = useState<WorkspaceContent | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -51,7 +55,14 @@ export function FilePreviewScreen(props: {
   return (
     <View style={styles.page}>
       <View style={styles.header}>
-        <Pressable style={styles.back} onPress={props.onBack}>
+        <Pressable
+          style={styles.back}
+          onPress={props.onBack}
+          onLongPress={props.onBackToRoot}
+          delayLongPress={350}
+          accessibilityLabel="返回"
+          accessibilityHint={props.onBackToRoot ? "长按直接回到工作空间或会话" : undefined}
+        >
           <Text style={styles.backText}>‹</Text>
         </Pressable>
         <Text style={styles.path} numberOfLines={2}>{props.path}</Text>
@@ -108,7 +119,14 @@ export function FilePreviewScreen(props: {
       ) : null}
 
       <View style={styles.actions}>
-        <Pressable style={styles.action} onPress={() => void Share.share({ message: props.path })}>
+        <Pressable
+          style={styles.action}
+          onPress={() => {
+            void Clipboard.setStringAsync(props.path).then(() => {
+              Alert.alert("已复制", props.path);
+            });
+          }}
+        >
           <Text style={styles.actionText}>复制路径</Text>
         </Pressable>
         <Pressable
@@ -132,7 +150,7 @@ function isMarkdown(language: string, path: string): boolean {
   return /markdown|md/i.test(language) || /\.md$/i.test(path);
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((colors) => ({
   page: { flex: 1, gap: spacing.md },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   back: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
@@ -174,4 +192,4 @@ const styles = StyleSheet.create({
   actionText: { color: colors.textPrimary, fontWeight: "700" },
   actionTextPrimary: { color: colors.brandActive },
   error: { color: colors.danger, fontSize: 13 },
-});
+}));

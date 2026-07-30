@@ -102,47 +102,63 @@ CI 会为每次通过测试的提交生成安装包：
 
 ## 手机端下载（Android）
 
-推荐在本机局域网发布，手机扫码即可安装，无需登录 GitHub。
+### 方式 A：Expo EAS 云构建 + 扫码安装（推荐第三方）
 
-### 本机扫码安装（推荐）
+Expo 在云端打 APK，构建完成后 **expo.dev 页面自带安装二维码**，手机用流量即可扫码下载，不依赖公司 Wi‑Fi / 隧道 / GitHub。
 
-1. 电脑与 Android 手机连接**同一 Wi‑Fi**。
-2. 在项目根目录执行：
+**一次性设置（约 2 分钟）：**
 
 ```bash
-pnpm publish:mobile:android
+cd apps/mobile
+pnpm install
+pnpm exec eas login          # 注册/登录免费 Expo 账号
+pnpm exec eas init           # 创建 forge-mobile 项目，写入 projectId
 ```
 
-脚本会先打包 APK，再启动局域网安装页。终端会打印下载地址；用电脑浏览器打开 `http://<电脑IP>:8765/` 可看到二维码，手机扫码下载安装。
-
-若 APK 已打好，只启动安装页：
+**每次发布：**
 
 ```bash
-pnpm serve:mobile:android
+pnpm publish:mobile:expo
 # 或
-pnpm publish:mobile:android --skip-build
+cd apps/mobile && pnpm exec eas build --platform android --profile preview
+```
+
+构建完成后终端会打印 `https://expo.dev/accounts/.../builds/...` 链接，打开即可看到 **Install / 二维码**。也可在 [expo.dev](https://expo.dev) → Projects → Forge Mobile → Builds 查看。
+
+> 免费账号有月度构建额度；Android internal 分发 APK 无需 Google Play。
+
+### 方式 B：微信传文件（最稳本地方案）
+
+```bash
+pnpm share:mobile:android
+```
+
+Finder 定位 APK，用**微信文件传输助手**发到手机安装。
+
+### 方式 C：Relay HTTPS 下载（已有阿里云 Relay 时）
+
+```bash
+RELAY_HOST=root@你的ECS公网IP pnpm publish:mobile:apk-relay
+```
+
+### 方式 D：Mac 热点 + 扫码（局域网）
+
+1. **系统设置 → 通用 → 共享 → 互联网共享**，手机连 Mac 热点。
+2. `pnpm serve:mobile:android`，手机打开终端打印的地址。
+
+### 方式 E：仅本地打包
+
+```bash
+pnpm pack:mobile:android
 ```
 
 安装时若系统拦截，请在 Android 设置中允许「安装未知应用」。
 
-**一次性环境**（仅首次打包需要）：JDK 17 + Android SDK（platform 36、build-tools 36.0.0、NDK 27.1.12297006）。macOS 可用 Android Studio 或 command-line tools，并设置 `ANDROID_HOME`。
-
-手机端通过公网 Relay 配对桌面端使用；配置与配对见[移动端与消息渠道指南](docs/mobile-access.md)和 [Relay 部署说明](services/forge-relay/deploy/DEPLOY-aliyun.md)。当前不提供 iOS 侧载包。
+手机端通过公网 Relay 配对 Desktop；配置见 [Relay 部署说明](services/forge-relay/deploy/DEPLOY-aliyun.md)。当前不提供 iOS 侧载包。
 
 ### GitHub CI（可选）
 
-CI 也会在通过测试后上传 `forge-mobile-android` Artifact，适合已有 GitHub 访问权限时使用：
-
-| 平台 | 安装包 | 下载 |
-|------|--------|------|
-| Android | `.apk` | [下载最新构建](https://github.com/guoyang1982/forge-agent/actions/workflows/ci.yml) |
-
-本地仅打包、不启动安装页：
-
-```bash
-pnpm pack:mobile:android
-# → release/Forge-Mobile-<version>-android.apk
-```
+CI 也会上传 `forge-mobile-android` Artifact：[Actions 下载](https://github.com/guoyang1982/forge-agent/actions/workflows/ci.yml)
 
 ## 从源码快速开始
 

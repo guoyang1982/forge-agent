@@ -23,3 +23,5 @@ mcp.json
 *.keystore
 # Local electron-builder output. Release artifacts are published outside Git.
 release/
+# Local docs (designs, plans, architecture diagrams) — keep on disk, do not publish.
+docs/

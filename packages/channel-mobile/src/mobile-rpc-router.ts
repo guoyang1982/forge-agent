@@ -4,6 +4,7 @@ import type { AdapterDaemonBridge } from "@forge/channel-core";
 import { mobileRpcFrameV1Schema, type MobileRpcFrameV1 } from "@forge/mobile-protocol";
 import { DAEMON_METHODS } from "@forge/protocol";
 import { z } from "zod";
+import { normalizeMobileAttachments } from "./mobile-attachments.js";
 import type { MobileDeviceRegistry } from "./device-registry.js";
 
 type RpcRequest = Extract<MobileRpcFrameV1, { type: "rpc.request" }>;
@@ -12,6 +13,14 @@ type RpcEvent = Extract<MobileRpcFrameV1, { type: "rpc.event" }>;
 type EventSink = (frame: RpcEvent) => void;
 
 const emptyParams = z.object({}).strict().default({});
+/** Keep mobile history payloads small enough for relay + phone memory. */
+const MOBILE_SESSION_EVENT_LIMIT = 400;
+const MOBILE_FIRST_MESSAGE_LIMIT = 50;
+const MOBILE_FIRST_EVENT_LIMIT = 120;
+const MOBILE_PAGE_MESSAGE_LIMIT = 40;
+const MOBILE_PAGE_EVENT_LIMIT = 100;
+const MOBILE_MESSAGE_TEXT_LIMIT = 20_000;
+const MOBILE_EVENT_STRING_LIMIT = 4_000;
 const runtimeListParams = z
   .object({
     cwd: z.string().min(1).max(4096).optional(),
@@ -41,9 +50,23 @@ const projectCreateParams = z
 const messagesParams = z
   .object({
     sessionId: z.string().min(8).max(128),
-    limit: z.number().int().min(1).max(500).default(100),
+    limit: z.number().int().min(1).max(500).default(MOBILE_FIRST_MESSAGE_LIMIT),
+    eventLimit: z.number().int().min(1).max(MOBILE_SESSION_EVENT_LIMIT).optional(),
   })
   .strict();
+const historyPageParams = z
+  .object({
+    sessionId: z.string().min(8).max(128),
+    limit: z.number().int().min(1).max(500).default(MOBILE_PAGE_MESSAGE_LIMIT),
+    eventLimit: z.number().int().min(1).max(MOBILE_SESSION_EVENT_LIMIT).default(MOBILE_PAGE_EVENT_LIMIT),
+    beforeMessageId: z.number().int().positive().optional(),
+    beforeEventSequence: z.number().int().positive().optional(),
+  })
+  .strict()
+  .refine(
+    (value) => value.beforeMessageId != null || value.beforeEventSequence != null,
+    { message: "beforeMessageId or beforeEventSequence is required" },
+  );
 const runtimeParams = z
   .object({
     provider: z.string().min(1).max(64),
@@ -53,15 +76,36 @@ const runtimeParams = z
     effort: z.string().min(1).max(64).optional(),
   })
   .strict();
+const attachmentParams = z
+  .object({
+    kind: z.enum(["image", "file"]),
+    name: z.string().min(1).max(180),
+    mimeType: z.string().min(1).max(120),
+    dataUrl: z.string().min(1).max(2_000_000).optional(),
+    text: z.string().max(500_000).optional(),
+    rawBase64: z.string().min(1).max(2_800_000).optional(),
+  })
+  .strict();
 const runStartParams = z
   .object({
     cwd: z.string().min(1).max(4096),
-    message: z.string().min(1).max(100_000),
+    message: z.string().max(100_000),
     sessionId: z.string().min(8).max(128).nullable().optional(),
     subscriptionId: z.string().min(8).max(128),
     runtime: runtimeParams.optional(),
+    attachments: z.array(attachmentParams).max(5).optional(),
+    files: z.array(z.string().min(1).max(4096)).max(20).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (!value.message.trim() && !(value.attachments?.length) && !(value.files?.length)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "message, attachments, or files required",
+        path: ["message"],
+      });
+    }
+  });
 const sessionSubscriptionParams = z
   .object({
     sessionId: z.string().min(8).max(128),
@@ -115,6 +159,8 @@ export class MobileRpcRouter {
     string,
     { deviceId: string; sessionId: string; event: unknown }
   >();
+  /** Avoid re-listing hundreds of sessions just to authorize opening one already listed to mobile. */
+  private readonly sessionCwdCache = new Map<string, string>();
   private readonly allowedProjectRoots: string[];
 
   constructor(private readonly options: MobileRpcRouterOptions) {
@@ -193,8 +239,10 @@ export class MobileRpcRouter {
         const result = await this.options.daemon.request(DAEMON_METHODS.LIST_SESSIONS, {
           limit: 500,
         });
+        const allSessions = sessionItems(result);
+        for (const session of allSessions) this.sessionCwdCache.set(session.id, session.cwd);
         return {
-          sessions: sessionItems(result)
+          sessions: allSessions
             .filter((session) => this.canAccessCwd(device.allowedProjects, session.cwd))
             .filter((session) => !requestedProject || sameCanonicalPath(session.cwd, requestedProject))
             .slice(0, params.limit),
@@ -219,12 +267,39 @@ export class MobileRpcRouter {
               sameCanonicalPath(stringField(hit, "cwd"), requestedProject),
           )
           .slice(0, params.limit);
+        for (const hit of hits) {
+          const sessionId = stringField(hit, "sessionId");
+          const cwd = stringField(hit, "cwd");
+          if (sessionId && cwd) this.sessionCwdCache.set(sessionId, cwd);
+        }
         return { hits };
       }
       case "session.messages": {
         const params = messagesParams.parse(frame.params);
         await this.assertSessionAccess(device.allowedProjects, params.sessionId);
-        return this.options.daemon.request(DAEMON_METHODS.GET_SESSION_MESSAGES, params);
+        // First screen: recent window only; older history via session.history.page.
+        const result = await this.options.daemon.request(DAEMON_METHODS.GET_SESSION_MESSAGES, {
+          sessionId: params.sessionId,
+          limit: params.limit,
+          eventLimit: params.eventLimit ?? MOBILE_FIRST_EVENT_LIMIT,
+        });
+        return sanitizeSessionMessagesForMobile(result);
+      }
+      case "session.history.page": {
+        const params = historyPageParams.parse(frame.params);
+        await this.assertSessionAccess(device.allowedProjects, params.sessionId);
+        const result = await this.options.daemon.request(DAEMON_METHODS.GET_SESSION_MESSAGES, {
+          sessionId: params.sessionId,
+          limit: params.limit,
+          eventLimit: params.eventLimit,
+          ...(params.beforeMessageId != null
+            ? { beforeMessageId: params.beforeMessageId }
+            : {}),
+          ...(params.beforeEventSequence != null
+            ? { beforeEventSequence: params.beforeEventSequence }
+            : {}),
+        });
+        return sanitizeSessionMessagesForMobile(result);
       }
       case "run.start":
         this.assertPermissionLevel(this.options.runPermission, "remote run");
@@ -500,13 +575,30 @@ export class MobileRpcRouter {
     };
 
     try {
+      let attachments;
+      try {
+        attachments = await normalizeMobileAttachments(params.attachments);
+      } catch (cause) {
+        throw new MobileRpcRouterError(
+          "bad_request",
+          cause instanceof Error ? cause.message : "附件无效",
+          false,
+        );
+      }
+      const message = params.message.trim() || (attachments.length ? "请查看附件" : "");
+      const files = (params.files ?? [])
+        .map((item) => item.trim().replace(/\\/g, "/"))
+        .filter(Boolean)
+        .slice(0, 20);
       const result = await this.options.daemon.request(
         DAEMON_METHODS.RUN,
         {
           cwd,
-          message: params.message,
+          message: message || (files.length ? "请查看提及的文件" : ""),
           sessionId: params.sessionId,
           runtime: params.runtime,
+          ...(attachments.length ? { attachments } : {}),
+          ...(files.length ? { files } : {}),
           // Mobile has no patch-confirm UI (desktop "应用补丁"). Without auto-apply,
           // write_file stays pending_confirmation and never lands on disk — the files
           // tab then looks empty even though the agent claimed the write succeeded.
@@ -534,11 +626,19 @@ export class MobileRpcRouter {
   ): Promise<void> {
     const active = this.activeRuns.get(sessionId);
     if (active) return;
+    const cachedCwd = this.sessionCwdCache.get(sessionId);
+    if (cachedCwd) {
+      if (!this.canAccessCwd(deviceProjects, cachedCwd)) {
+        throw new MobileRpcRouterError("forbidden", "session project is not allowed");
+      }
+      return;
+    }
     const result = await this.options.daemon.request(DAEMON_METHODS.LIST_SESSIONS, {
       limit: 500,
     });
     const session = sessionItems(result).find((item) => item.id === sessionId);
     if (!session) throw new MobileRpcRouterError("not_found", "session not found");
+    this.sessionCwdCache.set(session.id, session.cwd);
     if (!this.canAccessCwd(deviceProjects, session.cwd)) {
       throw new MobileRpcRouterError("forbidden", "session project is not allowed");
     }
@@ -714,6 +814,132 @@ function sanitizeStatus(value: unknown): unknown {
     runtime: status.runtime,
     sessions: status.sessions,
   };
+}
+
+/**
+ * Mobile only needs messages + a recent event window for timeline rebuild.
+ * Drop desktop-only journals and truncate bulky tool/text payloads before E2EE.
+ */
+function sanitizeSessionMessagesForMobile(value: unknown): unknown {
+  const root = record(value);
+  const sessionId = typeof root.sessionId === "string" ? root.sessionId : "";
+  const pageInfo = record(root.page);
+  const messageIds = Array.isArray(pageInfo.messageIds)
+    ? pageInfo.messageIds.filter((id): id is number => typeof id === "number" && Number.isFinite(id))
+    : [];
+  const rawMessages = Array.isArray(root.messages) ? root.messages : [];
+  const messages = rawMessages.flatMap((row, index) => {
+    const sanitized = sanitizeMobileChatMessage(row);
+    if (!sanitized) return [];
+    const id = messageIds[index];
+    if (typeof id === "number") sanitized.id = id;
+    return [sanitized];
+  });
+  const events = Array.isArray(root.events)
+    ? root.events
+      .slice(-MOBILE_SESSION_EVENT_LIMIT)
+      .map(sanitizeMobileSessionEvent)
+      .filter((row) => row != null)
+    : [];
+  const oldestMessageId = typeof pageInfo.oldestMessageId === "number"
+    ? pageInfo.oldestMessageId
+    : messages.find((row) => typeof row.id === "number")?.id ?? null;
+  const oldestEventSequence = typeof pageInfo.oldestEventSequence === "number"
+    ? pageInfo.oldestEventSequence
+    : events[0] && typeof events[0].sequence === "number"
+      ? events[0].sequence
+      : null;
+  const truncated = pageInfo.truncated === true;
+  return {
+    sessionId,
+    messages,
+    events,
+    truncated,
+    oldestMessageId,
+    oldestEventSequence,
+  };
+}
+
+function sanitizeMobileChatMessage(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.role !== "string") return null;
+  const next: Record<string, unknown> = {
+    role: row.role,
+    content: truncateChatContent(row.content),
+  };
+  if (Array.isArray(row.tool_calls)) next.tool_calls = row.tool_calls.slice(0, 40);
+  if (typeof row.tool_call_id === "string") next.tool_call_id = row.tool_call_id.slice(0, 120);
+  return next;
+}
+
+function truncateChatContent(content: unknown): unknown {
+  if (typeof content === "string") return content.slice(0, MOBILE_MESSAGE_TEXT_LIMIT);
+  if (!Array.isArray(content)) return content ?? "";
+  return content.map((part) => {
+    if (!part || typeof part !== "object" || Array.isArray(part)) return part;
+    const row = part as Record<string, unknown>;
+    if (row.type === "text" && typeof row.text === "string") {
+      return { ...row, text: row.text.slice(0, MOBILE_MESSAGE_TEXT_LIMIT) };
+    }
+    // Never relay base64 image payloads back to the phone over E2EE.
+    if (row.type === "image_url") {
+      return {
+        type: "image_url",
+        image_url: { url: "about:blank#forge-image" },
+        ...(typeof row.name === "string" ? { name: row.name.slice(0, 120) } : {}),
+      };
+    }
+    return part;
+  });
+}
+
+function sanitizeMobileSessionEvent(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const event = row.event && typeof row.event === "object" && !Array.isArray(row.event)
+    ? truncateDeepStrings(row.event as Record<string, unknown>, MOBILE_EVENT_STRING_LIMIT)
+    : null;
+  if (!event) return null;
+  const next: Record<string, unknown> = {
+    sequence: typeof row.sequence === "number" ? row.sequence : 0,
+    sessionId: typeof row.sessionId === "string" ? row.sessionId : "",
+    turnIndex: typeof row.turnIndex === "number" || row.turnIndex === null ? row.turnIndex : null,
+    eventType: typeof row.eventType === "string" ? row.eventType : stringField(event, "type"),
+    emittedAtMs: typeof row.emittedAtMs === "number" ? row.emittedAtMs : 0,
+    event,
+  };
+  if (typeof row.itemId === "string") next.itemId = row.itemId.slice(0, 120);
+  return next;
+}
+
+function truncateDeepStrings(
+  value: Record<string, unknown>,
+  limit: number,
+  depth = 0,
+): Record<string, unknown> {
+  if (depth > 6) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, field] of Object.entries(value)) {
+    if (typeof field === "string") {
+      out[key] = field.length > limit ? `${field.slice(0, limit)}…` : field;
+    } else if (Array.isArray(field)) {
+      out[key] = field.slice(0, 40).map((item) => {
+        if (typeof item === "string") {
+          return item.length > limit ? `${item.slice(0, limit)}…` : item;
+        }
+        if (item && typeof item === "object" && !Array.isArray(item)) {
+          return truncateDeepStrings(item as Record<string, unknown>, limit, depth + 1);
+        }
+        return item;
+      });
+    } else if (field && typeof field === "object") {
+      out[key] = truncateDeepStrings(field as Record<string, unknown>, limit, depth + 1);
+    } else {
+      out[key] = field;
+    }
+  }
+  return out;
 }
 
 function sanitizeRuntimeList(value: unknown): unknown {
