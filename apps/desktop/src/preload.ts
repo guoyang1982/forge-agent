@@ -351,6 +351,18 @@ const api = {
         suggestedTools: string[];
       } | null;
     }>,
+  createCustomTalent: (payload: { talent: Record<string, unknown> }) =>
+    ipcRenderer.invoke("forge:create-custom-talent", payload) as Promise<{ template: Record<string, unknown> }>,
+  updateCustomTalent: (payload: { templateId: string; patch: Record<string, unknown> }) =>
+    ipcRenderer.invoke("forge:update-custom-talent", payload) as Promise<{ template: Record<string, unknown> }>,
+  deleteCustomTalent: (payload: { templateId: string }) =>
+    ipcRenderer.invoke("forge:delete-custom-talent", payload) as Promise<{ removed: boolean }>,
+  listTalentTeams: (payload?: { cwd?: string }) =>
+    ipcRenderer.invoke("forge:list-talent-teams", payload ?? {}) as Promise<{ teams: Array<Record<string, unknown>> }>,
+  createTalentTeam: (payload: Record<string, unknown> & { cwd?: string }) =>
+    ipcRenderer.invoke("forge:create-talent-team", payload) as Promise<{ team: Record<string, unknown> }>,
+  deleteTalentTeam: (payload: { idOrMention: string; cwd?: string }) =>
+    ipcRenderer.invoke("forge:delete-talent-team", payload) as Promise<{ removed: boolean }>,
   searchSkillsMarketplace: (payload?: {
     query?: string;
     mode?: "featured" | "online" | "all";

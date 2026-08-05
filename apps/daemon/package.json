@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@forge/agent-core": "workspace:*",
+    "@forge/browser-core": "workspace:*",
     "@forge/automation": "workspace:*",
     "@forge/channel": "workspace:*",
     "@forge/channel-core": "workspace:*",
@@ -25,6 +26,7 @@
     "@forge/marketplace": "workspace:*",
     "@forge/memory": "workspace:*",
     "@forge/tool-network": "workspace:*",
+    "@forge/tool-browser": "workspace:*",
     "@forge/tool-software": "workspace:*",
     "@forge/hooks": "workspace:*",
     "@forge/plugin-registry": "workspace:*",

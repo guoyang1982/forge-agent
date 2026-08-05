@@ -4,6 +4,9 @@ import { createBuiltinRegistry, type ToolRegistry } from "@forge/tools";
 import { buildAgentContext, formatContextForPrompt } from "@forge/context";
 import { MemoryStore, registerMemoryTools } from "@forge/memory";
 import { registerNetworkTools } from "@forge/tool-network";
+import { BrowserService } from "@forge/browser-core";
+import { registerBrowserTools } from "@forge/tool-browser";
+import { DesktopBrowserBackend } from "./services/browser-host-client.js";
 import { registerSoftwareTools } from "@forge/tool-software";
 import {
   formatActiveSkillBlock,
@@ -36,6 +39,7 @@ import {
   getMcpClientPool,
   registryHasMcpFilesystemWrites,
   type McpClient,
+  type McpServerRequestHandler,
 } from "@forge/tool-mcp";
 import type { WorkspaceGuard } from "@forge/workspace";
 import {
@@ -59,6 +63,7 @@ export interface ForgeRuntime {
   dataDir: string;
   monorepoRoot: string;
   config?: Partial<ForgeConfig>;
+  browser: BrowserService;
 }
 
 const projectPluginsByCwd = new Map<string, DiscoveredPlugin[]>();
@@ -106,6 +111,8 @@ export async function createForgeRuntime(options: {
     ],
     options.config,
   );
+  const browser = new BrowserService();
+  browser.registerBackend(new DesktopBrowserBackend(options.dataDir), { makeDefault: true });
   return {
     memory,
     skills,
@@ -113,6 +120,7 @@ export async function createForgeRuntime(options: {
     dataDir: options.dataDir,
     monorepoRoot: options.monorepoRoot,
     config: options.config,
+    browser,
   };
 }
 
@@ -183,6 +191,8 @@ export async function prepareRunContext(options: {
    * loadable, mirroring how the tool allowance gates tools.
    */
   strictTalentSkills?: boolean;
+  /** Handles MCP server-initiated requests such as elicitation/create. */
+  mcpServerRequestHandler?: McpServerRequestHandler;
 }): Promise<{
   messages: Awaited<ReturnType<typeof buildInitialMessages>>;
   registry: ToolRegistry;
@@ -319,6 +329,14 @@ export async function prepareRunContext(options: {
     console.log(`[forge] Software tools: ${softwareToolCount} registered`);
   }
 
+  const browserToolCount = registerBrowserTools(registry, {
+    browser: options.runtime.browser,
+    permissions: config?.permissions?.browser,
+  });
+  if (browserToolCount > 0) {
+    console.log(`[forge] Browser tools: ${browserToolCount} registered`);
+  }
+
   const mcpServers = loadMcpServers(
     options.dataDir,
     options.guard.cwdPath,
@@ -330,7 +348,9 @@ export async function prepareRunContext(options: {
   const allMcpServers = [...mcpServers, ...pluginMcpServers];
   const { clients: mcpClients, release: releaseMcp } =
     await getMcpClientPool().acquire(options.guard.cwdPath, allMcpServers);
-  const mcpToolCount = await attachMcpTools(registry, mcpClients);
+  const mcpToolCount = await attachMcpTools(registry, mcpClients, {
+    onServerRequest: options.mcpServerRequestHandler,
+  });
 
   const useMcpFileWrite = registryHasMcpFilesystemWrites(registry.definitions);
   if (useMcpFileWrite) {

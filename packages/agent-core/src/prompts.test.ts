@@ -25,6 +25,24 @@ describe("buildSystemPrompt automation notifications", () => {
     expect(prompt).toContain("Do not say an image was generated unless a concrete file path exists");
   });
 
+  it("prefers direct Computer Use MCP tools over the skill's node_repl transport", () => {
+    const prompt = buildSystemPrompt({
+      cwd: "/tmp/proj",
+      agentsMd: "",
+      gitStatus: "(not a git repository)",
+    });
+
+    expect(prompt).toContain("mcp_computer_use_list_apps");
+    expect(prompt).toContain("Do not use node_repl for Computer Use");
+    expect(prompt).toContain("direct MCP tools are present");
+    expect(prompt).toContain("do not switch to Chrome/Browser skills");
+    expect(prompt).toContain("cannot import plugin browser-client modules");
+    expect(prompt).toContain("mcp__node_repl__js");
+    expect(prompt).toContain("save_screenshot_to");
+    expect(prompt).toContain("Never substitute macOS screencapture");
+    expect(prompt).toContain("full-desktop screenshot");
+  });
+
   it("tells automation runs with iLink notification not to set up push services", () => {
     const prompt = buildSystemPrompt({
       cwd: "/tmp/proj",

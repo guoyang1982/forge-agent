@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, realpathSync, rmdirSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, rmdirSync, statSync } from "node:fs";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 import type { AdapterDaemonBridge } from "@forge/channel-core";
 import { mobileRpcFrameV1Schema, type MobileRpcFrameV1 } from "@forge/mobile-protocol";
@@ -161,10 +161,11 @@ export class MobileRpcRouter {
   >();
   /** Avoid re-listing hundreds of sessions just to authorize opening one already listed to mobile. */
   private readonly sessionCwdCache = new Map<string, string>();
-  private readonly allowedProjectRoots: string[];
 
   constructor(private readonly options: MobileRpcRouterOptions) {
-    this.allowedProjectRoots = canonicalRoots(options.allowedProjects);
+    // options.allowedProjects is retained for channel config compatibility but
+    // access is scoped to Desktop's shared ui.projects list (synced live).
+    void this.options.allowedProjects;
   }
 
   async handle(deviceId: string, input: unknown, emit: EventSink): Promise<RpcResponse> {
@@ -220,21 +221,17 @@ export class MobileRpcRouter {
       case "project.list": {
         emptyParams.parse(frame.params ?? {});
         const registered = await this.options.daemon.request(DAEMON_METHODS.LIST_PROJECTS, {});
-        return {
-          projects: this.listProjects(
-            device.allowedProjects,
-            objectArray(registered, "projects"),
-          ),
-        };
+        return { projects: this.listProjects(objectArray(registered, "projects")) };
       }
       case "project.create": {
         const params = projectCreateParams.parse(frame.params);
-        return { project: await this.createProject(device.allowedProjects, params) };
+        return { project: await this.createProject(params) };
       }
       case "session.list": {
         const params = listParams.parse(frame.params ?? {});
+        const grants = await this.loadProjectGrants();
         const requestedProject = params.cwd
-          ? this.assertProjectAccess(device.allowedProjects, params.cwd)
+          ? await this.assertProjectAccess(params.cwd, grants)
           : undefined;
         const result = await this.options.daemon.request(DAEMON_METHODS.LIST_SESSIONS, {
           limit: 500,
@@ -243,24 +240,23 @@ export class MobileRpcRouter {
         for (const session of allSessions) this.sessionCwdCache.set(session.id, session.cwd);
         return {
           sessions: allSessions
-            .filter((session) => this.canAccessCwd(device.allowedProjects, session.cwd))
+            .filter((session) => this.canAccessCwd(grants, session.cwd))
             .filter((session) => !requestedProject || sameCanonicalPath(session.cwd, requestedProject))
             .slice(0, params.limit),
         };
       }
       case "session.search": {
         const params = searchParams.parse(frame.params);
+        const grants = await this.loadProjectGrants();
         const requestedProject = params.cwd
-          ? this.assertProjectAccess(device.allowedProjects, params.cwd)
+          ? await this.assertProjectAccess(params.cwd, grants)
           : undefined;
         const result = await this.options.daemon.request(DAEMON_METHODS.SEARCH_SESSIONS, {
           query: params.query,
           limit: params.limit,
         });
         const hits = objectArray(result, "hits")
-          .filter((hit) =>
-            this.canAccessCwd(device.allowedProjects, stringField(hit, "cwd")),
-          )
+          .filter((hit) => this.canAccessCwd(grants, stringField(hit, "cwd")))
           .filter(
             (hit) =>
               !requestedProject ||
@@ -276,7 +272,7 @@ export class MobileRpcRouter {
       }
       case "session.messages": {
         const params = messagesParams.parse(frame.params);
-        await this.assertSessionAccess(device.allowedProjects, params.sessionId);
+        await this.assertSessionAccess(params.sessionId);
         // First screen: recent window only; older history via session.history.page.
         const result = await this.options.daemon.request(DAEMON_METHODS.GET_SESSION_MESSAGES, {
           sessionId: params.sessionId,
@@ -287,7 +283,7 @@ export class MobileRpcRouter {
       }
       case "session.history.page": {
         const params = historyPageParams.parse(frame.params);
-        await this.assertSessionAccess(device.allowedProjects, params.sessionId);
+        await this.assertSessionAccess(params.sessionId);
         const result = await this.options.daemon.request(DAEMON_METHODS.GET_SESSION_MESSAGES, {
           sessionId: params.sessionId,
           limit: params.limit,
@@ -303,12 +299,12 @@ export class MobileRpcRouter {
       }
       case "run.start":
         this.assertPermissionLevel(this.options.runPermission, "remote run");
-        return this.startRun(deviceId, device.allowedProjects, frame.params, emit);
+        return this.startRun(deviceId, frame.params, emit);
       case "run.cancel": {
         // Stopping must not require the same start-run permission gate — paired
         // devices with session access should always be able to interrupt.
         const params = cancelParams.parse(frame.params);
-        await this.assertCancelAccess(deviceId, device.allowedProjects, params.sessionId);
+        await this.assertCancelAccess(deviceId, params.sessionId);
         return this.options.daemon.request(DAEMON_METHODS.CANCEL_RUN, {
           sessionId: params.sessionId,
         });
@@ -363,7 +359,7 @@ export class MobileRpcRouter {
       }
       case "git.branches": {
         const params = cwdParams.parse(frame.params);
-        const cwd = this.assertProjectAccess(device.allowedProjects, params.cwd);
+        const cwd = await this.assertProjectAccess(params.cwd);
         const result = await this.options.daemon.request(DAEMON_METHODS.MOBILE_GIT_BRANCHES, {
           cwd,
         });
@@ -371,7 +367,7 @@ export class MobileRpcRouter {
       }
       case "git.switch": {
         const params = gitSwitchParams.parse(frame.params);
-        const cwd = this.assertProjectAccess(device.allowedProjects, params.cwd);
+        const cwd = await this.assertProjectAccess(params.cwd);
         const result = await this.options.daemon.request(DAEMON_METHODS.MOBILE_GIT_SWITCH, {
           cwd,
           branch: params.branch,
@@ -381,7 +377,7 @@ export class MobileRpcRouter {
       }
       case "workspace.files.list": {
         const params = filesListParams.parse(frame.params);
-        const cwd = this.assertProjectAccess(device.allowedProjects, params.cwd);
+        const cwd = await this.assertProjectAccess(params.cwd);
         const result = await this.options.daemon.request(
           DAEMON_METHODS.MOBILE_WORKSPACE_FILES_LIST,
           { cwd, path: params.path },
@@ -390,7 +386,7 @@ export class MobileRpcRouter {
       }
       case "workspace.file.read": {
         const params = workspacePathParams.parse(frame.params);
-        const cwd = this.assertProjectAccess(device.allowedProjects, params.cwd);
+        const cwd = await this.assertProjectAccess(params.cwd);
         const result = await this.options.daemon.request(
           DAEMON_METHODS.MOBILE_WORKSPACE_FILE_READ,
           { cwd, path: params.path },
@@ -399,7 +395,7 @@ export class MobileRpcRouter {
       }
       case "workspace.diff.list": {
         const params = cwdParams.parse(frame.params);
-        const cwd = this.assertProjectAccess(device.allowedProjects, params.cwd);
+        const cwd = await this.assertProjectAccess(params.cwd);
         const result = await this.options.daemon.request(
           DAEMON_METHODS.MOBILE_WORKSPACE_DIFF_LIST,
           { cwd },
@@ -408,7 +404,7 @@ export class MobileRpcRouter {
       }
       case "workspace.diff.get": {
         const params = workspacePathParams.parse(frame.params);
-        const cwd = this.assertProjectAccess(device.allowedProjects, params.cwd);
+        const cwd = await this.assertProjectAccess(params.cwd);
         const result = await this.options.daemon.request(
           DAEMON_METHODS.MOBILE_WORKSPACE_DIFF_GET,
           { cwd, path: params.path },
@@ -431,53 +427,38 @@ export class MobileRpcRouter {
     );
   }
 
+  /** Desktop ui.projects is the live grant source for paired phones. */
+  private async loadProjectGrants(): Promise<string[]> {
+    const registered = await this.options.daemon.request(DAEMON_METHODS.LIST_PROJECTS, {});
+    const paths = objectArray(registered, "projects")
+      .map((project) => stringField(project, "cwd"))
+      .filter(Boolean);
+    return canonicalRoots(paths);
+  }
+
   private listProjects(
-    deviceProjects: string[],
     registeredProjects: Array<Record<string, unknown>>,
   ): Array<{
     name: string;
     path: string;
     kind: "workspace" | "project";
   }> {
-    const grants = canonicalRoots(deviceProjects).filter((grant) =>
-      this.allowedProjectRoots.some((root) => isWithin(root, grant)),
-    );
     const projects: Array<{ name: string; path: string; kind: "workspace" | "project" }> = [];
-    for (const root of grants) {
-      projects.push({ name: basename(root) || root, path: root, kind: "workspace" });
-      for (const registered of registeredProjects) {
-        const path = stringField(registered, "cwd");
-        if (!path || !this.canAccessCwd(deviceProjects, path)) continue;
-        let canonicalPath: string;
-        try {
-          canonicalPath = realpathSync.native(path);
-        } catch {
-          // Skip registered projects whose cwd is missing or unreadable.
-          continue;
-        }
-        projects.push({
-          name: stringField(registered, "name") || basename(path) || path,
-          path: canonicalPath,
-          kind: "project",
-        });
-      }
-      let entries: Array<{ name: string; isDirectory(): boolean }>;
+    for (const registered of registeredProjects) {
+      const path = stringField(registered, "cwd");
+      if (!path) continue;
+      let canonicalPath: string;
       try {
-        entries = readdirSync(root, { withFileTypes: true, encoding: "utf8" });
+        canonicalPath = realpathSync.native(path);
       } catch {
+        // Skip registered projects whose cwd is missing or unreadable.
         continue;
       }
-      for (const entry of entries) {
-        if (
-          !entry.isDirectory() ||
-          entry.name.startsWith(".") ||
-          entry.name === "node_modules"
-        ) continue;
-        const path = resolve(root, entry.name);
-        if (this.canAccessCanonical(deviceProjects, path)) {
-          projects.push({ name: entry.name, path, kind: "project" });
-        }
-      }
+      projects.push({
+        name: stringField(registered, "name") || basename(path) || path,
+        path: canonicalPath,
+        kind: "project",
+      });
     }
     return projects
       .filter((project, index, all) => all.findIndex((item) => item.path === project.path) === index)
@@ -485,13 +466,29 @@ export class MobileRpcRouter {
   }
 
   private async createProject(
-    deviceProjects: string[],
     params: z.infer<typeof projectCreateParams>,
   ): Promise<{ name: string; path: string; kind: "project" }> {
-    const parent = this.assertProjectAccess(deviceProjects, params.parentPath);
-    const grants = canonicalRoots(deviceProjects);
-    if (!grants.includes(parent)) {
-      throw new MobileRpcRouterError("forbidden", "projects can only be created in a workspace root");
+    // Creating registers into Desktop ui.projects, so the new path becomes
+    // visible/operable on both Desktop and Mobile after success.
+    let parent: string;
+    try {
+      parent = realpathSync.native(params.parentPath);
+    } catch {
+      throw new MobileRpcRouterError("forbidden", "parent path is not allowed");
+    }
+    try {
+      if (!statSync(parent).isDirectory()) {
+        throw new MobileRpcRouterError("forbidden", "parent path is not allowed");
+      }
+    } catch (error) {
+      if (error instanceof MobileRpcRouterError) throw error;
+      throw new MobileRpcRouterError("forbidden", "parent path is not allowed");
+    }
+    const grants = await this.loadProjectGrants();
+    // Parent must be an existing Desktop project, inside one, or the parent
+    // folder of one (sibling create, matching Desktop "new project" adjacency).
+    if (!this.canCreateUnder(grants, parent)) {
+      throw new MobileRpcRouterError("forbidden", "parent path is not allowed");
     }
     const target = resolve(parent, params.name);
     if (resolve(target, "..") !== parent || !isWithin(parent, target)) {
@@ -513,20 +510,20 @@ export class MobileRpcRouter {
         throw new MobileRpcRouterError("internal", "project could not be registered", true);
       }
       return { name: params.name, path, kind: "project" };
-    } catch {
+    } catch (error) {
+      if (error instanceof MobileRpcRouterError) throw error;
       throw new MobileRpcRouterError("internal", "project could not be created", true);
     }
   }
 
   private async startRun(
     deviceId: string,
-    deviceProjects: string[],
     rawParams: unknown,
     emit: EventSink,
   ): Promise<unknown> {
     const params = runStartParams.parse(rawParams);
-    const cwd = this.assertProjectAccess(deviceProjects, params.cwd);
-    if (params.sessionId) await this.assertSessionAccess(deviceProjects, params.sessionId);
+    const cwd = await this.assertProjectAccess(params.cwd);
+    if (params.sessionId) await this.assertSessionAccess(params.sessionId);
     const activeCount = [...this.pendingRunOwners.values()].filter(
       (owner) => owner === deviceId,
     ).length;
@@ -626,15 +623,13 @@ export class MobileRpcRouter {
     }
   }
 
-  private async assertSessionAccess(
-    deviceProjects: string[],
-    sessionId: string,
-  ): Promise<void> {
+  private async assertSessionAccess(sessionId: string): Promise<void> {
     const active = this.activeRuns.get(sessionId);
     if (active) return;
+    const grants = await this.loadProjectGrants();
     const cachedCwd = this.sessionCwdCache.get(sessionId);
     if (cachedCwd) {
-      if (!this.canAccessCwd(deviceProjects, cachedCwd)) {
+      if (!this.canAccessCwd(grants, cachedCwd)) {
         throw new MobileRpcRouterError("forbidden", "session project is not allowed");
       }
       return;
@@ -645,21 +640,17 @@ export class MobileRpcRouter {
     const session = sessionItems(result).find((item) => item.id === sessionId);
     if (!session) throw new MobileRpcRouterError("not_found", "session not found");
     this.sessionCwdCache.set(session.id, session.cwd);
-    if (!this.canAccessCwd(deviceProjects, session.cwd)) {
+    if (!this.canAccessCwd(grants, session.cwd)) {
       throw new MobileRpcRouterError("forbidden", "session project is not allowed");
     }
   }
 
   /**
    * Cancel is allowed when this device owns the live run, or when the session
-   * belongs to an allowed project (so Desktop-started runs can be stopped from
-   * the phone and vice versa via the shared daemon cancel_run).
+   * belongs to a Desktop-registered project (so Desktop-started runs can be
+   * stopped from the phone and vice versa via the shared daemon cancel_run).
    */
-  private async assertCancelAccess(
-    deviceId: string,
-    deviceProjects: string[],
-    sessionId: string,
-  ): Promise<void> {
+  private async assertCancelAccess(deviceId: string, sessionId: string): Promise<void> {
     const run = this.activeRuns.get(sessionId);
     if (run?.deviceId === deviceId) return;
 
@@ -672,37 +663,47 @@ export class MobileRpcRouter {
       // in-flight run under a different key — still forbid unknown sessions.
       throw new MobileRpcRouterError("not_found", "session not found");
     }
-    if (!this.canAccessCwd(deviceProjects, session.cwd)) {
+    const grants = await this.loadProjectGrants();
+    if (!this.canAccessCwd(grants, session.cwd)) {
       throw new MobileRpcRouterError("forbidden", "session project is not allowed");
     }
   }
 
-  private assertProjectAccess(deviceProjects: string[], requested: string): string {
+  private async assertProjectAccess(requested: string, grants?: string[]): Promise<string> {
     let canonical: string;
     try {
       canonical = realpathSync.native(requested);
     } catch {
       throw new MobileRpcRouterError("forbidden", "project is not allowed");
     }
-    if (!this.canAccessCanonical(deviceProjects, canonical)) {
+    const roots = grants ?? (await this.loadProjectGrants());
+    if (!this.canAccessCanonical(roots, canonical)) {
       throw new MobileRpcRouterError("forbidden", "project is not allowed");
     }
     return canonical;
   }
 
-  private canAccessCwd(deviceProjects: string[], cwd: string): boolean {
+  private canAccessCwd(grants: string[], cwd: string): boolean {
     try {
-      return this.canAccessCanonical(deviceProjects, realpathSync.native(cwd));
+      return this.canAccessCanonical(grants, realpathSync.native(cwd));
     } catch {
       return false;
     }
   }
 
-  private canAccessCanonical(deviceProjects: string[], canonical: string): boolean {
-    const grants = canonicalRoots(deviceProjects);
-    return this.allowedProjectRoots.some(
-      (root) => isWithin(root, canonical) && grants.some((grant) => isWithin(grant, canonical)),
-    );
+  private canAccessCanonical(grants: string[], canonical: string): boolean {
+    return canonicalRoots(grants).some((root) => isWithin(root, canonical));
+  }
+
+  private canCreateUnder(grants: string[], parent: string): boolean {
+    if (this.canAccessCanonical(grants, parent)) return true;
+    return canonicalRoots(grants).some((grant) => {
+      try {
+        return realpathSync.native(resolve(grant, "..")) === parent;
+      } catch {
+        return false;
+      }
+    });
   }
 }
 
@@ -1074,6 +1075,22 @@ function sanitizeFileRead(value: unknown): unknown {
       content: result.content,
       size,
       truncated: booleanField(result, "truncated"),
+    };
+  }
+  if (
+    kind === "image"
+    && typeof result.mime === "string"
+    && typeof result.dataUrl === "string"
+    && /^data:image\/(?:gif|jpeg|png|webp);base64,/.test(result.dataUrl)
+    && result.dataUrl.length <= 2_000_000
+  ) {
+    return {
+      path,
+      kind,
+      mime: result.mime,
+      dataUrl: result.dataUrl,
+      size,
+      truncated: false,
     };
   }
   if (kind === "binary" && typeof result.mime === "string") {

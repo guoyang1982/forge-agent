@@ -1,0 +1,28 @@
+{
+  "id": "computer-use",
+  "name": "Forge Computer Use",
+  "version": "1.0.0",
+  "description": "Forge-owned macOS desktop automation. Lists apps, reads window state, captures the target app, clicks, types, presses keys, and scrolls without requiring Codex.",
+  "publisher": "forge",
+  "enabledByDefault": true,
+  "capabilities": {
+    "skills": ["skills/computer-use.md"],
+    "mcpServers": [
+      {
+        "name": "computer-use",
+        "command": "node",
+        "args": ["mcp/server.mjs"],
+        "enabled": true
+      }
+    ]
+  },
+  "settings": {
+    "required": ["macOS Accessibility", "macOS Screen Recording"],
+    "schema": {
+      "computerUse.enabled": {
+        "type": "boolean",
+        "description": "Enable Forge-owned desktop automation."
+      }
+    }
+  }
+}

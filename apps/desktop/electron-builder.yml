@@ -4,7 +4,7 @@ copyright: Copyright © Forge
 electronVersion: "31.7.7"
 npmRebuild: false
 directories:
-  output: ../../../../release
+  output: ../../release
 files:
   - dist/**/*
   - src/renderer/**/*
@@ -19,6 +19,9 @@ extraResources:
       - "**/*"
 mac:
   category: public.app-category.developer-tools
+  extendInfo:
+    NSAppleEventsUsageDescription: Forge uses macOS System Events only after user approval to control the selected application.
+    NSScreenCaptureUsageDescription: Forge captures the selected application window only after user approval.
   target:
     - dmg
   icon: src/renderer/assets/forge-icon.png

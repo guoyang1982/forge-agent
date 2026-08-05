@@ -5,6 +5,7 @@ import {
   type PermissionsConfig,
 } from "./permissions.js";
 import type { NetworkServiceConfig } from "./network-service.js";
+import type { BrowserBackendSummary } from "./browser.js";
 
 export {
   DEFAULT_PERMISSIONS,
@@ -35,6 +36,7 @@ export {
 export * from "./automation.js";
 export * from "./channel.js";
 export * from "./mobile.js";
+export * from "./browser.js";
 
 export type JsonRpcId = number | string;
 
@@ -263,6 +265,9 @@ export interface DaemonStatusResult {
   };
   sessions: {
     count: number;
+  };
+  browser?: {
+    backends: BrowserBackendSummary[];
   };
 }
 
@@ -666,6 +671,7 @@ export interface HubImportRequest {
 }
 
 export interface TalentTemplateListItem {
+  schemaVersion?: 2;
   id: string;
   category: string;
   role: string;
@@ -677,7 +683,29 @@ export interface TalentTemplateListItem {
   sourcePath: string;
   suggestedSkills: string[];
   suggestedTools: string[];
+  methodology?: string[];
+  inputRequirements?: string[];
+  deliverables?: string[];
+  qualityGates?: string[];
+  knowledgeRefs?: string[];
+  connectors?: string[];
+  taskExamples?: TalentTaskExample[];
+  version?: string;
+  provenance?: TalentProvenance;
   hired: boolean;
+}
+
+export interface TalentTaskExample {
+  title: string;
+  prompt: string;
+  outcome?: string;
+}
+
+export interface TalentProvenance {
+  source: "bundled" | "synced" | "custom";
+  author?: string;
+  homepage?: string;
+  reviewed?: boolean;
 }
 
 export interface HiredTalentListItem {
@@ -691,6 +719,8 @@ export interface HiredTalentListItem {
   emoji?: string;
   color?: string;
   avatar?: string;
+  version?: string;
+  provenance?: TalentProvenance;
   enabled: boolean;
   skills: string[];
   tools: string[];
@@ -730,8 +760,100 @@ export interface GetTalentTemplateResult {
     systemPrompt: string;
     suggestedSkills: string[];
     suggestedTools: string[];
+    schemaVersion?: 2;
+    methodology?: string[];
+    inputRequirements?: string[];
+    deliverables?: string[];
+    qualityGates?: string[];
+    knowledgeRefs?: string[];
+    connectors?: string[];
+    taskExamples?: TalentTaskExample[];
+    version?: string;
+    provenance?: TalentProvenance;
   } | null;
 }
+
+export interface CustomTalentTemplateInput {
+  id?: string;
+  role: string;
+  category?: string;
+  description: string;
+  vibe?: string;
+  color?: string;
+  systemPrompt?: string;
+  suggestedSkills?: string[];
+  suggestedTools?: string[];
+  methodology?: string[];
+  inputRequirements?: string[];
+  deliverables?: string[];
+  qualityGates?: string[];
+  knowledgeRefs?: string[];
+  connectors?: string[];
+  taskExamples?: TalentTaskExample[];
+  author?: string;
+}
+
+export interface CreateCustomTalentRequest {
+  talent: CustomTalentTemplateInput;
+}
+
+export interface CreateCustomTalentResult extends GetTalentTemplateResult {}
+
+export interface UpdateCustomTalentRequest {
+  templateId: string;
+  patch: Partial<Omit<CustomTalentTemplateInput, "id">>;
+}
+
+export interface UpdateCustomTalentResult extends GetTalentTemplateResult {}
+
+export interface DeleteCustomTalentRequest {
+  templateId: string;
+}
+
+export interface DeleteCustomTalentResult {
+  removed: boolean;
+}
+
+export interface TalentTeamMember {
+  mention: string;
+  responsibility: string;
+  after?: string[];
+}
+
+export interface TalentTeam {
+  id: string;
+  name: string;
+  mention: string;
+  description: string;
+  leadMention?: string;
+  members: TalentTeamMember[];
+  deliverables: string[];
+  executionMode: "auto" | "parallel" | "serial";
+  createdAt: string;
+  stats: { tasksDone: number; lastUsed: string | null };
+}
+
+export interface ListTalentTeamsRequest { cwd?: string }
+export interface ListTalentTeamsResult { teams: TalentTeam[] }
+export interface CreateTalentTeamRequest {
+  cwd?: string;
+  name: string;
+  mention?: string;
+  description: string;
+  leadMention?: string;
+  members: TalentTeamMember[];
+  deliverables?: string[];
+  executionMode?: TalentTeam["executionMode"];
+}
+export interface CreateTalentTeamResult { team: TalentTeam }
+export interface UpdateTalentTeamRequest {
+  cwd?: string;
+  idOrMention: string;
+  patch: Partial<Pick<TalentTeam, "name" | "mention" | "description" | "leadMention" | "members" | "deliverables" | "executionMode">>;
+}
+export interface UpdateTalentTeamResult { team: TalentTeam }
+export interface DeleteTalentTeamRequest { cwd?: string; idOrMention: string }
+export interface DeleteTalentTeamResult { removed: boolean }
 
 export interface TalentSyncRequest {
   categories?: string[];
@@ -1046,7 +1168,14 @@ export type AgentEvent =
       type: "permission_request";
       sessionId?: string;
       id: string;
-      kind: "network" | "command" | "software" | "acp" | "codex" | "claude-code";
+      kind:
+        | "network"
+        | "command"
+        | "software"
+        | "mcp"
+        | "acp"
+        | "codex"
+        | "claude-code";
       /** Present for network kind. */
       action?: "search" | "web" | "api" | "download" | "install" | "uninstall";
       summary: string;
@@ -1360,6 +1489,13 @@ export const DAEMON_METHODS = {
   TALENTS_RENAME: "talents.rename",
   TALENTS_UPDATE_BINDINGS: "talents.update_bindings",
   TALENTS_GET_TEMPLATE: "talents.get_template",
+  TALENTS_CREATE_CUSTOM: "talents.create_custom",
+  TALENTS_UPDATE_CUSTOM: "talents.update_custom",
+  TALENTS_DELETE_CUSTOM: "talents.delete_custom",
+  TALENTS_LIST_TEAMS: "talents.list_teams",
+  TALENTS_CREATE_TEAM: "talents.create_team",
+  TALENTS_UPDATE_TEAM: "talents.update_team",
+  TALENTS_DELETE_TEAM: "talents.delete_team",
   GET_CONFIG: "get_config",
   RELOAD_RUNTIME: "reload_runtime",
   LIST_AUTOMATIONS: "list_automations",

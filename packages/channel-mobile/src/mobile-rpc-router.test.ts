@@ -7,7 +7,7 @@ import {
   symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterDaemonBridge } from "@forge/channel-core";
 import Database from "better-sqlite3";
@@ -45,6 +45,46 @@ function fixture(): {
   return { root, outside, escape, registry };
 }
 
+/** Desktop ui.projects is the live grant source — tests must expose it via project.list. */
+function withSharedProjects(
+  daemon: AdapterDaemonBridge,
+  projectCwds: string[],
+): AdapterDaemonBridge {
+  return {
+    async request(method, params, onEvent) {
+      if (method === "project.list") {
+        return {
+          projects: projectCwds.map((cwd) => ({
+            id: `project-${cwd}`,
+            name: basename(cwd) || cwd,
+            cwd,
+          })),
+        };
+      }
+      if (onEvent) return daemon.request(method, params, onEvent);
+      return daemon.request(method, params);
+    },
+  };
+}
+
+function createRouter(
+  registry: MobileDeviceRegistry,
+  daemon: AdapterDaemonBridge,
+  projectCwds: string[],
+  options: Partial<{
+    runPermission: "allow" | "confirm" | "deny";
+    approvePermission: "allow" | "confirm" | "deny";
+    maxConcurrentRunsPerDevice: number;
+  }> = {},
+): MobileRpcRouter {
+  return new MobileRpcRouter({
+    daemon: withSharedProjects(daemon, projectCwds),
+    registry,
+    allowedProjects: projectCwds,
+    ...options,
+  });
+}
+
 afterEach(() => {
   for (const path of tempDirs.splice(0)) rmSync(path, { recursive: true, force: true });
 });
@@ -67,7 +107,7 @@ describe("MobileRpcRouter", () => {
         return {};
       },
     };
-    const router = new MobileRpcRouter({ daemon, registry, allowedProjects: [root] });
+    const router = createRouter(registry, daemon, [root]);
     try {
       await expect(
         router.handle(
@@ -153,7 +193,7 @@ describe("MobileRpcRouter", () => {
         return { sessions: [{ id: "session_01", cwd: root }] };
       },
     };
-    const router = new MobileRpcRouter({ daemon, registry, allowedProjects: [root] });
+    const router = createRouter(registry, daemon, [root]);
     const events: unknown[] = [];
     try {
       const runPromise = router.handle(
@@ -272,7 +312,7 @@ describe("MobileRpcRouter", () => {
         return {};
       },
     };
-    const router = new MobileRpcRouter({ daemon, registry, allowedProjects: [root] });
+    const router = createRouter(registry, daemon, [root]);
     try {
       const runPromise = router.handle(
         "device_000001",
@@ -332,7 +372,7 @@ describe("MobileRpcRouter", () => {
         return {};
       },
     };
-    const router = new MobileRpcRouter({ daemon, registry, allowedProjects: [root] });
+    const router = createRouter(registry, daemon, [root]);
     try {
       await expect(
         router.handle(
@@ -396,7 +436,7 @@ describe("MobileRpcRouter", () => {
         return {};
       },
     };
-    const router = new MobileRpcRouter({ daemon, registry, allowedProjects: [root] });
+    const router = createRouter(registry, daemon, [root]);
     const events: unknown[] = [];
     try {
       const runPromise = router.handle(
@@ -467,11 +507,7 @@ describe("MobileRpcRouter", () => {
 
   it("fails closed for methods outside the Mobile RPC schema", async () => {
     const { root, registry } = fixture();
-    const router = new MobileRpcRouter({
-      daemon: { request: async () => ({}) },
-      registry,
-      allowedProjects: [root],
-    });
+    const router = createRouter(registry, { request: async () => ({}) }, [root]);
     try {
       await expect(
         router.handle(
@@ -485,22 +521,32 @@ describe("MobileRpcRouter", () => {
     }
   });
 
-  it("lists and creates projects only inside an explicitly granted workspace root", async () => {
-    const { root, registry } = fixture();
+  it("lists Desktop shared projects and creates nested projects that register back", async () => {
+    const { root, outside, registry } = fixture();
     mkdirSync(join(root, "existing-app"));
+    const shared = [
+      { id: "proj-root", name: "allowed", cwd: root },
+      { id: "proj-existing", name: "existing-app", cwd: join(root, "existing-app") },
+    ];
     const daemonCalls: Array<{ method: string; params: unknown }> = [];
-    const router = new MobileRpcRouter({
-      daemon: {
-        request: async (method, params) => {
-          daemonCalls.push({ method, params });
-          if (method === "project.list") return { projects: [] };
-          if (method === "project.register") return { project: params };
-          return {};
-        },
+    const daemon: AdapterDaemonBridge = {
+      request: async (method, params) => {
+        daemonCalls.push({ method, params });
+        if (method === "project.list") return { projects: shared };
+        if (method === "project.register") {
+          const cwd = typeof (params as { cwd?: string })?.cwd === "string"
+            ? (params as { cwd: string }).cwd
+            : "";
+          const name = typeof (params as { name?: string })?.name === "string"
+            ? (params as { name: string }).name
+            : basename(cwd);
+          shared.push({ id: `proj-${name}`, name, cwd });
+          return { project: { id: `proj-${name}`, name, cwd } };
+        }
+        return {};
       },
-      registry,
-      allowedProjects: [root],
-    });
+    };
+    const router = new MobileRpcRouter({ daemon, registry, allowedProjects: [] });
     try {
       await expect(
         router.handle(
@@ -512,7 +558,10 @@ describe("MobileRpcRouter", () => {
         ok: true,
         result: {
           projects: expect.arrayContaining([
-            expect.objectContaining({ path: realpathSync.native(root), kind: "workspace" }),
+            expect.objectContaining({
+              path: realpathSync.native(root),
+              kind: "project",
+            }),
             expect.objectContaining({
               path: join(realpathSync.native(root), "existing-app"),
               kind: "project",
@@ -520,6 +569,14 @@ describe("MobileRpcRouter", () => {
           ]),
         },
       });
+      // Outside Desktop projects must not appear, even as a sibling folder on disk.
+      const listed = await router.handle(
+        "device_000001",
+        { type: "rpc.request", id: "request_01b", method: "project.list", params: {} },
+        () => undefined,
+      );
+      expect(JSON.stringify(listed)).not.toContain(outside);
+
       await expect(
         router.handle(
           "device_000001",
@@ -557,6 +614,20 @@ describe("MobileRpcRouter", () => {
           () => undefined,
         ),
       ).resolves.toMatchObject({ ok: false, error: { code: "bad_request" } });
+
+      // Creating under a path outside all Desktop projects is forbidden.
+      await expect(
+        router.handle(
+          "device_000001",
+          {
+            type: "rpc.request",
+            id: "request_04",
+            method: "project.create",
+            params: { parentPath: outside, name: "nope" },
+          },
+          () => undefined,
+        ),
+      ).resolves.toMatchObject({ ok: false, error: { code: "forbidden" } });
     } finally {
       registry.close();
     }
@@ -575,11 +646,7 @@ describe("MobileRpcRouter", () => {
   ])("rejects %s outside device grants", async (method, makeParams) => {
     const { root, outside, registry } = fixture();
     const request = vi.fn(async () => ({}));
-    const router = new MobileRpcRouter({
-      daemon: { request },
-      registry,
-      allowedProjects: [root],
-    });
+    const router = createRouter(registry, { request }, [root]);
     try {
       await expect(
         router.handle(
@@ -659,11 +726,7 @@ describe("MobileRpcRouter", () => {
         secret: "remove",
       };
     });
-    const router = new MobileRpcRouter({
-      daemon: { request },
-      registry,
-      allowedProjects: [root],
-    });
+    const router = createRouter(registry, { request }, [root]);
     const emit = () => undefined;
     try {
       const gitBranchesResponse = await router.handle(
@@ -793,11 +856,7 @@ describe("MobileRpcRouter", () => {
   ])("bounds %s path parameters", async (method, params) => {
     const { root, registry } = fixture();
     const request = vi.fn(async () => ({}));
-    const router = new MobileRpcRouter({
-      daemon: { request },
-      registry,
-      allowedProjects: [root],
-    });
+    const router = createRouter(registry, { request }, [root]);
     try {
       await expect(
         router.handle(
@@ -858,11 +917,7 @@ describe("MobileRpcRouter", () => {
       }
       return {};
     });
-    const router = new MobileRpcRouter({
-      daemon: { request },
-      registry,
-      allowedProjects: [root],
-    });
+    const router = createRouter(registry, { request }, [root]);
     try {
       const response = await router.handle(
         "device_000001",
@@ -931,11 +986,7 @@ describe("MobileRpcRouter", () => {
       }
       return {};
     });
-    const router = new MobileRpcRouter({
-      daemon: { request },
-      registry,
-      allowedProjects: [root],
-    });
+    const router = createRouter(registry, { request }, [root]);
     try {
       const response = await router.handle(
         "device_000001",
@@ -998,11 +1049,7 @@ describe("MobileRpcRouter", () => {
       }
       return {};
     });
-    const router = new MobileRpcRouter({
-      daemon: { request },
-      registry,
-      allowedProjects: [root],
-    });
+    const router = createRouter(registry, { request }, [root]);
     try {
       const response = await router.handle(
         "device_000001",
@@ -1053,11 +1100,7 @@ describe("MobileRpcRouter", () => {
         ],
       };
     });
-    const router = new MobileRpcRouter({
-      daemon: { request },
-      registry,
-      allowedProjects: [root],
-    });
+    const router = createRouter(registry, { request }, [root]);
     try {
       await expect(
         router.handle(
@@ -1108,12 +1151,7 @@ describe("MobileRpcRouter", () => {
         return {};
       },
     };
-    const router = new MobileRpcRouter({
-      daemon,
-      registry,
-      allowedProjects: [root],
-      runPermission: "allow",
-    });
+    const router = createRouter(registry, daemon, [root], { runPermission: "allow" });
     try {
       await expect(
         router.handle(
@@ -1162,12 +1200,7 @@ describe("MobileRpcRouter", () => {
         return {};
       },
     };
-    const router = new MobileRpcRouter({
-      daemon,
-      registry,
-      allowedProjects: [root],
-      runPermission: "allow",
-    });
+    const router = createRouter(registry, daemon, [root], { runPermission: "allow" });
     try {
       await expect(
         router.handle(
@@ -1205,12 +1238,7 @@ describe("MobileRpcRouter", () => {
         );
       },
     };
-    const router = new MobileRpcRouter({
-      daemon,
-      registry,
-      allowedProjects: [root],
-      runPermission: "allow",
-    });
+    const router = createRouter(registry, daemon, [root], { runPermission: "allow" });
     try {
       await expect(
         router.handle(
@@ -1249,12 +1277,7 @@ describe("MobileRpcRouter", () => {
         throw new Error("auth failed api_key=sk-secret-value-123456");
       },
     };
-    const router = new MobileRpcRouter({
-      daemon,
-      registry,
-      allowedProjects: [root],
-      runPermission: "allow",
-    });
+    const router = createRouter(registry, daemon, [root], { runPermission: "allow" });
     try {
       await expect(
         router.handle(

@@ -11,6 +11,7 @@ import {
 } from "@forge/workspace";
 
 export const MOBILE_FILE_MAX_BYTES = 200_000;
+export const MOBILE_IMAGE_MAX_BYTES = 1_400_000;
 export const MOBILE_DIFF_MAX_BYTES = 500_000;
 export const MOBILE_DIRECTORY_MAX_ENTRIES = 500;
 
@@ -30,6 +31,7 @@ export type MobileFilePreview =
       size: number;
       truncated: boolean;
     }
+  | { path: string; kind: "image"; mime: string; dataUrl: string; size: number; truncated: false }
   | { path: string; kind: "binary"; mime: string; size: number; truncated: false };
 
 export type MobileDiffSummary = {
@@ -69,6 +71,14 @@ const TEXT_EXTENSIONS = new Map<string, string>([
   [".yaml", "yaml"],
   [".yml", "yaml"],
   [".json", "json"],
+]);
+
+const IMAGE_MIME_TYPES = new Map<string, string>([
+  [".gif", "image/gif"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
+  [".png", "image/png"],
+  [".webp", "image/webp"],
 ]);
 
 function parseParams(params: unknown): Record<string, unknown> {
@@ -224,6 +234,19 @@ export async function handleMobileFileRead(
   const absolutePath = guard.resolveSafe(path, "read");
   const fileStat = await stat(absolutePath);
   if (!fileStat.isFile()) throw new Error("Path is not a file");
+
+  const imageMime = IMAGE_MIME_TYPES.get(extname(path).toLowerCase());
+  if (imageMime && fileStat.size <= MOBILE_IMAGE_MAX_BYTES) {
+    const bytes = await readBytes(absolutePath, fileStat.size);
+    return {
+      path: relativePath(guard, absolutePath),
+      kind: "image",
+      mime: imageMime,
+      dataUrl: `data:${imageMime};base64,${bytes.toString("base64")}`,
+      size: fileStat.size,
+      truncated: false,
+    };
+  }
 
   const language = textLanguage(path);
   const sample = await readBytes(absolutePath, 8_192);

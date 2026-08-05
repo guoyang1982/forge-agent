@@ -1,5 +1,13 @@
 import { join } from "node:path";
 import type {
+  CreateCustomTalentRequest,
+  CreateCustomTalentResult,
+  CreateTalentTeamRequest,
+  CreateTalentTeamResult,
+  DeleteCustomTalentRequest,
+  DeleteCustomTalentResult,
+  DeleteTalentTeamRequest,
+  DeleteTalentTeamResult,
   FireTalentRequest,
   FireTalentResult,
   HireTalentRequest,
@@ -7,6 +15,8 @@ import type {
   HiredTalentListItem,
   ListTalentRosterRequest,
   ListTalentRosterResult,
+  ListTalentTeamsRequest,
+  ListTalentTeamsResult,
   RenameTalentRequest,
   RenameTalentResult,
   TalentSyncRequest,
@@ -17,19 +27,31 @@ import type {
   ListTalentTemplatesResult,
   GetTalentTemplateRequest,
   GetTalentTemplateResult,
+  UpdateCustomTalentRequest,
+  UpdateCustomTalentResult,
+  UpdateTalentTeamRequest,
+  UpdateTalentTeamResult,
 } from "@forge/protocol";
 import {
+  createCustomTalentTemplate,
+  createTalentTeam,
+  deleteCustomTalentTemplate,
+  deleteTalentTeam,
   ensureTalentTemplatesSeeded,
   fireTalent,
   hireTalent,
   listTalentTemplates,
   readMergedTalentRoster,
   readTalentTemplate,
+  readTalentTeamRoster,
   renameTalent,
   resolveTalentStorePaths,
+  resolveTalentTeamRosterPath,
   resolveWritableRosterPath,
   syncTalentTemplates,
   updateTalentBindings,
+  updateCustomTalentTemplate,
+  updateTalentTeam,
   type HiredTalent,
   type TalentStorePaths,
   type TalentTemplate,
@@ -93,6 +115,7 @@ export async function handleListTalentTemplates(
   });
   return {
     templates: templates.map((item) => ({
+      schemaVersion: item.schemaVersion,
       id: item.id,
       category: item.category,
       role: item.role,
@@ -104,6 +127,15 @@ export async function handleListTalentTemplates(
       sourcePath: item.sourcePath,
       suggestedSkills: item.suggestedSkills,
       suggestedTools: item.suggestedTools,
+      methodology: item.methodology,
+      inputRequirements: item.inputRequirements,
+      deliverables: item.deliverables,
+      qualityGates: item.qualityGates,
+      knowledgeRefs: item.knowledgeRefs,
+      connectors: item.connectors,
+      taskExamples: item.taskExamples,
+      version: item.version,
+      provenance: item.provenance,
       hired: item.hired,
     })),
   };
@@ -219,20 +251,127 @@ export async function handleGetTalentTemplate(
   const paths = talentPaths(deps.dataDir, cwdFromParams(params));
   const template = await readTalentTemplate(paths.templatesDir, req.templateId);
   if (!template) return { template: null };
+  return { template: toTalentTemplateResult(template) };
+}
+
+export async function handleCreateCustomTalent(
+  params: unknown,
+  deps: { dataDir: string },
+): Promise<CreateCustomTalentResult> {
+  const req = params as CreateCustomTalentRequest | undefined;
+  if (!req?.talent) throw new Error("talent is required");
+  const template = await createCustomTalentTemplate({
+    templatesDir: defaultTalentTemplatesDir(deps.dataDir),
+    input: req.talent,
+  });
+  return { template: toTalentTemplateResult(template) };
+}
+
+export async function handleUpdateCustomTalent(
+  params: unknown,
+  deps: { dataDir: string },
+): Promise<UpdateCustomTalentResult> {
+  const req = params as UpdateCustomTalentRequest | undefined;
+  if (!req?.templateId) throw new Error("templateId is required");
+  const template = await updateCustomTalentTemplate({
+    templatesDir: defaultTalentTemplatesDir(deps.dataDir),
+    templateId: req.templateId,
+    patch: req.patch ?? {},
+  });
+  return { template: toTalentTemplateResult(template) };
+}
+
+export async function handleDeleteCustomTalent(
+  params: unknown,
+  deps: { dataDir: string },
+): Promise<DeleteCustomTalentResult> {
+  const req = params as DeleteCustomTalentRequest | undefined;
+  if (!req?.templateId) throw new Error("templateId is required");
+  return deleteCustomTalentTemplate(defaultTalentTemplatesDir(deps.dataDir), req.templateId);
+}
+
+export async function handleListTalentTeams(
+  params: unknown,
+  deps: { dataDir: string },
+): Promise<ListTalentTeamsResult> {
+  const req = params as ListTalentTeamsRequest | undefined;
+  return readTalentTeamRoster(resolveTalentTeamRosterPath(deps.dataDir, req?.cwd));
+}
+
+export async function handleCreateTalentTeam(
+  params: unknown,
+  deps: { dataDir: string },
+): Promise<CreateTalentTeamResult> {
+  const req = params as CreateTalentTeamRequest | undefined;
+  if (!req) throw new Error("team is required");
+  const paths = talentPaths(deps.dataDir, req.cwd);
+  const hired = await readMergedTalentRoster(paths);
+  const team = await createTalentTeam({
+    rosterPath: resolveTalentTeamRosterPath(deps.dataDir, req.cwd),
+    name: req.name,
+    mention: req.mention,
+    description: req.description,
+    leadMention: req.leadMention,
+    members: req.members,
+    deliverables: req.deliverables,
+    executionMode: req.executionMode,
+    reservedMentions: hired.hired.map((talent) => talent.mention),
+  });
+  return { team };
+}
+
+export async function handleUpdateTalentTeam(
+  params: unknown,
+  deps: { dataDir: string },
+): Promise<UpdateTalentTeamResult> {
+  const req = params as UpdateTalentTeamRequest | undefined;
+  if (!req?.idOrMention) throw new Error("idOrMention is required");
+  const paths = talentPaths(deps.dataDir, req.cwd);
+  const hired = await readMergedTalentRoster(paths);
+  const team = await updateTalentTeam({
+    rosterPath: resolveTalentTeamRosterPath(deps.dataDir, req.cwd),
+    idOrMention: req.idOrMention,
+    patch: req.patch,
+    reservedMentions: hired.hired.map((talent) => talent.mention),
+  });
+  return { team };
+}
+
+export async function handleDeleteTalentTeam(
+  params: unknown,
+  deps: { dataDir: string },
+): Promise<DeleteTalentTeamResult> {
+  const req = params as DeleteTalentTeamRequest | undefined;
+  if (!req?.idOrMention) throw new Error("idOrMention is required");
+  return deleteTalentTeam(
+    resolveTalentTeamRosterPath(deps.dataDir, req.cwd),
+    req.idOrMention,
+  );
+}
+
+function toTalentTemplateResult(template: TalentTemplate): NonNullable<GetTalentTemplateResult["template"]> {
   return {
-    template: {
-      id: template.id,
-      category: template.category,
-      role: template.role,
-      description: template.description,
-      vibe: template.vibe,
-      emoji: template.emoji,
-      color: template.color,
-      avatar: template.avatar,
-      systemPrompt: template.systemPrompt,
-      suggestedSkills: template.suggestedSkills,
-      suggestedTools: template.suggestedTools,
-    },
+    schemaVersion: template.schemaVersion,
+    id: template.id,
+    category: template.category,
+    role: template.role,
+    description: template.description,
+    vibe: template.vibe,
+    emoji: template.emoji,
+    color: template.color,
+    avatar: template.avatar,
+    systemPrompt: template.systemPrompt,
+    suggestedSkills: template.suggestedSkills,
+    suggestedTools: template.suggestedTools,
+    methodology: template.methodology,
+    inputRequirements: template.inputRequirements,
+    deliverables: template.deliverables,
+    qualityGates: template.qualityGates,
+    knowledgeRefs: template.knowledgeRefs,
+    connectors: template.connectors,
+    taskExamples: template.taskExamples,
+    version: template.version,
+    provenance: template.provenance,
   };
 }
 
@@ -251,6 +390,8 @@ function toHiredTalentListItem(
     emoji: template.emoji,
     color: template.color,
     avatar: template.avatar,
+    version: template.version,
+    provenance: template.provenance,
     enabled: hired.enabled,
     skills: hired.skills,
     tools: hired.tools,

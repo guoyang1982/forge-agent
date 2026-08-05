@@ -169,7 +169,7 @@ export const DEFAULT_PERMISSIONS: PermissionsConfig = {
     send: "confirm",
   },
   browser: {
-    enabled: false,
+    enabled: true,
     open: "allow",
     interact: "confirm",
     submit: "confirm",

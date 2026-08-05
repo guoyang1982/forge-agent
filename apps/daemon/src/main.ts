@@ -114,19 +114,31 @@ import {
   handleMobileGitSwitch,
 } from "./services/mobile-workspace-service.js";
 import {
+  handleCreateCustomTalent,
+  handleCreateTalentTeam,
+  handleDeleteCustomTalent,
+  handleDeleteTalentTeam,
   handleFireTalent,
   handleGetTalentTemplate,
   handleHireTalent,
   handleListTalentRoster,
+  handleListTalentTeams,
   handleListTalentTemplates,
   handleRenameTalent,
   handleTalentSyncTemplates,
+  handleUpdateCustomTalent,
+  handleUpdateTalentTeam,
   handleUpdateTalentBindings,
   seedTalentTemplates,
 } from "./services/talent-service.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const MONOREPO_ROOT = join(__dirname, "..", "..", "..");
+const developmentRoot = join(__dirname, "..", "..", "..");
+// pnpm deploy places runtime assets beside dist/; source development keeps
+// them at the repository root.
+const MONOREPO_ROOT = existsSync(join(developmentRoot, "migrations"))
+  ? developmentRoot
+  : join(__dirname, "..");
 
 const migrationsDir = join(MONOREPO_ROOT, "migrations");
 const bootConfig = loadConfig();
@@ -196,6 +208,7 @@ async function getRuntime(): Promise<ForgeRuntime> {
 }
 
 async function reloadRuntime(): Promise<ReloadRuntimeResult> {
+  await runtime?.browser.dispose();
   runtime?.memory.close();
   clearProjectPluginCache();
   clearMcpClientPool();
@@ -439,6 +452,34 @@ async function handleRpc(
 
   if (method === DAEMON_METHODS.TALENTS_GET_TEMPLATE) {
     return handleGetTalentTemplate(params, { dataDir: bootConfig.daemon.dataDir });
+  }
+
+  if (method === DAEMON_METHODS.TALENTS_CREATE_CUSTOM) {
+    return handleCreateCustomTalent(params, { dataDir: bootConfig.daemon.dataDir });
+  }
+
+  if (method === DAEMON_METHODS.TALENTS_UPDATE_CUSTOM) {
+    return handleUpdateCustomTalent(params, { dataDir: bootConfig.daemon.dataDir });
+  }
+
+  if (method === DAEMON_METHODS.TALENTS_DELETE_CUSTOM) {
+    return handleDeleteCustomTalent(params, { dataDir: bootConfig.daemon.dataDir });
+  }
+
+  if (method === DAEMON_METHODS.TALENTS_LIST_TEAMS) {
+    return handleListTalentTeams(params, { dataDir: bootConfig.daemon.dataDir });
+  }
+
+  if (method === DAEMON_METHODS.TALENTS_CREATE_TEAM) {
+    return handleCreateTalentTeam(params, { dataDir: bootConfig.daemon.dataDir });
+  }
+
+  if (method === DAEMON_METHODS.TALENTS_UPDATE_TEAM) {
+    return handleUpdateTalentTeam(params, { dataDir: bootConfig.daemon.dataDir });
+  }
+
+  if (method === DAEMON_METHODS.TALENTS_DELETE_TEAM) {
+    return handleDeleteTalentTeam(params, { dataDir: bootConfig.daemon.dataDir });
   }
 
   if (method === DAEMON_METHODS.APPLY_PATCH) {
@@ -759,9 +800,10 @@ async function main(): Promise<void> {
       .catch((e) => {
         console.warn(`[forge:hook] SessionEnd shutdown hooks failed: ${String(e)}`);
       })
-      .finally(() => {
+      .finally(async () => {
         void releaseAllAcpSessions().catch(() => {});
         sessions.close();
+        await runtime?.browser.dispose();
         runtime?.memory.close();
         try {
           if (existsSync(pidFile)) unlinkSync(pidFile);

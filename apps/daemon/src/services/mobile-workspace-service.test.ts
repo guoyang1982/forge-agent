@@ -84,6 +84,21 @@ describe("mobile workspace service", () => {
     expect(diff.unifiedDiff).toContain("diff --git");
   });
 
+  it("returns a bounded workspace image as a mobile-renderable data URL", async () => {
+    const cwd = createRepository();
+    const png = Buffer.from("89504e470d0a1a0a00000000", "hex");
+    writeFileSync(join(cwd, "result.png"), png);
+
+    await expect(handleMobileFileRead({ cwd, path: "result.png" })).resolves.toEqual({
+      path: "result.png",
+      kind: "image",
+      mime: "image/png",
+      dataUrl: `data:image/png;base64,${png.toString("base64")}`,
+      size: png.length,
+      truncated: false,
+    });
+  });
+
   it("lists workspace root files even when process.cwd is a subdirectory", async () => {
     const cwd = createRepository();
     const nested = join(cwd, "apps", "daemon");
