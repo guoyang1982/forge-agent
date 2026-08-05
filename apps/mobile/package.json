@@ -39,6 +39,6 @@
     "@types/react": "^19.2.0",
     "eas-cli": "^16.0.0",
     "typescript": "^5.8.3",
-    "vitest": "^3.0.9"
+    "vitest": "^4.1.10"
   }
 }
