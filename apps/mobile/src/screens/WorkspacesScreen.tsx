@@ -139,7 +139,7 @@ export function WorkspacesScreen(props: {
 
       {creating ? (
         <View style={styles.createBox}>
-          <Text style={styles.createLabel}>父目录（从已授权路径选择）</Text>
+          <Text style={styles.createLabel}>父目录（从电脑项目中选择，或粘贴同级/子目录路径）</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.parentRow}>
             {projects.map((item) => {
               const active = parentPath === item.path;

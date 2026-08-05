@@ -8,21 +8,31 @@ import {
   buildTalentSystemBlock,
   bundledTalentTemplatesDir,
   createTalentToolAllowance,
+  createCustomTalentTemplate,
+  createTalentTeam,
+  deleteCustomTalentTemplate,
+  deleteTalentTeam,
   ensureTalentTemplatesSeeded,
   extractTalentMentions,
+  expandTalentTeamMessage,
   hireTalent,
   isTalentForcedForeground,
   parseAgencyAgentMarkdown,
   parseTalentAssignmentsFromMessage,
   readMergedTalentRoster,
+  readTalentTemplate,
+  readTalentTeamRoster,
   readTalentRoster,
+  recordTalentTeamUsage,
   recordTalentUsage,
   renameTalent,
   detectsSerialDependency,
   resolveTalentExecutionMode,
   resolveTalentStorePaths,
+  renderTalentPackagePrompt,
   syncTalentTemplates,
   updateTalentBindings,
+  updateCustomTalentTemplate,
   writeTalentTemplate,
 } from "./index.js";
 
@@ -119,6 +129,141 @@ Body`,
     expect(block).toContain("Active talent persona");
     expect(block).toContain("Nova");
     expect(block).toContain("must not override Forge safety rules");
+  });
+
+  it("normalizes legacy templates into v2 packages", async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-talents-v2-"));
+    await mkdir(root, { recursive: true });
+    await writeFile(
+      join(root, "legacy.json"),
+      JSON.stringify({
+        id: "legacy",
+        category: "product",
+        role: "Legacy PM",
+        description: "Legacy template",
+        sourcePath: "product/legacy.md",
+        systemPrompt: "legacy prompt",
+        suggestedSkills: ["spec"],
+        suggestedTools: ["read_file"],
+      }),
+    );
+
+    const template = await readTalentTemplate(root, "legacy");
+    expect(template).toMatchObject({
+      schemaVersion: 2,
+      version: "1.0.0",
+      methodology: [],
+      deliverables: [],
+      provenance: { source: "synced", reviewed: false },
+    });
+  });
+
+  it("keeps structured contracts ahead of a truncated persona prompt", () => {
+    const prompt = renderTalentPackagePrompt({
+      id: "custom-reviewer",
+      category: "engineering",
+      role: "Reviewer",
+      description: "Reviews changes",
+      sourcePath: "custom/custom-reviewer.md",
+      systemPrompt: "x".repeat(20_000),
+      suggestedSkills: [],
+      suggestedTools: [],
+      methodology: ["Inspect the diff before recommending changes"],
+      deliverables: ["Findings with severity"],
+      qualityGates: ["Every finding cites evidence"],
+    });
+
+    expect(prompt.length).toBeLessThanOrEqual(12_000);
+    expect(prompt).toContain("## Methodology");
+    expect(prompt).toContain("## Deliverables");
+    expect(prompt).toContain("## Quality gates");
+    expect(prompt).toContain("Prompt truncated");
+  });
+
+  it("creates, versions, and deletes custom talent packages", async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-custom-talent-"));
+    const created = await createCustomTalentTemplate({
+      templatesDir: root,
+      input: {
+        role: "需求评审专家",
+        description: "评审需求边界和验收标准",
+        methodology: ["先识别用户价值", "再检查边界条件"],
+        deliverables: ["评审结论", "风险清单"],
+        qualityGates: ["每条风险包含验证方式"],
+        suggestedSkills: ["spec"],
+        suggestedTools: ["read_file"],
+      },
+    });
+
+    expect(created.id).toMatch(/^custom-/);
+    expect(created.provenance?.source).toBe("custom");
+    expect(created.version).toBe("1.0.0");
+    const updated = await updateCustomTalentTemplate({
+      templatesDir: root,
+      templateId: created.id,
+      patch: { deliverables: ["PRD 评审报告"] },
+    });
+    expect(updated.version).toBe("1.0.1");
+    expect(updated.deliverables).toEqual(["PRD 评审报告"]);
+    expect((await deleteCustomTalentTemplate(root, created.id)).removed).toBe(true);
+    expect(await readTalentTemplate(root, created.id)).toBeNull();
+  });
+
+  it("persists and expands reusable talent teams", async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-talent-team-"));
+    const rosterPath = join(root, "teams.json");
+    const team = await createTalentTeam({
+      rosterPath,
+      name: "发布审查团",
+      mention: "release-team",
+      description: "发布前并行检查产品和工程风险",
+      members: [
+        { mention: "pm", responsibility: "检查需求与验收边界" },
+        { mention: "reviewer", responsibility: "检查实现与回归风险", after: ["pm"] },
+      ],
+      leadMention: "reviewer",
+      deliverables: ["发布建议", "风险清单"],
+      executionMode: "parallel",
+    });
+
+    const expanded = expandTalentTeamMessage("@release-team 审查 1.2.0 发布", team);
+    expect(expanded).toContain("@pm 检查需求与验收边界");
+    expect(expanded).toContain("@reviewer 检查实现与回归风险");
+    expect(expanded).toContain("请基于 @pm 的结果继续");
+    expect(expanded).toContain("你是团队内负责人");
+    expect(expanded).toContain("(并行)");
+    expect(expanded).toContain("最终交付：发布建议、风险清单");
+    expect((await readTalentTeamRoster(rosterPath)).teams).toHaveLength(1);
+    await recordTalentTeamUsage(rosterPath, team.id);
+    expect((await readTalentTeamRoster(rosterPath)).teams[0]?.stats.tasksDone).toBe(1);
+    expect((await deleteTalentTeam(rosterPath, team.id)).removed).toBe(true);
+  });
+
+  it("validates team leads and avoids talent mention collisions", async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-talent-team-validation-"));
+    const rosterPath = join(root, "teams.json");
+    await expect(createTalentTeam({
+      rosterPath,
+      name: "冲突团队",
+      mention: "reviewer",
+      description: "test",
+      reservedMentions: ["reviewer"],
+      members: [
+        { mention: "pm", responsibility: "需求" },
+        { mention: "reviewer", responsibility: "审查" },
+      ],
+    })).resolves.toMatchObject({ mention: "reviewer2" });
+
+    await expect(createTalentTeam({
+      rosterPath,
+      name: "错误负责人",
+      description: "test",
+      leadMention: "outsider",
+      members: [
+        { mention: "pm", responsibility: "需求" },
+        { mention: "reviewer", responsibility: "审查" },
+      ],
+    })).rejects.toThrow("Team lead must be one of the team members");
   });
 
   it("syncs templates from a local agency-agents directory", async () => {

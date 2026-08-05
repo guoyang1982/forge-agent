@@ -62,6 +62,9 @@ import {
   buildTalentSystemBlock,
   createTalentToolAllowance,
   extractTalentMentions,
+  expandTalentTeamMessage,
+  findTalentTeamByMention,
+  recordTalentTeamUsage,
   findHiredTalentByMention,
   isTalentForcedForeground,
   parseTalentAssignmentsFromMessage,
@@ -69,6 +72,7 @@ import {
   recordTalentUsage,
   resolveTalentExecutionMode,
   resolveTalentStorePaths,
+  resolveTalentTeamRosterPath,
   type HiredTalent,
   type TalentTemplate,
 } from "@forge/talent-registry";
@@ -76,6 +80,7 @@ import { permissionService } from "./permission-service.js";
 import { ensureExternalRuntimesRegistered } from "./external-runtimes.js";
 import { getExternalRuntime } from "./external-runtime-registry.js";
 import { buildExternalHistoryContext } from "./external-runtime-history.js";
+import { createMcpServerRequestHandler } from "./mcp-permission.js";
 
 export interface RunServiceDeps {
   sessions: SessionStore;
@@ -160,6 +165,22 @@ export async function handleRun(
   const maxContext =
     config.limits.maxContextTokens ?? DEFAULT_CONFIG.limits.maxContextTokens;
   let historyPack: ReturnType<SessionStore["loadMessagesWithBudget"]>;
+  let effectiveMessage = req.message;
+  const possibleTeamMentions = extractTalentMentions(req.message);
+  const teamRosterPath = resolveTalentTeamRosterPath(config.daemon.dataDir, cwd);
+  for (const mention of possibleTeamMentions) {
+    const team = await findTalentTeamByMention(teamRosterPath, mention);
+    if (!team) continue;
+    effectiveMessage = expandTalentTeamMessage(req.message, team);
+    await recordTalentTeamUsage(teamRosterPath, team.id);
+    runEmit({
+      type: "status",
+      phase: "model",
+      message: `已召唤人才团队「${team.name}」：${team.members.map((member) => `@${member.mention}`).join("、")}`,
+    });
+    break;
+  }
+
   try {
     historyPack = deps.sessions.loadMessagesWithBudget(sessionId, maxContext);
   } catch (error) {
@@ -303,7 +324,7 @@ export async function handleRun(
     } = await prepareRunContext({
       runtime: rt,
       guard,
-      message: req.message,
+      message: effectiveMessage,
       sessionId,
       sessionHookSource,
       explicitFiles: req.files,
@@ -311,13 +332,18 @@ export async function handleRun(
       automationRun: req.automationRun,
       projectId,
       dataDir: config.daemon.dataDir,
+      mcpServerRequestHandler: createMcpServerRequestHandler(
+        runEmit,
+        sessionId,
+        abort.signal,
+      ),
       // When the message focuses a single hired talent, prioritize (or, in
       // strict mode, restrict to) that talent's bound skills during skill
       // matching. Full talent activation happens further below.
       ...(await resolveFocusedTalentSkillContext(
         config.daemon.dataDir,
         cwd,
-        req.message,
+        effectiveMessage,
       )),
     });
     hookBindings = discoveredHookBindings;
@@ -419,7 +445,7 @@ export async function handleRun(
       deps.sessions.appendMessage(sessionId, storedUser);
     }
 
-    const talentMentions = extractTalentMentions(req.message);
+    const talentMentions = extractTalentMentions(effectiveMessage);
     talentPaths = resolveTalentStorePaths(config.daemon.dataDir, cwd);
     const mentionedTalents = (
       await Promise.all(
@@ -446,7 +472,7 @@ export async function handleRun(
     // call that re-derives the same dependencies from keywords.
     const isDispatch = mentionedTalents.length > 1;
     const dispatchAssignments = isDispatch
-      ? buildTalentAssignments(req.message, mentionedTalents)
+      ? buildTalentAssignments(effectiveMessage, mentionedTalents)
       : [];
     const dispatchAssignmentInputs = dispatchAssignments.map((a) => ({
       mention: a.activeTalent.hired.mention,
@@ -459,7 +485,7 @@ export async function handleRun(
     const intentPlan = await buildRunIntentPlan({
       config,
       signal: abort.signal,
-      message: req.message,
+      message: effectiveMessage,
       cwd: absCwd,
       runKind: intentRunKind(mentionedTalents.length),
       talents: mentionedTalents.map((t) => ({
@@ -508,7 +534,7 @@ export async function handleRun(
     if (mentionedTalents.length === 1) {
       const active = mentionedTalents[0]!;
       const foreground =
-        isTalentForcedForeground(req.message, active.hired.mention) ||
+        isTalentForcedForeground(effectiveMessage, active.hired.mention) ||
         mentionedTalents.length === 1;
       if (foreground) {
         injectSystemContext(initial, buildTalentSystemBlock(active));
@@ -590,10 +616,10 @@ export async function handleRun(
       const assignments = dispatchAssignments;
       const assignmentInputs = dispatchAssignmentInputs;
       // Fallback mode for when the unified intent call produced no usable DAG.
-      const executionMode = resolveTalentExecutionMode(req.message, assignments);
+      const executionMode = resolveTalentExecutionMode(effectiveMessage, assignments);
       // Positive serial signal (explicit marker or back-reference) — used to
       // force-serialize a flat model plan, but never the ambiguous default.
-      const forceSerialIfFlat = detectsSerialDependency(req.message, assignments);
+      const forceSerialIfFlat = detectsSerialDependency(effectiveMessage, assignments);
       const dispatchTurnIndex = deps.sessions.countUserMessages(sessionId) - 1;
       cleanupDispatchArtifacts = () =>
         cleanupTalentArtifacts(absCwd, dispatchTurnIndex);
@@ -609,7 +635,7 @@ export async function handleRun(
       const modelDraft = intentPlan.dispatchDraft;
       let planWarning: string | undefined;
       let plan = resolveTalentDispatchPlan({
-        message: req.message,
+        message: effectiveMessage,
         assignments: assignmentInputs,
         executionMode,
         modelDraft,

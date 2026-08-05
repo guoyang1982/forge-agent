@@ -11,6 +11,7 @@ function requireBridge() {
 }
 
 let notifyUserHideTimer = null;
+let openProjectMenuId = null;
 
 const VALID_THEME_MODES = new Set(["system", "dark", "light"]);
 
@@ -24,16 +25,28 @@ function applyTheme(theme) {
   document.body.dataset.theme = normalizeThemeMode(theme);
 }
 
-function showBootstrapBanner(message) {
+function showBootstrapBanner(message, options = {}) {
   const el = $("bootstrapBanner");
   if (!el) return;
   if (!message) {
     el.classList.add("hidden");
-    el.textContent = "";
+    el.replaceChildren();
     el.classList.remove("is-warn");
     return;
   }
-  el.textContent = message;
+  const content = document.createElement("span");
+  content.className = "bootstrap-banner-message";
+  content.textContent = message;
+  el.replaceChildren(content);
+  if (options.dismissible) {
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "bootstrap-banner-close";
+    close.setAttribute("aria-label", "关闭提示");
+    close.textContent = "×";
+    close.addEventListener("click", () => showBootstrapBanner(null));
+    el.appendChild(close);
+  }
   el.classList.remove("hidden");
 }
 
@@ -76,6 +89,17 @@ function renderNetworkPermissionBanner() {
   composerCard?.classList.add("permission-active");
   host.innerHTML = [...state.pendingNetworkPermissions.values()]
     .map((ev) => {
+      if (ev.kind === "mcp") {
+        const detail = ev.detail || {};
+        return `<div class="network-permission-card is-acp" data-permission-id="${escapeHtml(ev.id)}">
+        <p><strong>应用访问授权</strong> — ${escapeHtml(ev.summary || "")}</p>
+        ${detail.subtitle ? `<div class="network-permission-meta">${escapeHtml(detail.subtitle)}</div>` : ""}
+        <div class="network-permission-actions">
+          <button type="button" class="btn secondary btn-sm" data-permission-deny="${escapeHtml(ev.id)}">拒绝</button>
+          <button type="button" class="btn primary btn-sm" data-permission-allow="${escapeHtml(ev.id)}">允许</button>
+        </div>
+      </div>`;
+      }
       if (ev.kind === "acp" || ev.kind === "codex" || ev.kind === "claude-code") {
         const providerLabel =
           ev.kind === "codex"
@@ -242,10 +266,11 @@ function notifyUser(message, level = "warn") {
   if (!text) return;
   const el = $("bootstrapBanner");
   if (el) {
+    clearTimeout(notifyUserHideTimer);
+    notifyUserHideTimer = null;
     el.classList.toggle("is-warn", level === "warn");
-    showBootstrapBanner(text);
+    showBootstrapBanner(text, { dismissible: level === "err" });
     if (level !== "err") {
-      clearTimeout(notifyUserHideTimer);
       notifyUserHideTimer = setTimeout(() => showBootstrapBanner(null), 4500);
     }
   }
@@ -480,6 +505,8 @@ const state = {
   runActivityStreamEl: null,
   runActivityStats: null,
   runActivityTimer: null,
+  /** sessionId -> wall-clock start of the current turn; survives view detach/reattach. */
+  runActivityStartedAtBySession: new Map(),
   /** sessionId -> Map<relPath, provisional Codex file activity> */
   codexProvisionalFilesBySession: new Map(),
   /** sessionId -> normalized Codex commentary already rendered in 已处理 */
@@ -530,6 +557,7 @@ const state = {
   /** @type {Array<{ id: string, attachment: import("@forge/protocol").RunAttachment }>} */
   composerAttachments: [],
   talentsRoster: [],
+  talentTeams: [],
   talentTemplates: [],
   talentsTab: "market",
   talentMarketQuery: "",
@@ -542,6 +570,7 @@ const state = {
   talentsLoading: false,
   /** @type {{ templateId: string, role: string, description?: string, emoji?: string, displayName?: string, mention?: string } | null} */
   talentHireDraft: null,
+  customTalentEditingId: null,
   /** @type {string | null} */
   talentDetailKey: null,
   /** @type {string} */
@@ -2267,6 +2296,7 @@ function forgetSessionRunCaches(sessionId) {
   state.stepNarrativesBySession.delete(sessionId);
   state.conclusionDomRenderedThisTurn.delete(sessionId);
   state.runPatchesBySession.delete(sessionId);
+  state.runActivityStartedAtBySession.delete(sessionId);
 }
 
 function saveSessionRunArtifacts(sessionId) {
@@ -2638,9 +2668,14 @@ function resetRunArtifacts() {
   resetRunActivityState();
 }
 
-function createRunActivityStats() {
+function runActivityStartedAt(sessionId = getActiveEventSessionId()) {
+  const startedAt = state.runActivityStartedAtBySession.get(sessionId);
+  return Number.isFinite(startedAt) ? startedAt : Date.now();
+}
+
+function createRunActivityStats(startedAt = runActivityStartedAt()) {
   return {
-    startedAt: Date.now(),
+    startedAt,
     step: 0,
     maxSteps: 0,
     tools: 0,
@@ -2697,6 +2732,10 @@ function formatDurationMs(ms) {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
   return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+function formatRunDurationMs(ms) {
+  return ms < 1000 ? "<1s" : formatDurationMs(ms);
 }
 
 function isTimelineRootMessage(text) {
@@ -3460,8 +3499,12 @@ function isSessionRunConcluded(sessionId) {
 }
 
 /** New user message in an existing session — allow progress UI and a fresh conclusion block. */
-function beginSessionTurn(sessionId) {
+function beginSessionTurn(sessionId, startedAtMs = Date.now()) {
   if (sessionId) {
+    state.runActivityStartedAtBySession.set(
+      sessionId,
+      Number.isFinite(startedAtMs) ? startedAtMs : Date.now(),
+    );
     state.runConclusionBySession.delete(sessionId);
     state.conclusionDomRenderedThisTurn.delete(sessionId);
     state.runningSessions.add(sessionId);
@@ -4234,7 +4277,9 @@ function reattachLiveRunDomRefs(mount = getTimelineMount()) {
   state.runActivityStreamEl =
     streamHost?.classList?.contains("run-activity-stream") ? streamHost : null;
   state.runActivityBody = streamHost || state.runActivityFoldBody;
-  if (!state.runActivityStats) state.runActivityStats = createRunActivityStats();
+  if (!state.runActivityStats) {
+    state.runActivityStats = createRunActivityStats(runActivityStartedAt());
+  }
 
   const meta = target.querySelector(".run-activity-meta")?.textContent || "";
   const stepMatch = meta.match(/Step\s+(\d+)(?:\/(\d+))?/);
@@ -4382,7 +4427,7 @@ function ensureRunActivity(options = {}) {
   state.runActivityFoldBody = foldBody;
   state.runActivityStreamEl = stream;
   state.runActivityBody = stream;
-  state.runActivityStats = createRunActivityStats();
+  state.runActivityStats = createRunActivityStats(runActivityStartedAt(sid));
   state.activityFollowBottom = true;
   state.currentStepEl = details;
   state.currentStepBody = state.runActivityBody;
@@ -4635,14 +4680,17 @@ function updateRunActivitySummary(opts = {}) {
 
   if (opts.finalized) {
     details.classList.remove("run-activity-active");
-    const elapsed = Date.now() - stats.startedAt;
+    const completedAtMs = Number.isFinite(opts.completedAtMs)
+      ? opts.completedAtMs
+      : Date.now();
+    const elapsed = Math.max(0, completedAtMs - stats.startedAt);
     const t = getForegroundTalent(
       state.eventRouteSessionId || state.liveRunSessionId,
     );
     const who = t ? `${t.displayName} · ` : "";
     if (stats.hadError) labelEl.textContent = `${who}处理失败`;
     else if (stats.stopped) labelEl.textContent = `${who}已停止`;
-    else labelEl.textContent = `${who}已处理 ${formatDurationMs(elapsed)}`;
+    else labelEl.textContent = `${who}已处理 ${formatRunDurationMs(elapsed)}`;
   } else if (opts.live) {
     details.classList.add("run-activity-active");
     labelEl.textContent = opts.live;
@@ -4703,7 +4751,7 @@ function finalizeRunConclusionOnMount(finalText, sessionId) {
   renderRunConclusion(finalText, sid);
 }
 
-function finalizeRunActivity() {
+function finalizeRunActivity(options = {}) {
   const mount = getTimelineMount();
   if (!mount) return;
   terminalizePendingActivityChips(mount);
@@ -4740,10 +4788,10 @@ function finalizeRunActivity() {
     if (shouldFold) {
       foldLiveRunActivityContent(details);
       if (!runActivityHasExpandedContent(details)) details.open = false;
-      updateRunActivitySummary({ finalized: true });
+      updateRunActivitySummary({ finalized: true, completedAtMs: options.completedAtMs });
     } else {
       // Short runs stay as ordinary dialog output — drop the empty 已处理 chip.
-      updateRunActivitySummary({ finalized: true });
+      updateRunActivitySummary({ finalized: true, completedAtMs: options.completedAtMs });
       unwrapLiveRunActivityContent(details);
       continue;
     }
@@ -6729,7 +6777,7 @@ function hoistRunActivityOutOfConclusion(root = getTimelineMount()) {
   });
 }
 
-function renderRunConclusion(finalText, explicitSessionId) {
+function renderRunConclusion(finalText, explicitSessionId, options = {}) {
   const sid =
     explicitSessionId ||
     state.eventRouteSessionId ||
@@ -6765,7 +6813,7 @@ function renderRunConclusion(finalText, explicitSessionId) {
   hoistOrphanNodesIntoRunActivity();
   repairTimelineDomStructure(getTimelineMount());
   if (sid) syncStructuredTimelineFromDom(sid);
-  finalizeRunActivity();
+  finalizeRunActivity({ completedAtMs: options.completedAtMs });
 
   let text = finalCandidate;
   // Intermediate step narration is persisted inside 已处理 at each segment boundary.
@@ -7392,6 +7440,12 @@ function bindTalentTemplateActions(meta) {
     e.stopPropagation();
     openTalentHireModal(meta.templateId);
   });
+  actions.querySelector("#talentRightEditBtn")?.addEventListener("click", () => {
+    void openTalentCustomEditor(meta.templateId);
+  });
+  actions.querySelector("#talentRightDeleteBtn")?.addEventListener("click", () => {
+    void deleteCustomTalentFromUi(meta.templateId, meta.rosterMention);
+  });
   actions.querySelector("#talentRightManageBtn")?.addEventListener("click", () => {
     if (meta.rosterMention) void openTalentDetail(meta.rosterMention);
   });
@@ -7426,8 +7480,10 @@ function showTalentTemplateDetail(meta, content) {
   if (actions) {
     actions.classList.remove("hidden");
     if (meta.hired && meta.rosterMention) {
-      actions.innerHTML = `<button type="button" class="btn secondary btn-sm" id="talentRightManageBtn">管理设置</button>
-        <button type="button" class="btn secondary btn-sm" data-talent-right-mention="${escapeHtml(meta.rosterMention)}">插入 @</button>`;
+      actions.innerHTML = `${meta.provenance?.source === "custom" ? '<button type="button" class="btn secondary btn-sm" id="talentRightEditBtn">编辑人才包</button>' : ""}
+        <button type="button" class="btn secondary btn-sm" id="talentRightManageBtn">管理设置</button>
+        <button type="button" class="btn secondary btn-sm" data-talent-right-mention="${escapeHtml(meta.rosterMention)}">插入 @</button>
+        ${meta.provenance?.source === "custom" ? '<button type="button" class="btn secondary btn-sm" id="talentRightDeleteBtn">删除</button>' : ""}`;
     } else if (meta.hired) {
       actions.innerHTML = `<span class="store-card-badge installed">已租用</span>`;
     } else {
@@ -7448,6 +7504,20 @@ function showTalentTemplateDetail(meta, content) {
   const chipsHtml = chips.length
     ? `<div class="talents-detail-chips">${chips.join("")}</div>`
     : "";
+  const packageSections = [
+    ["方法论", meta.methodology],
+    ["所需输入", meta.inputRequirements],
+    ["交付物", meta.deliverables],
+    ["质量门槛", meta.qualityGates],
+    ["知识引用", meta.knowledgeRefs],
+    ["连接器", meta.connectors],
+  ]
+    .filter(([, values]) => Array.isArray(values) && values.length)
+    .map(([title, values]) => `<section class="talent-package-section"><h5>${escapeHtml(title)}</h5><ul>${values.map((value) => `<li>${escapeHtml(value)}</li>`).join("")}</ul></section>`)
+    .join("");
+  const provenance = meta.provenance
+    ? `<p class="tiny muted">版本 ${escapeHtml(meta.version || "1.0.0")} · 来源 ${escapeHtml(meta.provenance.source || "unknown")}${meta.provenance.author ? ` · 作者 ${escapeHtml(meta.provenance.author)}` : ""}${meta.provenance.reviewed ? " · 已审查" : " · 未审查"}</p>`
+    : "";
 
   root.innerHTML = `
     <div class="code-card skill-detail-card talent-template-detail-card">
@@ -7459,7 +7529,9 @@ function showTalentTemplateDetail(meta, content) {
         <span class="skill-detail-id">${escapeHtml(talentCategoryLabel(meta.category || ""))} · ${escapeHtml(meta.templateId)}</span>
       </div>
       ${meta.description ? `<p class="skill-detail-desc">${escapeHtml(meta.description)}</p>` : ""}
+      ${provenance}
       ${chipsHtml}
+      ${packageSections ? `<div class="talent-package-sections">${packageSections}</div>` : ""}
       <div class="code-detail-tabs skill-detail-tabs">
         <div class="code-detail-tab-list">
           <button type="button" class="code-tab active" data-tab="preview">Markdown 预览</button>
@@ -10534,17 +10606,21 @@ function renderRestoredSession(sessionId, messages, checkpoints = [], dispatchPl
 
 /** Replay the durable daemon event journal. Legacy sessions fall back to message reconstruction. */
 function renderPersistedSessionEvents(sessionId, records) {
-  const events = (records || []).map((record) => record?.event).filter(Boolean);
-  if (!sessionId || !events.some((event) => event.type === "session_start")) return false;
+  const persistedRecords = (records || []).filter((record) => record?.event);
+  if (
+    !sessionId ||
+    !persistedRecords.some((record) => record.event.type === "session_start")
+  ) return false;
   const previousRoute = state.eventRouteSessionId;
   const previousLive = state.liveRunSessionId;
   state.eventRouteSessionId = sessionId;
   state.liveRunSessionId = sessionId;
   try {
-    for (const event of events) {
+    for (const record of persistedRecords) {
+      const event = record.event;
       if (!event || typeof event.type !== "string") continue;
       if (event.type === "session_start") {
-        beginSessionTurn(sessionId);
+        beginSessionTurn(sessionId, record.emittedAtMs);
         showChatEmpty(false);
         if (event.preview) renderUserPromptOnce(event.preview);
         continue;
@@ -10553,7 +10629,9 @@ function renderPersistedSessionEvents(sessionId, records) {
         flushStreamText();
         clearLiveStatusLine();
         clearNetworkPermissionsForSession(sessionId);
-        renderRunConclusion(event.finalText || "", sessionId);
+        renderRunConclusion(event.finalText || "", sessionId, {
+          completedAtMs: record.emittedAtMs,
+        });
         continue;
       }
       // Historical permission prompts are not live waiters — never re-arm the banner.
@@ -11080,6 +11158,8 @@ function setNav(mode) {
   }
   if (mode === "talents") {
     setTeamNavExpanded(true);
+    clearTalentPreviewSelection();
+    openRight(false);
   }
   const isChat = mode === "chat";
   $("centerPanel")?.classList.toggle("chat-empty-mode", isChat && state.chatEmpty);
@@ -12176,6 +12256,18 @@ async function loadTalentTemplates() {
   }
 }
 
+async function loadTalentTeams() {
+  const bridge = requireBridge();
+  if (!bridge?.listTalentTeams) return [];
+  try {
+    const res = await bridge.listTalentTeams({ cwd: talentProjectCwd() || undefined });
+    state.talentTeams = res?.teams ?? [];
+  } catch {
+    state.talentTeams = [];
+  }
+  return state.talentTeams;
+}
+
 function wrapTalentsPage(inner) {
   return `<div class="talents-page">${inner}</div>`;
 }
@@ -12183,11 +12275,18 @@ function wrapTalentsPage(inner) {
 function renderTalentsOverviewBar() {
   const roster = state.talentsRoster ?? [];
   const templates = state.talentTemplates ?? [];
+  const teams = state.talentTeams ?? [];
   const enabled = roster.filter((t) => t.enabled).length;
   return `<section class="talents-overview">
     <div class="talents-overview-copy">
-      <h3 class="talents-overview-title">人才中心</h3>
-      <p class="talents-overview-desc">浏览模板、租用成员；对话中用 @mention 指定角色协作。当前 ${templates.length} 个市场模板 · ${roster.length} 人已租用${enabled !== roster.length ? `（${enabled} 启用）` : ""}</p>
+      <span class="talents-overview-eyebrow">FORGE TALENT NETWORK</span>
+      <h2 class="talents-overview-title">把专业能力，编成一支随时待命的团队</h2>
+      <p class="talents-overview-desc">每位人才都带有方法论、工具边界和交付标准。选择一位专家，或组建一条完整工作流。</p>
+    </div>
+    <div class="talents-overview-stats" aria-label="人才中心统计">
+      <div><strong>${templates.length}</strong><span>专业人才</span></div>
+      <div><strong>${enabled}</strong><span>当前在岗</span></div>
+      <div><strong>${teams.length}</strong><span>协作编组</span></div>
     </div>
   </section>`;
 }
@@ -12212,6 +12311,63 @@ const TALENT_CATEGORY_ZH = {
   testing: "测试",
 };
 
+const FEATURED_TALENT_SCENES = [
+  {
+    id: "software-delivery",
+    name: "软件需求交付团队",
+    mention: "ship-team",
+    description: "从需求边界、架构设计到实现审查，形成可验证的软件交付。",
+    prompt: "完成这个软件需求，先明确验收标准，再给出实现并验证结果：",
+    deliverables: ["需求与验收标准", "技术方案", "实现与验证结果"],
+    members: [
+      ["product-manager", "定义目标、非目标和验收标准"],
+      ["engineering-software-architect", "设计技术方案并识别依赖风险"],
+      ["engineering-code-reviewer", "审查实现质量、安全性和回归风险"],
+    ],
+  },
+  {
+    id: "release-review",
+    name: "发布前审查团队",
+    mention: "release-team",
+    description: "并行检查代码、测试证据与应用安全，输出是否可发布的结论。",
+    prompt: "审查当前版本是否可以发布，并给出阻断问题和残余风险：",
+    deliverables: ["发布建议", "阻断问题", "残余风险与回滚条件"],
+    executionMode: "parallel",
+    members: [
+      ["engineering-code-reviewer", "检查代码质量和回归风险"],
+      ["testing-evidence-collector", "检查测试覆盖与验证证据"],
+      ["security-appsec-engineer", "检查安全风险与权限边界"],
+    ],
+  },
+  {
+    id: "market-research",
+    name: "行业与竞品研究团队",
+    mention: "research-team",
+    description: "把外部信息整理为可追溯的市场判断和行动建议。",
+    prompt: "研究这个行业或竞品，标注来源、事实、推断和建议：",
+    deliverables: ["研究报告", "证据与来源", "机会和行动建议"],
+    executionMode: "parallel",
+    members: [
+      ["product-trend-researcher", "研究市场趋势和用户需求"],
+      ["finance-investment-researcher", "研究商业模式和经营质量"],
+      ["engineering-technical-writer", "整合为结构清晰、可引用的报告"],
+    ],
+  },
+  {
+    id: "content-production",
+    name: "内容生产团队",
+    mention: "content-team",
+    description: "完成选题、内容生产和多平台传播方案。",
+    prompt: "围绕这个主题完成内容策划、成稿和发布建议：",
+    deliverables: ["选题策略", "内容成稿", "渠道发布清单"],
+    members: [
+      ["marketing-content-creator", "负责选题和内容成稿"],
+      ["marketing-social-media-strategist", "负责渠道和传播策略"],
+      ["design-ui-designer", "负责视觉结构和呈现建议"],
+    ],
+  },
+];
+
 function talentCategoryLabel(category) {
   return TALENT_CATEGORY_ZH[category] || category;
 }
@@ -12229,7 +12385,7 @@ function renderTalentCategoryChips() {
         `<button type="button" class="talent-cat-chip${active === cat ? " active" : ""}" data-talent-cat="${escapeHtml(cat)}">${escapeHtml(talentCategoryLabel(cat))}</button>`,
     ),
   ];
-  return `<div class="talent-category-chips" role="tablist">${chips.join("")}</div>`;
+  return `<div class="talent-category-chips" role="tablist" aria-label="人才专业分类">${chips.join("")}</div>`;
 }
 
 function filterTalentTemplatesForView() {
@@ -12251,19 +12407,26 @@ function renderTalentMarketCard(t) {
   const hired = Boolean(t.hired);
   const selected = state.talentPreviewTemplateId === t.id && state.talentPreviewSource === "market";
   const action = hired
-    ? `<span class="store-card-badge installed">已租用</span>`
-    : `<button type="button" class="store-card-install talent-hire-btn" data-template-id="${escapeHtml(t.id)}">租用</button>`;
+    ? `<span class="talent-card-status is-active"><i></i> 已在岗</span>`
+    : `<button type="button" class="store-card-install talent-hire-btn" data-template-id="${escapeHtml(t.id)}">加入团队 <span>→</span></button>`;
+  const sourceLabel = t.provenance?.source === "custom" ? "我的人才" : t.provenance?.source === "bundled" ? "官方内置" : "社区同步";
+  const capabilities = [...(t.deliverables || []), ...(t.suggestedSkills || [])].slice(0, 2);
   return `<article class="store-card talent-market-card${hired ? " is-hired" : ""}${selected ? " is-selected" : ""}" data-template-id="${escapeHtml(t.id)}" tabindex="0" role="button">
-    <div class="talent-market-card-head">
-      ${talentAvatarHtml(t, "talent-avatar talent-avatar-md")}
-      <h3 class="store-card-name">${escapeHtml(t.role)}</h3>
+    <div class="talent-card-topline">
+      <span class="talent-card-category">${escapeHtml(talentCategoryLabel(t.category))}</span>
+      <span class="talent-card-version">v${escapeHtml(t.version || "1.0.0")}</span>
     </div>
-    <div class="store-card-repo">${escapeHtml(talentCategoryLabel(t.category))} · ${escapeHtml(t.id)}</div>
-    <p class="store-card-desc">${escapeHtml(t.description || t.vibe || "暂无简介")}</p>
-    <div class="store-card-footer">
-      <div class="store-card-meta">
-        <span class="store-card-source">${hired ? "已加入团队" : "可租用"}</span>
+    <div class="talent-market-card-head">
+      ${talentAvatarHtml(t, "talent-avatar talent-avatar-lg")}
+      <div class="talent-card-identity">
+        <h3 class="store-card-name">${escapeHtml(t.role)}</h3>
+        <span>${escapeHtml(sourceLabel)} · ${t.provenance?.reviewed ? "已审查" : "待验证"}</span>
       </div>
+    </div>
+    <p class="store-card-desc">${escapeHtml(t.description || t.vibe || "暂无简介")}</p>
+    ${capabilities.length ? `<div class="talent-card-capabilities">${capabilities.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : '<div class="talent-card-capabilities"><span>专业角色工作流</span></div>'}
+    <div class="store-card-footer talent-card-footer">
+      <span class="talent-card-id">${escapeHtml(t.id)}</span>
       ${action}
     </div>
   </article>`;
@@ -12292,10 +12455,81 @@ function renderTalentsMarketPane() {
     templates.length > visible.length
       ? `<p class="store-hint">还有 ${templates.length - visible.length} 个结果，请用搜索或分类缩小范围。</p>`
       : "";
-  pane.innerHTML = `${renderTalentCategoryChips()}<div class="talents-market-grid store-grid">${visible.map(renderTalentMarketCard).join("")}</div>${more}`;
+  pane.innerHTML = `${renderFeaturedTalentScenes()}<section class="talent-catalog"><div class="talent-section-heading"><div><span class="talent-section-kicker">SPECIALISTS</span><h3>探索专业人才</h3></div><span>${templates.length} 位人才可用</span></div>${renderTalentCategoryChips()}<div class="talents-market-grid store-grid">${visible.map(renderTalentMarketCard).join("")}</div>${more}</section>`;
   bindTalentsMarketPane(pane);
   if (state.talentPreviewSource === "market" && state.talentPreviewTemplateId) {
     highlightTalentPreviewCards();
+  }
+}
+
+function renderFeaturedTalentScenes() {
+  return `<section class="talent-scenes">
+    <div class="talent-section-heading talent-scenes-head"><div><span class="talent-section-kicker">PLAYBOOKS</span><h3>从一个成熟编组开始</h3></div><p>预设分工、交付物与协作方式，一键投入当前任务</p></div>
+    <div class="talent-scenes-grid">${FEATURED_TALENT_SCENES.map((scene, index) => {
+      const memberTemplates = scene.members.map(([templateId]) => (state.talentTemplates || []).find((item) => item.id === templateId)).filter(Boolean);
+      return `
+      <article class="talent-scene-card talent-scene-${escapeHtml(scene.id)}">
+        <div class="talent-scene-index">0${index + 1}</div>
+        <div class="talent-scene-body">
+          <div class="talent-scene-title-row"><span class="talent-scene-mode">${scene.executionMode === "parallel" ? "并行审查" : "自动编排"}</span><span class="talent-scene-mention">@${escapeHtml(scene.mention)}</span></div>
+          <h4>${escapeHtml(scene.name)}</h4>
+          <p>${escapeHtml(scene.description)}</p>
+          <div class="talent-scene-deliverables">${scene.deliverables.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>
+        </div>
+        <footer class="talent-scene-footer">
+          <div class="talent-avatar-stack" aria-label="${scene.members.length} 位成员">${memberTemplates.map((talent) => talentAvatarHtml(talent, "talent-avatar talent-avatar-sm")).join("")}<b>+${scene.members.length}</b></div>
+          <span class="talent-scene-cost">约 ${scene.members.length + 1} 次调用</span>
+          <button type="button" class="store-card-install" data-scene-build="${escapeHtml(scene.id)}">组建 <span>→</span></button>
+        </footer>
+      </article>`;
+    }).join("")}</div>
+  </section>`;
+}
+
+async function buildFeaturedTalentScene(sceneId) {
+  const scene = FEATURED_TALENT_SCENES.find((item) => item.id === sceneId);
+  const bridge = requireBridge();
+  if (!scene || !bridge?.hireTalent || !bridge?.createTalentTeam) return;
+  try {
+    await Promise.all([loadTalentRoster(), loadTalentTeams()]);
+    let existing = (state.talentTeams || []).find((team) => team.mention === scene.mention);
+    if (!existing) {
+      const members = [];
+      for (const [templateId, responsibility] of scene.members) {
+        let hired = (state.talentsRoster || []).find((talent) => talent.templateId === templateId);
+        if (!hired) {
+          const result = await bridge.hireTalent({
+            templateId,
+            cwd: talentProjectCwd() || undefined,
+          });
+          hired = result?.talent;
+          if (hired) state.talentsRoster.push(hired);
+        }
+        if (!hired?.mention) throw new Error(`无法租用人才模板 ${templateId}`);
+        members.push({ mention: hired.mention, responsibility });
+      }
+      const result = await bridge.createTalentTeam({
+        cwd: talentProjectCwd() || undefined,
+        name: scene.name,
+        mention: scene.mention,
+        description: scene.description,
+        members,
+        deliverables: scene.deliverables,
+        executionMode: scene.executionMode || "auto",
+      });
+      existing = result?.team;
+    }
+    await Promise.all([loadTalentRoster(), loadTalentTemplates(), loadTalentTeams()]);
+    insertTalentMention(existing?.mention || scene.mention);
+    const input = $("messageInput");
+    if (input) {
+      input.value += scene.prompt;
+      input.focus();
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    notifyUser(`已组建并召唤「${scene.name}」`, "ok");
+  } catch (error) {
+    notifyUser(`组建场景团队失败: ${String(error)}`, "err");
   }
 }
 
@@ -12362,6 +12596,45 @@ function renderTalentsRosterPane() {
   }
 }
 
+function renderTalentTeamsPane() {
+  const pane = $("talentTeamsPane");
+  if (!pane) return;
+  const teams = state.talentTeams ?? [];
+  if (!teams.length) {
+    pane.innerHTML = `<section class="talents-empty">
+      <div class="talents-empty-icon" aria-hidden="true">👥</div>
+      <h3>还没有人才团队</h3>
+      <p class="tiny muted">把已租用人才和固定分工保存成团队，之后只需 @团队名 即可召唤。</p>
+      <button type="button" class="btn primary" id="talentsCreateTeamEmptyBtn">创建团队</button>
+    </section>`;
+    $("talentsCreateTeamEmptyBtn")?.addEventListener("click", openTalentTeamModal);
+    return;
+  }
+  pane.innerHTML = `<div class="talents-roster-grid">${teams.map((team) => `
+    <article class="talent-roster-card" data-team-card="${escapeHtml(team.id)}">
+      <div class="talent-roster-card-head">
+        <div class="talent-avatar talent-avatar-md">👥</div>
+        <div class="talent-roster-card-meta">
+          <strong>${escapeHtml(team.name)}</strong>
+          <span class="tiny muted">@${escapeHtml(team.mention)}</span>
+        </div>
+      </div>
+      <p class="talent-roster-card-role">${escapeHtml(team.description || "可复用人才协作团队")}</p>
+      <p class="talent-roster-card-sub">${escapeHtml((team.members || []).map((member) => `@${member.mention}`).join(" · "))} · 预计 ${(team.members || []).length + 1} 次模型调用</p>
+      <p class="tiny muted">${team.stats?.tasksDone ? `已召唤 ${team.stats.tasksDone} 次 · ` : ""}${escapeHtml(team.executionMode || "auto")} 编排</p>
+      <div class="talent-roster-card-actions">
+        <button type="button" class="btn primary btn-sm" data-team-summon="${escapeHtml(team.mention)}">召唤</button>
+        <button type="button" class="btn secondary btn-sm" data-team-delete="${escapeHtml(team.id)}">删除</button>
+      </div>
+    </article>`).join("")}</div>`;
+  pane.querySelectorAll("[data-team-summon]").forEach((button) => {
+    button.addEventListener("click", () => insertTalentMention(button.getAttribute("data-team-summon")));
+  });
+  pane.querySelectorAll("[data-team-delete]").forEach((button) => {
+    button.addEventListener("click", () => void deleteTalentTeamFromUi(button.getAttribute("data-team-delete")));
+  });
+}
+
 function highlightTalentPreviewCards() {
   const templateId = state.talentPreviewTemplateId;
   if (!templateId) return;
@@ -12397,6 +12670,14 @@ function buildTalentPreviewMeta(templateId, source = "market") {
     description: rosterTalent?.description || listItem?.description || listItem?.vibe || "",
     suggestedSkills: [],
     suggestedTools: [],
+    methodology: listItem?.methodology || [],
+    inputRequirements: listItem?.inputRequirements || [],
+    deliverables: listItem?.deliverables || [],
+    qualityGates: listItem?.qualityGates || [],
+    knowledgeRefs: listItem?.knowledgeRefs || [],
+    connectors: listItem?.connectors || [],
+    version: listItem?.version,
+    provenance: listItem?.provenance,
   };
 }
 
@@ -12430,6 +12711,14 @@ async function openTalentTemplatePreview(templateId, source = "market") {
         avatar: tpl.avatar || meta.avatar,
         suggestedSkills: tpl.suggestedSkills || [],
         suggestedTools: tpl.suggestedTools || [],
+        methodology: tpl.methodology || [],
+        inputRequirements: tpl.inputRequirements || [],
+        deliverables: tpl.deliverables || [],
+        qualityGates: tpl.qualityGates || [],
+        knowledgeRefs: tpl.knowledgeRefs || [],
+        connectors: tpl.connectors || [],
+        version: tpl.version || meta.version,
+        provenance: tpl.provenance || meta.provenance,
       },
       tpl.systemPrompt || meta.description || "（无人设正文）",
     );
@@ -12441,6 +12730,9 @@ async function openTalentTemplatePreview(templateId, source = "market") {
 }
 
 function bindTalentsMarketPane(root) {
+  root.querySelectorAll("[data-scene-build]").forEach((button) => {
+    button.addEventListener("click", () => void buildFeaturedTalentScene(button.getAttribute("data-scene-build")));
+  });
   root.querySelectorAll(".talent-cat-chip").forEach((btn) => {
     btn.addEventListener("click", () => {
       state.talentMarketCategory = btn.getAttribute("data-talent-cat") || "";
@@ -12529,6 +12821,223 @@ function openTalentHireModal(templateId) {
     delete mentionInput.dataset.touched;
   }
   modal.classList.remove("hidden");
+}
+
+function parseTalentLines(value) {
+  return [...new Set(String(value || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean))];
+}
+
+function openTalentCustomModal(template = null) {
+  const modal = $("talentCustomModal");
+  if (!modal) return;
+  state.customTalentEditingId = template?.id || null;
+  $("talentCustomModalTitle").textContent = template ? "编辑我的人才" : "创建我的人才";
+  $("talentCustomRoleInput").value = template?.role || "";
+  $("talentCustomCategoryInput").value = template?.category || "custom";
+  $("talentCustomDescriptionInput").value = template?.description || "";
+  $("talentCustomMethodologyInput").value = (template?.methodology || []).join("\n");
+  $("talentCustomInputsInput").value = (template?.inputRequirements || []).join("\n");
+  $("talentCustomDeliverablesInput").value = (template?.deliverables || []).join("\n");
+  $("talentCustomQualityInput").value = (template?.qualityGates || []).join("\n");
+  $("talentCustomSkillsInput").value = (template?.suggestedSkills || []).join(", ");
+  $("talentCustomToolsInput").value = (template?.suggestedTools || ["read_file", "list_dir", "grep"]).join(", ");
+  $("talentCustomPromptInput").value = template?.systemPrompt || "";
+  $("talentCustomSaveBtn").textContent = template ? "保存人才包" : "创建并加入团队";
+  modal.classList.remove("hidden");
+  $("talentCustomRoleInput")?.focus();
+}
+
+function closeTalentCustomModal() {
+  state.customTalentEditingId = null;
+  $("talentCustomModal")?.classList.add("hidden");
+}
+
+async function openTalentCustomEditor(templateId) {
+  const bridge = requireBridge();
+  const result = await bridge.getTalentTemplate({ templateId });
+  if (!result?.template || result.template.provenance?.source !== "custom") {
+    notifyUser("只能编辑自己创建的人才", "warn");
+    return;
+  }
+  openTalentCustomModal(result.template);
+}
+
+async function submitTalentCustom() {
+  const bridge = requireBridge();
+  if (!bridge?.createCustomTalent || !bridge?.hireTalent) return;
+  const role = ($("talentCustomRoleInput")?.value || "").trim();
+  const description = ($("talentCustomDescriptionInput")?.value || "").trim();
+  if (!role || !description) {
+    notifyUser("请填写人才名称和职责说明", "warn");
+    return;
+  }
+  const button = $("talentCustomSaveBtn");
+  if (button) button.disabled = true;
+  try {
+    const talentPayload = {
+        role,
+        category: ($("talentCustomCategoryInput")?.value || "custom").trim() || "custom",
+        description,
+        methodology: parseTalentLines($("talentCustomMethodologyInput")?.value),
+        inputRequirements: parseTalentLines($("talentCustomInputsInput")?.value),
+        deliverables: parseTalentLines($("talentCustomDeliverablesInput")?.value),
+        qualityGates: parseTalentLines($("talentCustomQualityInput")?.value),
+        suggestedSkills: parseTalentListInput($("talentCustomSkillsInput")?.value),
+        suggestedTools: parseTalentListInput($("talentCustomToolsInput")?.value),
+        systemPrompt: ($("talentCustomPromptInput")?.value || "").trim() || undefined,
+      };
+    if (state.customTalentEditingId) {
+      const templateId = state.customTalentEditingId;
+      await bridge.updateCustomTalent({ templateId, patch: talentPayload });
+      closeTalentCustomModal();
+      notifyUser(`已更新 ${role}`, "ok");
+      await Promise.all([loadTalentRoster(), loadTalentTemplates()]);
+      if (state.activeNav === "talents") void renderTalentsView();
+      return;
+    }
+    const created = await bridge.createCustomTalent({ talent: talentPayload });
+    const templateId = created?.template?.id;
+    if (!templateId) throw new Error("创建结果缺少 templateId");
+    const hired = await bridge.hireTalent({
+      templateId,
+      displayName: role,
+      mention: slugTalentMention(role) || templateId.replace(/^custom-/, ""),
+      cwd: talentProjectCwd() || undefined,
+    });
+    closeTalentCustomModal();
+    notifyUser(`已创建并加入 ${hired?.talent?.displayName || role}`, "ok");
+    await Promise.all([loadTalentRoster(), loadTalentTemplates()]);
+    if (state.activeNav === "talents") {
+      setTalentsTab("roster");
+      void renderTalentsView();
+    }
+  } catch (error) {
+    notifyUser(`创建人才失败: ${String(error)}`, "err");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function deleteCustomTalentFromUi(templateId, mention) {
+  const bridge = requireBridge();
+  if (!bridge?.deleteCustomTalent) return;
+  if (!confirm("确定删除这个自定义人才包？当前项目中的租用记录也会解除。")) return;
+  try {
+    if (mention && bridge.fireTalent) {
+      await bridge.fireTalent({
+        instanceIdOrMention: mention,
+        cwd: talentProjectCwd() || undefined,
+      });
+    }
+    await bridge.deleteCustomTalent({ templateId });
+    state.activeTalentTemplateId = "";
+    clearTalentPreviewSelection();
+    setRightPanelMode("empty");
+    await Promise.all([loadTalentRoster(), loadTalentTemplates()]);
+    if (state.activeNav === "talents") void renderTalentsView();
+    notifyUser("自定义人才已删除", "ok");
+  } catch (error) {
+    notifyUser(`删除人才失败: ${String(error)}`, "err");
+  }
+}
+
+function openTalentTeamModal() {
+  const modal = $("talentTeamModal");
+  if (!modal) return;
+  $("talentTeamNameInput").value = "";
+  $("talentTeamMentionInput").value = "";
+  $("talentTeamDescriptionInput").value = "";
+  $("talentTeamLeadInput").value = "";
+  $("talentTeamDeliverablesInput").value = "";
+  $("talentTeamModeSelect").value = "auto";
+  $("talentTeamMembersInput").value = (state.talentsRoster || [])
+    .filter((talent) => talent.enabled)
+    .slice(0, 3)
+    .map((talent) => `${talent.mention} | 负责${talent.role}相关工作`)
+    .join("\n");
+  modal.classList.remove("hidden");
+  $("talentTeamNameInput")?.focus();
+}
+
+function closeTalentTeamModal() {
+  $("talentTeamModal")?.classList.add("hidden");
+}
+
+function parseTalentTeamMembers(value) {
+  return parseTalentLines(value).map((line) => {
+    const [mention, ...responsibility] = line.split("|");
+    return {
+      mention: String(mention || "").trim().replace(/^@/, ""),
+      responsibility: responsibility.join("|").trim() || "根据专业角色完成团队目标",
+    };
+  }).filter((member) => member.mention);
+}
+
+async function submitTalentTeam() {
+  const bridge = requireBridge();
+  if (!bridge?.createTalentTeam) return;
+  const name = ($("talentTeamNameInput")?.value || "").trim();
+  const description = ($("talentTeamDescriptionInput")?.value || "").trim();
+  const members = parseTalentTeamMembers($("talentTeamMembersInput")?.value);
+  const hiredMentions = new Set((state.talentsRoster || []).map((talent) => talent.mention));
+  const missing = members.filter((member) => !hiredMentions.has(member.mention));
+  const requestedMention = (($("talentTeamMentionInput")?.value || "").trim() || slugTalentMention(name)).replace(/^@/, "");
+  const leadMention = ($("talentTeamLeadInput")?.value || "").trim().replace(/^@/, "");
+  if (!name || members.length < 2) {
+    notifyUser("请填写团队名称，并配置至少两名成员", "warn");
+    return;
+  }
+  if (missing.length) {
+    notifyUser(`以下成员尚未租用：${missing.map((member) => `@${member.mention}`).join("、")}`, "warn");
+    return;
+  }
+  if (hiredMentions.has(requestedMention)) {
+    notifyUser(`团队 @${requestedMention} 与已租用人才重名，请换一个名称`, "warn");
+    return;
+  }
+  if (leadMention && !members.some((member) => member.mention === leadMention)) {
+    notifyUser("团队负责人必须是成员之一", "warn");
+    return;
+  }
+  const button = $("talentTeamSaveBtn");
+  if (button) button.disabled = true;
+  try {
+    await bridge.createTalentTeam({
+      cwd: talentProjectCwd() || undefined,
+      name,
+      mention: requestedMention,
+      description,
+      leadMention: leadMention || undefined,
+      members,
+      deliverables: parseTalentLines($("talentTeamDeliverablesInput")?.value),
+      executionMode: $("talentTeamModeSelect")?.value || "auto",
+    });
+    closeTalentTeamModal();
+    await loadTalentTeams();
+    setTalentsTab("teams");
+    renderTalentTeamsPane();
+    notifyUser(`已创建人才团队「${name}」`, "ok");
+  } catch (error) {
+    notifyUser(`创建团队失败: ${String(error)}`, "err");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function deleteTalentTeamFromUi(idOrMention) {
+  const bridge = requireBridge();
+  if (!bridge?.deleteTalentTeam || !confirm("确定删除这个人才团队？")) return;
+  try {
+    await bridge.deleteTalentTeam({
+      idOrMention,
+      cwd: talentProjectCwd() || undefined,
+    });
+    await loadTalentTeams();
+    renderTalentTeamsPane();
+    notifyUser("人才团队已删除", "ok");
+  } catch (error) {
+    notifyUser(`删除团队失败: ${String(error)}`, "err");
+  }
 }
 
 function closeTalentHireModal() {
@@ -12697,6 +13206,14 @@ async function fireTalentFromRoster(mention, btn) {
 function renderTalentsOverview() {
   const el = $("talentsOverviewHost");
   if (el) el.innerHTML = renderTalentsOverviewBar();
+  syncTalentToolbarCounts();
+}
+
+function syncTalentToolbarCounts() {
+  const rosterCount = $("talentsRosterCount");
+  const teamsCount = $("talentsTeamsCount");
+  if (rosterCount) rosterCount.textContent = String((state.talentsRoster || []).length);
+  if (teamsCount) teamsCount.textContent = String((state.talentTeams || []).length);
 }
 
 function syncTalentsToolbarPanes() {
@@ -12706,16 +13223,20 @@ function syncTalentsToolbarPanes() {
   });
   $("talentsToolbarMarket")?.classList.toggle("hidden", tab !== "market");
   $("talentsToolbarRoster")?.classList.toggle("hidden", tab !== "roster");
+  syncTalentToolbarCounts();
 }
 
 function setTalentsTab(tab) {
   state.talentsTab = tab;
   clearTalentPreviewSelection();
+  openRight(false);
   syncTalentsToolbarPanes();
   $("talentsMarketPane")?.classList.toggle("hidden", tab !== "market");
   $("talentsRosterPane")?.classList.toggle("hidden", tab !== "roster");
+  $("talentTeamsPane")?.classList.toggle("hidden", tab !== "teams");
   if (tab === "market") renderTalentsMarketPane();
-  else renderTalentsRosterPane();
+  else if (tab === "roster") renderTalentsRosterPane();
+  else renderTalentTeamsPane();
 }
 
 async function syncTalentsFromUi() {
@@ -12725,23 +13246,27 @@ async function syncTalentsFromUi() {
     notifyUser("无法同步：桌面通信桥未就绪，请重启应用后再试。", "err");
     return;
   }
-  const prevLabel = btn?.textContent;
+  const previousTitle = btn?.title;
   if (btn) {
     btn.disabled = true;
-    btn.textContent = "↻ 同步中…";
+    btn.classList.add("is-syncing");
+    btn.setAttribute("aria-busy", "true");
+    btn.title = "正在同步人才模板…";
   }
   try {
     const res = await bridge.syncTalents({});
     notifyUser(`已同步 ${res.count} 个人才模板（${res.source}）`, "ok");
     if (res.notice) notifyUser(res.notice, "warn");
-    await Promise.all([loadTalentTemplates(), loadTalentRoster()]);
+    await Promise.all([loadTalentTemplates(), loadTalentRoster(), loadTalentTeams()]);
     if (state.activeNav === "talents") void renderTalentsView();
   } catch (e) {
     notifyUser(`同步失败: ${String(e)}`, "err");
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.textContent = prevLabel || "↻ 同步";
+      btn.classList.remove("is-syncing");
+      btn.removeAttribute("aria-busy");
+      btn.title = previousTitle || "从 GitHub 或本地同步模板";
     }
   }
 }
@@ -12752,23 +13277,20 @@ async function renderTalentsView() {
   state.talentsLoading = true;
   root.innerHTML = wrapTalentsPage(`<div class="store-status">正在加载…</div>`);
   try {
-    await Promise.all([loadTalentTemplates(), loadTalentRoster()]);
+    await Promise.all([loadTalentTemplates(), loadTalentRoster(), loadTalentTeams()]);
   } finally {
     state.talentsLoading = false;
   }
-  const previewId = state.activeTalentTemplateId || state.talentPreviewTemplateId;
-  const previewSource = state.talentPreviewSource || "market";
   root.innerHTML = wrapTalentsPage(`
     <div id="talentsOverviewHost">${renderTalentsOverviewBar()}</div>
     <div id="talentsMarketPane" class="talents-page-pane${state.talentsTab !== "market" ? " hidden" : ""}"></div>
     <div id="talentsRosterPane" class="talents-page-pane${state.talentsTab !== "roster" ? " hidden" : ""}"></div>
+    <div id="talentTeamsPane" class="talents-page-pane${state.talentsTab !== "teams" ? " hidden" : ""}"></div>
   `);
   syncTalentsToolbarPanes();
   renderTalentsMarketPane();
   renderTalentsRosterPane();
-  if (previewId) {
-    void openTalentTemplatePreview(previewId, previewSource);
-  }
+  renderTalentTeamsPane();
 }
 
 function insertTalentMention(mention) {
@@ -12789,10 +13311,12 @@ function bindTalentsUi() {
   document.querySelectorAll(".talents-page-tab").forEach((btn) => {
     btn.addEventListener("click", () => {
       const tab = btn.getAttribute("data-talents-tab");
-      if (tab === "market" || tab === "roster") setTalentsTab(tab);
+      if (tab === "market" || tab === "roster" || tab === "teams") setTalentsTab(tab);
     });
   });
   $("talentsSyncBtn")?.addEventListener("click", () => void syncTalentsFromUi());
+  $("talentsCreateBtn")?.addEventListener("click", openTalentCustomModal);
+  $("talentsCreateTeamBtn")?.addEventListener("click", openTalentTeamModal);
   $("talentMarketSearchInput")?.addEventListener("input", (e) => {
     state.talentMarketQuery = e.target.value || "";
     renderTalentsMarketPane();
@@ -12817,6 +13341,16 @@ function bindTalentsUi() {
   $("talentHireMentionInput")?.addEventListener("input", (e) => {
     if (e.target.value.trim()) e.target.dataset.touched = "1";
   });
+  const customModal = $("talentCustomModal");
+  $("talentCustomModalCloseBtn")?.addEventListener("click", closeTalentCustomModal);
+  $("talentCustomCancelBtn")?.addEventListener("click", closeTalentCustomModal);
+  customModal?.querySelector(".modal-mask")?.addEventListener("click", closeTalentCustomModal);
+  $("talentCustomSaveBtn")?.addEventListener("click", () => void submitTalentCustom());
+  const teamModal = $("talentTeamModal");
+  $("talentTeamModalCloseBtn")?.addEventListener("click", closeTalentTeamModal);
+  $("talentTeamCancelBtn")?.addEventListener("click", closeTalentTeamModal);
+  teamModal?.querySelector(".modal-mask")?.addEventListener("click", closeTalentTeamModal);
+  $("talentTeamSaveBtn")?.addEventListener("click", () => void submitTalentTeam());
   const detailModal = $("talentDetailModal");
   $("talentDetailModalCloseBtn")?.addEventListener("click", closeTalentDetailModal);
   $("talentDetailCancelBtn")?.addEventListener("click", closeTalentDetailModal);
@@ -12835,8 +13369,12 @@ function renderProjects() {
     if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
     return 0;
   });
+  if (openProjectMenuId && !projects.some((project) => project.id === openProjectMenuId)) {
+    openProjectMenuId = null;
+  }
   projects.forEach((p) => {
     const card = document.createElement("div");
+    card.dataset.projectId = p.id;
     card.className = [
       "project-item",
       p.id === state.activeProjectId ? "active" : "",
@@ -12890,7 +13428,7 @@ function renderProjects() {
           <button type="button" class="project-compose-btn" title="在该工作空间新建对话" aria-label="在该工作空间新建对话">${sidebarIcon("compose", "project-compose-svg")}</button>
         </div>
       </div>
-      <div class="project-menu hidden" role="menu">
+      <div class="project-menu${openProjectMenuId === p.id ? "" : " hidden"}" role="menu">
         <button type="button" data-project-action="pin">${sidebarIcon("pin", "project-menu-icon")}${p.pinned ? "取消置顶项目" : "置顶项目"}</button>
         <button type="button" data-project-action="reveal">${sidebarIcon("reveal", "project-menu-icon")}在 Finder 中显示</button>
         <button type="button" disabled title="当前版本暂不支持创建永久工作树">${sidebarIcon("tree", "project-menu-icon")}创建永久工作树</button>
@@ -12905,6 +13443,8 @@ function renderProjects() {
     card.querySelector(".project-menu-btn")?.addEventListener("click", (e) => {
       e.stopPropagation();
       const menu = card.querySelector(".project-menu");
+      const willOpen = menu?.classList.contains("hidden");
+      openProjectMenuId = willOpen ? p.id : null;
       document
         .querySelectorAll(".project-menu")
         .forEach((el) => {
@@ -12916,12 +13456,16 @@ function renderProjects() {
       e.stopPropagation();
       const action = e.target.closest("[data-project-action]")?.dataset
         ?.projectAction;
-      if (action) void handleProjectAction(action, p);
+      if (action) {
+        openProjectMenuId = null;
+        void handleProjectAction(action, p);
+      }
     });
     card
       .querySelector(".project-compose-btn")
       ?.addEventListener("click", (e) => {
         e.stopPropagation();
+        openProjectMenuId = null;
         document
           .querySelectorAll(".project-menu")
           .forEach((el) => el.classList.add("hidden"));
@@ -13341,9 +13885,15 @@ function bindPluginCardActions(root) {
 
 function renderMcpListItem(m) {
   const args = (m.args ?? []).join(" ");
-  const status = m.managedInConfig
-    ? "已在当前配置启用/管理"
-    : "已安装，尚未写入当前配置";
+  const pluginProvided = String(m.source || "").startsWith("plugin:");
+  const isExample = m.source === "mcp.json.example";
+  const status = pluginProvided
+    ? "由已启用插件自动加载，无需写入 mcp.servers"
+    : isExample
+      ? "配置示例，仅供参考，不会自动加载"
+      : m.managedInConfig
+        ? "已在当前配置启用/管理"
+        : "已发现，但尚未启用";
   return `<div class="event">
     <strong>${escapeHtml(m.name)}</strong><br/>
     <span class="tiny">${escapeHtml(m.command)} ${escapeHtml(args)}</span><br/>
@@ -13364,24 +13914,31 @@ async function renderMcpView() {
     const res = await requireBridge().listMcp(cwd);
     const installed = Array.isArray(res?.installed) ? res.installed : [];
     const configured = Array.isArray(res?.configured) ? res.configured : [];
-    const unconfiguredCount = res?.unconfiguredCount ?? 0;
+    const pluginProvided = installed.filter((m) =>
+      String(m.source || "").startsWith("plugin:"),
+    );
+    const examples = installed.filter(
+      (m) => !String(m.source || "").startsWith("plugin:"),
+    );
     root.innerHTML = `
-      <div class="event"><strong>默认安装</strong></div>
+      <div class="event"><strong>插件自动加载</strong></div>
       ${
-        installed.length
-          ? installed.map(renderMcpListItem).join("")
-          : `<div class="event warn">未扫描到默认安装 MCP。</div>`
+        pluginProvided.length
+          ? pluginProvided.map(renderMcpListItem).join("")
+          : `<div class="event">当前没有由已启用插件提供的 MCP。</div>`
       }
-      <div class="event"><strong>当前配置</strong></div>
+      ${
+        examples.length
+          ? `<div class="event"><strong>配置示例</strong></div>${examples.map(renderMcpListItem).join("")}`
+          : ""
+      }
+      <div class="event"><strong>当前手动配置</strong></div>
       ${
         configured.length
           ? configured.map(renderMcpListItem).join("")
-          : `<div class="event warn">当前配置中没有 MCP 服务器。</div>`
-      }
-      ${
-        unconfiguredCount > 0
-          ? `<div class="event warn">提示：有 ${unconfiguredCount} 个默认安装 MCP 未写入当前 config，可在设置 JSON 中加入 mcp.servers。</div>`
-          : ""
+          : pluginProvided.length
+            ? `<div class="event status">当前没有额外手动配置；上方插件 MCP 已自动生效，无需重复写入设置 JSON。</div>`
+            : `<div class="event">当前没有手动配置 MCP 服务器。</div>`
       }
     `;
   } catch (e) {
@@ -14978,7 +15535,15 @@ function renderGlobalMobileSection(mobileChannels, kindLabels, runtimeById, gw, 
   </section>`;
 }
 
-function renderProjectChannelsSection(channels, kinds, kindLabels, runtimeById, gw, daemonOk) {
+function renderProjectChannelsSection(
+  channels,
+  kinds,
+  kindLabels,
+  runtimeById,
+  gw,
+  daemonOk,
+  activeCwd,
+) {
   const list = Array.isArray(channels) ? channels : [];
   if (!list.length) {
     return `<section class="channels-list-section channels-project-empty">
@@ -14999,6 +15564,9 @@ function renderProjectChannelsSection(channels, kinds, kindLabels, runtimeById, 
   const cards = list
     .map((channel) => renderChannelCard(channel, kindLabels, runtimeById, gw, daemonOk))
     .join("");
+  const troubleshooting = list.some((channel) => channel.kind === "ilink")
+    ? renderChannelsTroubleshooting(activeCwd)
+    : "";
   return `<section class="channels-list-section">
     <div class="channels-list-head">
       <div>
@@ -15007,6 +15575,7 @@ function renderProjectChannelsSection(channels, kinds, kindLabels, runtimeById, 
       </div>
       <span class="channels-list-count">${list.length} 个 · 每 3 秒自动刷新</span>
     </div>
+    ${troubleshooting}
     <div class="channels-card-list">${cards}</div>
   </section>`;
 }
@@ -15026,7 +15595,7 @@ function renderChannelCard(c, kindLabels, runtimeById, gw, daemonOk, options = {
   const showLogin = c.kind === "ilink" && !hasToken;
   const kindLabel = kindLabels[c.kind] || c.kind;
   const meta = globalMobile
-    ? `电脑级全局连接 · 访问范围由全局 Mobile 权限与「配对与设备」授权管理`
+    ? `电脑级全局连接 · 手机与电脑项目列表同步（电脑新增/删除后手机自动跟随）`
     : `${escapeHtml(kindLabel)} · 项目 <code>${escapeHtml(c.cwd)}</code>`;
   return `<article class="channel-card${rt?.processing ? " is-processing" : ""}${globalMobile ? " is-global-mobile" : ""}" data-channel-id="${escapeHtml(c.id)}">
     ${channelKindIconHtml(c.kind)}
@@ -15414,10 +15983,9 @@ async function loadMobileDevices() {
               <div>
                 <strong>${escapeHtml(device.displayName || "未命名设备")}</strong>
                 <p>配对于 ${escapeHtml(formatRelativeTime(device.createdAt))}${device.lastSeenAt ? ` · 最后在线 ${escapeHtml(formatRelativeTime(device.lastSeenAt))}` : " · 尚未上线"}</p>
-                <p>允许项目：${escapeHtml((device.allowedProjects || []).join("、") || "无")}</p>
+                <p>与电脑项目列表同步 · 电脑新增/删除后手机自动跟随</p>
               </div>
               <div class="mobile-device-item-actions">
-                <button type="button" class="btn secondary btn-sm mobile-device-projects-btn" data-device-id="${escapeHtml(device.deviceId)}">修改项目</button>
                 <button type="button" class="btn secondary btn-sm mobile-device-revoke-btn" data-device-id="${escapeHtml(device.deviceId)}">撤销</button>
               </div>
             </article>`,
@@ -15432,27 +16000,6 @@ async function loadMobileDevices() {
           .revokeMobileDevice({ adapterId: mobileManagerAdapterId, deviceId })
           .then(() => loadMobileDevices())
           .catch((error) => alert(`撤销设备失败: ${error}`));
-      });
-    });
-    host.querySelectorAll(".mobile-device-projects-btn").forEach((button) => {
-      button.addEventListener("click", () => {
-        const deviceId = button.getAttribute("data-device-id");
-        const device = active.find((candidate) => candidate.deviceId === deviceId);
-        if (!deviceId || !device) return;
-        const value = prompt(
-          "每行填写一个允许项目的绝对路径。只能选择该 Mobile 渠道权限中已授权的项目；留空表示禁止访问所有项目。",
-          (device.allowedProjects || []).join("\n"),
-        );
-        if (value === null) return;
-        const allowedProjects = [...new Set(value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean))];
-        void requireBridge()
-          .updateMobileDeviceProjects({
-            adapterId: mobileManagerAdapterId,
-            deviceId,
-            allowedProjects,
-          })
-          .then(() => loadMobileDevices())
-          .catch((error) => alert(`修改项目授权失败: ${error}`));
       });
     });
   } catch (error) {
@@ -15637,9 +16184,8 @@ async function renderChannelsView(options = {}) {
         ? ""
         : `<div class="channels-daemon-banner event warn">需保持 Daemon 运行，Gateway 才能转发消息。</div>`
     }${renderChannelsPermissionsBanner()}${renderChannelsGatewayBar(gw)}
-      ${renderChannelsTroubleshooting(cwd)}
       ${renderGlobalMobileSection(mobileChannels, kindLabels, runtimeById, gw, daemonOk)}
-      ${renderProjectChannelsSection(projectChannels, kinds, kindLabels, runtimeById, gw, daemonOk)}`);
+      ${renderProjectChannelsSection(projectChannels, kinds, kindLabels, runtimeById, gw, daemonOk, cwd)}`);
     bindChannelsView(root, channels, gw);
     startChannelsPoll();
   } catch (e) {
@@ -16324,6 +16870,7 @@ function bindActions() {
   $("terminalCloseBtn")?.addEventListener("click", () => openRight(false));
   bindRightPanelOutsideClose();
   document.addEventListener("click", () => {
+    openProjectMenuId = null;
     document
       .querySelectorAll(".project-menu")
       .forEach((menu) => menu.classList.add("hidden"));
@@ -17281,6 +17828,7 @@ function handleLiveAgentEventBody(ev, opts = {}) {
         ev.kind === "network" ||
         ev.kind === "software" ||
         ev.kind === "command" ||
+        ev.kind === "mcp" ||
         ev.kind === "acp" ||
         ev.kind === "codex" ||
         ev.kind === "claude-code"

@@ -61,4 +61,31 @@ describe("project sidebar density", () => {
     expect(projectSessionsBlock).toContain("padding: 0 0 0 28px");
     expect(projectSessionsBlock).not.toContain("border-left");
   });
+
+  it("keeps long project paths and session titles from pushing actions off-screen", () => {
+    const styles = stylesSource();
+    const projectListBlock = styles.match(/\.project-list \{[\s\S]*?\n\}/)?.[0] ?? "";
+    const projectHeadBlock = styles.match(/\.project-head \{[\s\S]*?\n\}/)?.[0] ?? "";
+    const titleBlock = styles.match(/\.session-title \{[\s\S]*?\n\}/)?.[0] ?? "";
+    const sessionBlock = styles.match(/\.session-item \{[\s\S]*?\n\}/)?.[0] ?? "";
+
+    expect(projectListBlock).toContain("overflow-x: hidden");
+    expect(projectHeadBlock).toContain("min-width: 0");
+    expect(projectHeadBlock).toContain("overflow: hidden");
+    expect(sessionBlock).toContain("max-width: 100%");
+    expect(sessionBlock).toContain("overflow: hidden");
+    expect(titleBlock).toContain("flex: 1 1 0");
+    expect(titleBlock).toContain("text-overflow: ellipsis");
+  });
+
+  it("preserves the open project menu across periodic sidebar renders", () => {
+    const source = appSource();
+
+    expect(source).toContain("let openProjectMenuId = null");
+    expect(source).toContain('openProjectMenuId === p.id ? "" : " hidden"');
+    expect(source).toContain("openProjectMenuId = willOpen ? p.id : null");
+    expect(source).toMatch(
+      /document\.addEventListener\("click", \(\) => \{\s*openProjectMenuId = null/,
+    );
+  });
 });

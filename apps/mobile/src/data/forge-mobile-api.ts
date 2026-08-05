@@ -55,7 +55,28 @@ export type Branches = {
 
 export type WorkspaceContent =
   | { path: string; kind: "text"; language: string; content: string; size: number; truncated: boolean }
+  | { path: string; kind: "image"; mime: string; dataUrl: string; size: number; truncated: false }
   | { path: string; kind: "binary"; mime: string; size: number; truncated: false };
+
+export function extractWorkspaceImagePaths(text: string, cwd: string): string[] {
+  const normalizedCwd = cwd.replace(/\/+$/, "");
+  const candidates = text.match(/(?:\/{1}|\.\/)?[^\s`<>()[\]{}"']+\.(?:gif|jpe?g|png|webp)/gi) ?? [];
+  const paths = new Set<string>();
+  for (const candidate of candidates) {
+    const clean = candidate.replace(/[.,;:!?]+$/, "");
+    let relativePath = clean;
+    if (clean.startsWith("/")) {
+      if (!normalizedCwd || !clean.startsWith(`${normalizedCwd}/`)) continue;
+      relativePath = clean.slice(normalizedCwd.length + 1);
+    } else {
+      relativePath = clean.replace(/^\.\//, "");
+    }
+    if (!relativePath || relativePath.split("/").includes("..")) continue;
+    paths.add(relativePath);
+    if (paths.size >= 4) break;
+  }
+  return [...paths];
+}
 
 export type DiffItem = { path: string; additions: number; deletions: number; binary: boolean };
 export type DiffContent = { path: string; unifiedDiff: string; truncated: boolean };
@@ -305,6 +326,14 @@ function parseFile(value: unknown): WorkspaceContent | null {
   if (typeof item?.path !== "string") return null;
   if (item.kind === "text" && typeof item.language === "string" && typeof item.content === "string") {
     return { path: item.path.slice(0, 4096), kind: "text", language: item.language.slice(0, 100), content: item.content.slice(0, 1_000_000), size: nonNegative(item.size), truncated: item.truncated === true };
+  }
+  if (
+    item.kind === "image"
+    && typeof item.mime === "string"
+    && typeof item.dataUrl === "string"
+    && /^data:image\/(?:gif|jpeg|png|webp);base64,/.test(item.dataUrl)
+  ) {
+    return { path: item.path.slice(0, 4096), kind: "image", mime: item.mime.slice(0, 200), dataUrl: item.dataUrl.slice(0, 2_000_000), size: nonNegative(item.size), truncated: false };
   }
   return item.kind === "binary" && typeof item.mime === "string"
     ? { path: item.path.slice(0, 4096), kind: "binary", mime: item.mime.slice(0, 200), size: nonNegative(item.size), truncated: false }

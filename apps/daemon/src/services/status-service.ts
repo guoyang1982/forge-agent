@@ -21,5 +21,8 @@ export async function handleStatus(deps: {
     sessions: {
       count: deps.sessions.countSessions(),
     },
+    browser: {
+      backends: runtime.browser.listBackends(),
+    },
   };
 }

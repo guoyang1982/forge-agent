@@ -37,6 +37,39 @@ describe("copy buttons in the timeline", () => {
   });
 });
 
+describe("MCP resource status", () => {
+  it("distinguishes plugin-provided MCP from optional manual config", () => {
+    const source = appSource();
+    expect(source).toContain("插件自动加载");
+    expect(source).toContain("由已启用插件自动加载，无需写入 mcp.servers");
+    expect(source).toContain("上方插件 MCP 已自动生效，无需重复写入设置 JSON");
+    expect(source).not.toContain("个默认安装 MCP 未写入当前 config");
+  });
+
+  it("renders MCP elicitation as an application permission card", () => {
+    const source = appSource();
+    expect(source).toContain('if (ev.kind === "mcp")');
+    expect(source).toContain("应用访问授权");
+    expect(source).toContain('ev.kind === "mcp" ||');
+  });
+});
+
+describe("channel page information hierarchy", () => {
+  it("keeps WeChat troubleshooting inside project channels instead of the global area", () => {
+    const source = appSource();
+    const projectSection = source.match(
+      /function renderProjectChannelsSection[\s\S]*?\n}\n\nfunction renderChannelCard/,
+    )?.[0] ?? "";
+    const pageRender = source.match(
+      /root\.innerHTML = wrapChannelsPage\([\s\S]*?bindChannelsView/,
+    )?.[0] ?? "";
+
+    expect(projectSection).toContain('channel.kind === "ilink"');
+    expect(projectSection).toContain("renderChannelsTroubleshooting(activeCwd)");
+    expect(pageRender).not.toContain("${renderChannelsTroubleshooting(cwd)}");
+  });
+});
+
 describe("prompt history recall", () => {
   it("ArrowUp recalls past prompts only from an empty composer", () => {
     const source = appSource();
@@ -389,6 +422,37 @@ describe("restored step narratives", () => {
     expect(source).toContain("const fileChanges = Array.isArray(payload.changes)");
     expect(source).toContain("state.normalizedFileActivityCallIds");
   });
+
+  it("preserves real run duration across event replay and session switches", () => {
+    const source = appSource();
+    expect(source).toContain("runActivityStartedAtBySession");
+
+    const begin = source.match(/function beginSessionTurn[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(begin).toContain("startedAtMs");
+    expect(begin).toContain("runActivityStartedAtBySession.set");
+
+    const replay =
+      source.match(/function renderPersistedSessionEvents[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(replay).toContain("record.emittedAtMs");
+    expect(replay).toContain("completedAtMs: record.emittedAtMs");
+
+    const summary =
+      source.match(/function updateRunActivitySummary[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(summary).toContain("opts.completedAtMs");
+    expect(summary).toContain("formatRunDurationMs(elapsed)");
+
+    const formatDuration =
+      source.match(/function formatDurationMs[\s\S]*?\n}\n/)?.[0] ?? "";
+    const formatRunDuration =
+      source.match(/function formatRunDurationMs[\s\S]*?\n}\n/)?.[0] ?? "";
+    const format = Function(
+      `${formatDuration}${formatRunDuration}; return formatRunDurationMs;`,
+    )();
+    expect(format(0)).toBe("<1s");
+    expect(format(999)).toBe("<1s");
+    expect(format(1_000)).toBe("1s");
+  });
+
   it("survive the conclusion render and use markdown", () => {
     const source = appSource();
     // Live stream copies inside the fold are stripped when the root conclusion renders.
@@ -826,6 +890,39 @@ describe("right code panel outside close", () => {
   });
 });
 
+describe("talent center layout stability", () => {
+  it("keeps sync feedback inside the fixed icon button", () => {
+    const source = appSource();
+    const sync = source.match(/async function syncTalentsFromUi[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(sync).toContain('classList.add("is-syncing")');
+    expect(sync).toContain('setAttribute("aria-busy", "true")');
+    expect(sync).not.toContain("同步中…");
+  });
+
+  it("closes stale talent details when entering or switching center views", () => {
+    const source = appSource();
+    const setTab = source.match(/function setTalentsTab[\s\S]*?\n}\n/)?.[0] ?? "";
+    const render = source.match(/async function renderTalentsView[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(setTab).toContain("openRight(false)");
+    expect(render).not.toContain("openTalentTemplatePreview");
+  });
+});
+
+describe("persistent error banner", () => {
+  it("cancels an older auto-hide timer before showing an error", () => {
+    const source = appSource();
+    expect(source).toContain("clearTimeout(notifyUserHideTimer)");
+    expect(source).toContain('showBootstrapBanner(text, { dismissible: level === "err" })');
+    expect(source).toContain('if (level !== "err")');
+  });
+
+  it("lets the user explicitly dismiss a persistent error", () => {
+    const source = appSource();
+    expect(source).toContain('close.className = "bootstrap-banner-close"');
+    expect(source).toContain('close.addEventListener("click", () => showBootstrapBanner(null))');
+  });
+});
+
 describe("timeline prompt and source-link handling", () => {
   it("dedupes start prompts even when one side is truncated", () => {
     const source = appSource();
@@ -839,7 +936,7 @@ describe("timeline prompt and source-link handling", () => {
     const source = appSource();
     const exec = source.match(/async function executeAgentRun[\s\S]*?\n  }\n/)?.[0] ?? "";
     expect(exec).toContain("if (routeSid)");
-    expect(exec).toContain("renderUserPromptOnce(preview)");
+    expect(exec).toContain("renderUserPromptOnce(preview, promptImageUrls)");
     expect(exec).toContain("sessionRuns.withEventRoute(routeSid");
   });
 

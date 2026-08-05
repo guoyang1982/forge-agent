@@ -1,9 +1,11 @@
-import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export interface TalentTemplate {
+  /** Versioned package schema. Missing on legacy templates and normalized to v2 when read. */
+  schemaVersion?: 2;
   id: string;
   category: string;
   role: string;
@@ -17,6 +19,49 @@ export interface TalentTemplate {
   systemPrompt: string;
   suggestedSkills: string[];
   suggestedTools: string[];
+  /** Structured professional playbook loaded before the legacy persona prompt. */
+  methodology?: string[];
+  inputRequirements?: string[];
+  deliverables?: string[];
+  qualityGates?: string[];
+  knowledgeRefs?: string[];
+  connectors?: string[];
+  taskExamples?: TalentTaskExample[];
+  version?: string;
+  provenance?: TalentProvenance;
+}
+
+export interface TalentTaskExample {
+  title: string;
+  prompt: string;
+  outcome?: string;
+}
+
+export interface TalentProvenance {
+  source: "bundled" | "synced" | "custom";
+  author?: string;
+  homepage?: string;
+  reviewed?: boolean;
+}
+
+export interface CustomTalentTemplateInput {
+  id?: string;
+  role: string;
+  category?: string;
+  description: string;
+  vibe?: string;
+  color?: string;
+  systemPrompt?: string;
+  suggestedSkills?: string[];
+  suggestedTools?: string[];
+  methodology?: string[];
+  inputRequirements?: string[];
+  deliverables?: string[];
+  qualityGates?: string[];
+  knowledgeRefs?: string[];
+  connectors?: string[];
+  taskExamples?: TalentTaskExample[];
+  author?: string;
 }
 
 export interface HiredTalent {
@@ -45,6 +90,29 @@ export interface TalentRoster {
   hired: HiredTalent[];
 }
 
+export interface TalentTeamMember {
+  mention: string;
+  responsibility: string;
+  after?: string[];
+}
+
+export interface TalentTeam {
+  id: string;
+  name: string;
+  mention: string;
+  description: string;
+  leadMention?: string;
+  members: TalentTeamMember[];
+  deliverables: string[];
+  executionMode: "auto" | "parallel" | "serial";
+  createdAt: string;
+  stats: { tasksDone: number; lastUsed: string | null };
+}
+
+export interface TalentTeamRoster {
+  teams: TalentTeam[];
+}
+
 export interface TalentTemplateListItem extends TalentTemplate {
   hired: boolean;
 }
@@ -67,6 +135,174 @@ export function resolveTalentStorePaths(dataDir: string, cwd?: string): TalentSt
     };
   }
   return { templatesDir, rosterPath: globalRosterPath };
+}
+
+export function resolveTalentTeamRosterPath(dataDir: string, cwd?: string): string {
+  return cwd?.trim()
+    ? join(resolve(cwd), ".forge", "talent-teams.json")
+    : join(dataDir, "talents", "teams.json");
+}
+
+export async function readTalentTeamRoster(path: string): Promise<TalentTeamRoster> {
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf-8")) as TalentTeamRoster;
+    return { teams: Array.isArray(parsed.teams) ? parsed.teams : [] };
+  } catch {
+    return { teams: [] };
+  }
+}
+
+export async function writeTalentTeamRoster(
+  path: string,
+  roster: TalentTeamRoster,
+): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify(roster, null, 2)}\n`, "utf-8");
+}
+
+export async function createTalentTeam(options: {
+  rosterPath: string;
+  name: string;
+  mention?: string;
+  description: string;
+  leadMention?: string;
+  members: TalentTeamMember[];
+  deliverables?: string[];
+  executionMode?: TalentTeam["executionMode"];
+  reservedMentions?: string[];
+}): Promise<TalentTeam> {
+  const name = options.name.trim();
+  if (!name) throw new Error("Team name is required");
+  const members = normalizeTeamMembers(options.members);
+  if (members.length < 2) throw new Error("A talent team requires at least two members");
+  const roster = await readTalentTeamRoster(options.rosterPath);
+  const used = new Set([
+    ...roster.teams.map((team) => normalizeMention(team.mention)),
+    ...(options.reservedMentions ?? []).map(normalizeMention),
+  ]);
+  const mention = uniqueMention(options.mention || slugMention(name) || "team", used);
+  const leadMention = options.leadMention ? normalizeMention(options.leadMention) : undefined;
+  assertValidTalentTeam(members, leadMention);
+  const team: TalentTeam = {
+    id: `team_${Date.now().toString(36)}_${mention}`,
+    name,
+    mention,
+    description: options.description.trim(),
+    leadMention,
+    members,
+    deliverables: normalizeStringList(options.deliverables),
+    executionMode: options.executionMode ?? "auto",
+    createdAt: new Date().toISOString(),
+    stats: { tasksDone: 0, lastUsed: null },
+  };
+  roster.teams.push(team);
+  await writeTalentTeamRoster(options.rosterPath, roster);
+  return team;
+}
+
+export async function updateTalentTeam(options: {
+  rosterPath: string;
+  idOrMention: string;
+  patch: Partial<Pick<TalentTeam, "name" | "mention" | "description" | "leadMention" | "members" | "deliverables" | "executionMode">>;
+  reservedMentions?: string[];
+}): Promise<TalentTeam> {
+  const roster = await readTalentTeamRoster(options.rosterPath);
+  const key = normalizeMention(options.idOrMention);
+  const team = roster.teams.find(
+    (item) => item.id === options.idOrMention || normalizeMention(item.mention) === key,
+  );
+  if (!team) throw new Error(`Talent team not found: ${options.idOrMention}`);
+  if (options.patch.name?.trim()) team.name = options.patch.name.trim();
+  if (options.patch.description !== undefined) team.description = options.patch.description.trim();
+  if (options.patch.leadMention !== undefined) {
+    team.leadMention = options.patch.leadMention
+      ? normalizeMention(options.patch.leadMention)
+      : undefined;
+  }
+  if (options.patch.members) {
+    const members = normalizeTeamMembers(options.patch.members);
+    if (members.length < 2) throw new Error("A talent team requires at least two members");
+    team.members = members;
+  }
+  assertValidTalentTeam(team.members, team.leadMention);
+  if (options.patch.deliverables) team.deliverables = normalizeStringList(options.patch.deliverables);
+  if (options.patch.executionMode) team.executionMode = options.patch.executionMode;
+  if (options.patch.mention?.trim()) {
+    const used = new Set(
+      [
+        ...roster.teams
+          .filter((item) => item.id !== team.id)
+          .map((item) => normalizeMention(item.mention)),
+        ...(options.reservedMentions ?? []).map(normalizeMention),
+      ],
+    );
+    team.mention = uniqueMention(options.patch.mention, used);
+  }
+  await writeTalentTeamRoster(options.rosterPath, roster);
+  return team;
+}
+
+export async function deleteTalentTeam(
+  rosterPath: string,
+  idOrMention: string,
+): Promise<{ removed: boolean }> {
+  const roster = await readTalentTeamRoster(rosterPath);
+  const key = normalizeMention(idOrMention);
+  const before = roster.teams.length;
+  roster.teams = roster.teams.filter(
+    (team) => team.id !== idOrMention && normalizeMention(team.mention) !== key,
+  );
+  if (roster.teams.length !== before) await writeTalentTeamRoster(rosterPath, roster);
+  return { removed: roster.teams.length !== before };
+}
+
+export async function findTalentTeamByMention(
+  rosterPath: string,
+  mention: string,
+): Promise<TalentTeam | null> {
+  const roster = await readTalentTeamRoster(rosterPath);
+  const key = normalizeMention(mention);
+  return roster.teams.find((team) => normalizeMention(team.mention) === key) ?? null;
+}
+
+export async function recordTalentTeamUsage(
+  rosterPath: string,
+  idOrMention: string,
+): Promise<void> {
+  const roster = await readTalentTeamRoster(rosterPath);
+  const key = normalizeMention(idOrMention);
+  const team = roster.teams.find(
+    (item) => item.id === idOrMention || normalizeMention(item.mention) === key,
+  );
+  if (!team) return;
+  team.stats.tasksDone += 1;
+  team.stats.lastUsed = new Date().toISOString();
+  await writeTalentTeamRoster(rosterPath, roster);
+}
+
+export function expandTalentTeamMessage(message: string, team: TalentTeam): string {
+  const token = new RegExp(`@${escapeRegExp(normalizeMention(team.mention))}!?`, "iu");
+  const goal = message.replace(token, "").trim();
+  const assignments = team.members.map((member) => {
+    const mention = normalizeMention(member.mention);
+    const after = member.after ?? [];
+    const dependencies = after.length
+      ? `。请基于 ${after.map((item) => `@${normalizeMention(item)}`).join("、")} 的结果继续`
+      : "";
+    const lead = team.leadMention && normalizeMention(team.leadMention) === mention
+      ? "。你是团队内负责人，请额外检查交付物完整性"
+      : "";
+    return `@${mention} ${member.responsibility}${dependencies}${lead}。团队目标：${goal}`;
+  });
+  const mode = team.executionMode === "parallel"
+    ? " (并行)"
+    : team.executionMode === "serial"
+      ? " (串行)"
+      : "";
+  const deliverables = team.deliverables.length
+    ? ` 最终交付：${team.deliverables.join("、")}。`
+    : "";
+  return `${assignments.join(" ")}${mode}${deliverables}`.trim();
 }
 
 /**
@@ -398,6 +634,7 @@ export function parseAgencyAgentMarkdown(
   const vibe = localizeVibe(frontmatter.vibe, role);
   const color = normalizeColor(frontmatter.color, category);
   return {
+    schemaVersion: 2,
     id,
     category,
     role,
@@ -415,6 +652,19 @@ export function parseAgencyAgentMarkdown(
     }),
     suggestedSkills: inferSkills(category, id),
     suggestedTools: inferTools(category),
+    methodology: [
+      "先澄清目标、约束和成功标准，再开始专业分析",
+      "把复杂问题拆成可执行步骤，并明确依赖与风险",
+      "基于证据形成结论，标注假设与不确定性",
+    ],
+    deliverables: ["结构化结论", "可执行下一步", "风险与验证清单"],
+    qualityGates: ["结论有证据或明确标注为假设", "交付物包含验收或验证方式"],
+    version: "1.0.0",
+    provenance: {
+      source: "synced",
+      homepage: "https://github.com/msitarzewski/agency-agents",
+      reviewed: false,
+    },
   };
 }
 
@@ -671,6 +921,116 @@ export async function writeTalentTemplate(
   );
 }
 
+export async function createCustomTalentTemplate(options: {
+  templatesDir: string;
+  input: CustomTalentTemplateInput;
+}): Promise<TalentTemplate> {
+  const role = options.input.role.trim();
+  const description = options.input.description.trim();
+  if (!role) throw new Error("Custom talent role is required");
+  if (!description) throw new Error("Custom talent description is required");
+  const baseId = slugTalentId(options.input.id || role) || "custom-talent";
+  const id = baseId.startsWith("custom-") ? baseId : `custom-${baseId}`;
+  if (await readTalentTemplate(options.templatesDir, id)) {
+    throw new Error(`Talent template already exists: ${id}`);
+  }
+  const category = options.input.category?.trim() || "custom";
+  const color = normalizeColor(options.input.color, category);
+  const template = normalizeTalentTemplate({
+    schemaVersion: 2,
+    id,
+    category,
+    role,
+    description,
+    vibe: options.input.vibe?.trim(),
+    color,
+    avatar: buildTalentAvatar({ category, role, color }),
+    sourcePath: `custom/${id}.md`,
+    systemPrompt:
+      options.input.systemPrompt?.trim() ||
+      buildCustomTalentSystemPrompt(role, description),
+    suggestedSkills: normalizeStringList(options.input.suggestedSkills),
+    suggestedTools: normalizeStringList(options.input.suggestedTools),
+    methodology: normalizeStringList(options.input.methodology),
+    inputRequirements: normalizeStringList(options.input.inputRequirements),
+    deliverables: normalizeStringList(options.input.deliverables),
+    qualityGates: normalizeStringList(options.input.qualityGates),
+    knowledgeRefs: normalizeStringList(options.input.knowledgeRefs),
+    connectors: normalizeStringList(options.input.connectors),
+    taskExamples: options.input.taskExamples ?? [],
+    version: "1.0.0",
+    provenance: {
+      source: "custom",
+      author: options.input.author?.trim() || undefined,
+      reviewed: false,
+    },
+  });
+  await writeTalentTemplate(options.templatesDir, template);
+  return template;
+}
+
+export async function updateCustomTalentTemplate(options: {
+  templatesDir: string;
+  templateId: string;
+  patch: Partial<Omit<CustomTalentTemplateInput, "id">>;
+}): Promise<TalentTemplate> {
+  const current = await readTalentTemplate(options.templatesDir, options.templateId);
+  if (!current) throw new Error(`Talent template not found: ${options.templateId}`);
+  if (current.provenance?.source !== "custom" && !current.sourcePath.startsWith("custom/")) {
+    throw new Error("Only custom talent templates can be edited");
+  }
+  const nextRole = options.patch.role?.trim() || current.role;
+  const nextCategory = options.patch.category?.trim() || current.category;
+  const nextColor = options.patch.color
+    ? normalizeColor(options.patch.color, nextCategory)
+    : current.color;
+  const next = normalizeTalentTemplate({
+    ...current,
+    role: nextRole,
+    category: nextCategory,
+    description: options.patch.description?.trim() || current.description,
+    vibe: options.patch.vibe === undefined ? current.vibe : options.patch.vibe.trim(),
+    color: nextColor,
+    avatar: buildTalentAvatar({ category: nextCategory, role: nextRole, color: nextColor }),
+    systemPrompt:
+      options.patch.systemPrompt === undefined
+        ? current.systemPrompt
+        : options.patch.systemPrompt.trim() || buildCustomTalentSystemPrompt(nextRole, current.description),
+    suggestedSkills: patchList(options.patch.suggestedSkills, current.suggestedSkills),
+    suggestedTools: patchList(options.patch.suggestedTools, current.suggestedTools),
+    methodology: patchList(options.patch.methodology, current.methodology),
+    inputRequirements: patchList(options.patch.inputRequirements, current.inputRequirements),
+    deliverables: patchList(options.patch.deliverables, current.deliverables),
+    qualityGates: patchList(options.patch.qualityGates, current.qualityGates),
+    knowledgeRefs: patchList(options.patch.knowledgeRefs, current.knowledgeRefs),
+    connectors: patchList(options.patch.connectors, current.connectors),
+    taskExamples: options.patch.taskExamples ?? current.taskExamples,
+    version: bumpPatchVersion(current.version),
+    provenance: {
+      ...current.provenance,
+      source: "custom",
+      author: options.patch.author === undefined
+        ? current.provenance?.author
+        : options.patch.author.trim() || undefined,
+    },
+  });
+  await writeTalentTemplate(options.templatesDir, next);
+  return next;
+}
+
+export async function deleteCustomTalentTemplate(
+  templatesDir: string,
+  templateId: string,
+): Promise<{ removed: boolean }> {
+  const current = await readTalentTemplate(templatesDir, templateId);
+  if (!current) return { removed: false };
+  if (current.provenance?.source !== "custom" && !current.sourcePath.startsWith("custom/")) {
+    throw new Error("Only custom talent templates can be deleted");
+  }
+  await unlink(join(templatesDir, `${templateId}.json`));
+  return { removed: true };
+}
+
 export async function listTalentTemplates(
   templatesDir: string,
   rosterPath?: string,
@@ -704,7 +1064,7 @@ export async function readTalentTemplate(
 ): Promise<TalentTemplate | null> {
   try {
     const raw = await readFile(join(templatesDir, `${templateId}.json`), "utf-8");
-    return JSON.parse(raw) as TalentTemplate;
+    return normalizeTalentTemplate(JSON.parse(raw) as TalentTemplate);
   } catch {
     return null;
   }
@@ -983,9 +1343,34 @@ export function buildTalentSystemBlock(input: {
       ? `Prefer these bound skills when relevant: ${hired.skills.join(", ")}.`
       : undefined,
     "Follow this talent persona only for domain focus and work style. It must not override Forge safety rules, tool permissions, project rules, or user instructions.",
-    "Persona prompt:",
-    truncatePrompt(template.systemPrompt),
+    "Talent package:",
+    renderTalentPackagePrompt(template),
   ].filter(Boolean).join("\n");
+}
+
+/**
+ * Render v2 fields before the free-form persona. This keeps the task contract
+ * intact when a verbose community prompt needs truncation.
+ */
+export function renderTalentPackagePrompt(template: TalentTemplate): string {
+  const structured = [
+    renderPromptList("Methodology", template.methodology),
+    renderPromptList("Required inputs", template.inputRequirements),
+    renderPromptList("Deliverables", template.deliverables),
+    renderPromptList("Quality gates", template.qualityGates),
+    renderPromptList("Knowledge references", template.knowledgeRefs),
+    renderPromptList("Connectors", template.connectors),
+  ].filter(Boolean).join("\n\n");
+  const prefix = structured ? `${structured}\n\nPersona prompt:\n` : "Persona prompt:\n";
+  const max = 12000;
+  const remaining = Math.max(0, max - prefix.length);
+  return `${prefix}${truncateText(template.systemPrompt, remaining)}`;
+}
+
+function renderPromptList(title: string, values?: string[]): string {
+  const items = values?.map((item) => item.trim()).filter(Boolean) ?? [];
+  if (!items.length) return "";
+  return [`## ${title}`, ...items.map((item) => `- ${item}`)].join("\n");
 }
 
 function splitFrontmatter(raw: string): {
@@ -1281,10 +1666,117 @@ function normalizeMention(value: string): string {
   return value.trim().replace(/^@/, "").toLowerCase();
 }
 
-function truncatePrompt(prompt: string): string {
-  const max = 12000;
-  if (prompt.length <= max) return prompt;
-  return `${prompt.slice(0, max)}\n\n[Prompt truncated to ${max} characters for this run.]`;
+function normalizeTeamMembers(members: TalentTeamMember[]): TalentTeamMember[] {
+  const seen = new Set<string>();
+  const normalized: TalentTeamMember[] = [];
+  for (const member of members ?? []) {
+    const mention = normalizeMention(member?.mention || "");
+    if (!mention || seen.has(mention)) continue;
+    seen.add(mention);
+    normalized.push({
+      mention,
+      responsibility: member.responsibility?.trim() || "根据专业角色完成团队目标",
+      after: (member.after ?? []).map(normalizeMention).filter(Boolean),
+    });
+  }
+  return normalized;
+}
+
+function assertValidTalentTeam(members: TalentTeamMember[], leadMention?: string): void {
+  const mentions = new Set(members.map((member) => normalizeMention(member.mention)));
+  if (leadMention && !mentions.has(normalizeMention(leadMention))) {
+    throw new Error("Team lead must be one of the team members");
+  }
+  for (const member of members) {
+    for (const dependency of member.after ?? []) {
+      if (!mentions.has(dependency)) {
+        throw new Error(`Unknown team dependency: @${dependency}`);
+      }
+      if (dependency === member.mention) {
+        throw new Error(`A team member cannot depend on itself: @${member.mention}`);
+      }
+    }
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeTalentTemplate(template: TalentTemplate): TalentTemplate {
+  const sourcePath = String(template.sourcePath || `${template.category || "custom"}/${template.id}.md`);
+  const inferredSource: TalentProvenance["source"] = sourcePath.startsWith("custom/")
+    ? "custom"
+    : sourcePath.startsWith("bundled/")
+      ? "bundled"
+      : "synced";
+  return {
+    ...template,
+    schemaVersion: 2,
+    suggestedSkills: Array.isArray(template.suggestedSkills) ? template.suggestedSkills : [],
+    suggestedTools: Array.isArray(template.suggestedTools) ? template.suggestedTools : [],
+    methodology: normalizeStringList(template.methodology),
+    inputRequirements: normalizeStringList(template.inputRequirements),
+    deliverables: normalizeStringList(template.deliverables),
+    qualityGates: normalizeStringList(template.qualityGates),
+    knowledgeRefs: normalizeStringList(template.knowledgeRefs),
+    connectors: normalizeStringList(template.connectors),
+    taskExamples: Array.isArray(template.taskExamples)
+      ? template.taskExamples.filter(
+          (item) => item && typeof item.title === "string" && typeof item.prompt === "string",
+        )
+      : [],
+    version: template.version?.trim() || "1.0.0",
+    provenance: template.provenance ?? { source: inferredSource, reviewed: false },
+    sourcePath,
+  };
+}
+
+function normalizeStringList(values: string[] | undefined): string[] {
+  return Array.isArray(values)
+    ? values.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+}
+
+function patchList(next: string[] | undefined, current: string[] | undefined): string[] {
+  return next === undefined ? normalizeStringList(current) : normalizeStringList(next);
+}
+
+function slugTalentId(value: string): string {
+  const ascii = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\p{Script=Han}]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+  if (/^[a-z0-9-]+$/.test(ascii)) return ascii;
+  const romanizedFallback = [...ascii]
+    .map((char) => (/\p{Script=Han}/u.test(char) ? char.codePointAt(0)!.toString(16) : char))
+    .join("")
+    .replace(/-+/g, "-");
+  return romanizedFallback || "custom-talent";
+}
+
+function buildCustomTalentSystemPrompt(role: string, description: string): string {
+  return [
+    `# ${role}`,
+    "",
+    `你是${role}。${description}`,
+    "请按照人才包中的方法论、输入要求、交付物和质量门槛完成任务。",
+    "不确定的信息要标记为假设；安全规则、工具权限、项目规则和用户指令始终优先。",
+  ].join("\n");
+}
+
+function bumpPatchVersion(version?: string): string {
+  const match = String(version || "1.0.0").match(/^(\d+)\.(\d+)\.(\d+)$/);
+  if (!match) return "1.0.1";
+  return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
+}
+
+function truncateText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const suffix = "\n\n[Prompt truncated to fit the talent package context budget.]";
+  if (max <= suffix.length) return text.slice(0, Math.max(0, max));
+  return `${text.slice(0, max - suffix.length)}${suffix}`;
 }
 
 function findHiredInRoster(

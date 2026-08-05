@@ -141,9 +141,9 @@
         ${levelGrid([levelSelect("notifications.send", notif.send, "发送")])}`,
       ),
       section(
-        "浏览器",
-        "打开网页、交互与提交表单。",
-        `${enabledToggle("browser.enabled", Boolean(browser.enabled), "启用浏览器能力")}
+        "Forge Browser",
+        "Forge 内置的独立浏览器：打开网页、读取 DOM、交互和截图；不依赖 Codex 或用户 Chrome。",
+        `${enabledToggle("browser.enabled", Boolean(browser.enabled), "启用 Forge Browser")}
         ${levelGrid([
           levelSelect("browser.open", browser.open, "打开网页"),
           levelSelect("browser.interact", browser.interact, "页面交互"),

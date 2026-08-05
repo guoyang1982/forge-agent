@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { collectPluginMcpServers, collectPluginSkillPaths } from "./contributions.js";
+import { collectPluginMcpServers, collectPluginSkillPaths, resolveContributionPlugins } from "./contributions.js";
 import { discoverPlugins } from "./discover.js";
 
 describe("plugin discovery", () => {
@@ -30,6 +30,24 @@ describe("plugin discovery", () => {
     expect(plugins[0].source).toBe("project");
     expect(collectPluginSkillPaths(plugins)[0]).toBe(join(pluginRoot, "skills/demo.md"));
     expect(collectPluginMcpServers(plugins)[0].name).toBe("demo");
+    expect(collectPluginMcpServers(plugins)[0].cwd).toBe(pluginRoot);
+  });
+
+  it("keeps Forge-owned built-ins when an older synced plugin has the same id", () => {
+    const synced = {
+      manifest: { id: "computer-use", name: "Synced", version: "1.0.0" },
+      root: "/user/computer-use",
+      source: "user" as const,
+      enabled: true,
+    };
+    const builtin = {
+      manifest: { id: "computer-use", name: "Forge Computer Use", version: "1.0.0", publisher: "forge" },
+      root: "/forge/plugins/computer-use",
+      source: "builtin" as const,
+      enabled: true,
+    };
+    expect(resolveContributionPlugins([builtin, synced])).toEqual([builtin]);
+    expect(resolveContributionPlugins([synced, builtin])).toEqual([builtin]);
   });
 
   it("ignores invalid manifests", () => {

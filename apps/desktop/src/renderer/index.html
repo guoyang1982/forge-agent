@@ -222,31 +222,31 @@
           </div>
           <div id="talentsToolbar" class="resource-toolbar resource-toolbar-talents hidden">
             <div class="skill-toolbar-row talents-toolbar-row">
-              <div class="skill-page-tabs" role="tablist">
-                <button type="button" class="talents-page-tab active" data-talents-tab="market" role="tab">人才市场</button>
-                <button type="button" class="talents-page-tab" data-talents-tab="roster" role="tab">已租用</button>
+              <div class="skill-page-tabs talents-page-tabs" role="tablist" aria-label="人才中心视图">
+                <button type="button" class="talents-page-tab active" data-talents-tab="market" role="tab"><span aria-hidden="true">⌘</span> 人才市场</button>
+                <button type="button" class="talents-page-tab" data-talents-tab="roster" role="tab"><span aria-hidden="true">◉</span> 我的团队 <b id="talentsRosterCount">0</b></button>
+                <button type="button" class="talents-page-tab" data-talents-tab="teams" role="tab"><span aria-hidden="true">◇</span> 协作编组 <b id="talentsTeamsCount">0</b></button>
               </div>
               <div id="talentsToolbarMarket" class="skill-toolbar-pane skill-toolbar-pane-grow">
-                <input
-                  id="talentMarketSearchInput"
-                  type="search"
-                  class="resource-search skill-filter-input toolbar-control"
-                  placeholder="搜索角色、分类或 ID…"
-                  autocomplete="off"
-                />
+                <div class="talents-search-shell">
+                  <span class="talents-search-icon" aria-hidden="true">⌕</span>
+                  <input id="talentMarketSearchInput" type="search" class="resource-search skill-filter-input toolbar-control" placeholder="搜索角色、专业领域或人才 ID" autocomplete="off" />
+                  <kbd>⌘ K</kbd>
+                </div>
               </div>
               <div id="talentsToolbarRoster" class="skill-toolbar-pane skill-toolbar-pane-grow hidden">
-                <input
-                  id="talentRosterSearchInput"
-                  type="search"
-                  class="resource-search skill-filter-input toolbar-control"
-                  placeholder="筛选已租用人才…"
-                  autocomplete="off"
-                />
+                <div class="talents-search-shell">
+                  <span class="talents-search-icon" aria-hidden="true">⌕</span>
+                  <input id="talentRosterSearchInput" type="search" class="resource-search skill-filter-input toolbar-control" placeholder="搜索已租用人才" autocomplete="off" />
+                </div>
               </div>
-              <button type="button" id="talentsSyncBtn" class="btn secondary btn-sm toolbar-control" title="从 GitHub 或本地同步模板">↻ 同步</button>
+              <div class="talents-toolbar-actions">
+                <button type="button" id="talentsSyncBtn" class="btn secondary btn-sm toolbar-control talents-icon-action" title="从 GitHub 或本地同步模板" aria-label="同步人才模板"><span aria-hidden="true">↻</span></button>
+                <button type="button" id="talentsCreateTeamBtn" class="btn secondary btn-sm toolbar-control">＋ 新建编组</button>
+                <button type="button" id="talentsCreateBtn" class="btn primary btn-sm toolbar-control">＋ 创建人才</button>
+              </div>
             </div>
-            <p id="talentsToolbarHint" class="skill-toolbar-hint">同步模板库后在此浏览；点击卡片在右侧「人才模版」面板查看完整 Markdown；租用后在对话中用 @mention 调用。</p>
+            <p id="talentsToolbarHint" class="skill-toolbar-hint">选择人才查看专业方法与交付标准，租用后可在对话中直接 @ 调用。</p>
           </div>
           <div id="pluginManualModal" class="modal hidden">
             <div class="modal-mask"></div>
@@ -428,7 +428,7 @@
           <label>工作目录</label>
           <div id="channelCwdDisplay" class="automation-cwd-display tiny">—</div>
         </div>
-        <p id="channelMobileScopeHint" class="tiny hidden">电脑级全局连接：不绑定任何项目目录。手机可访问的目录由「设置 → 权限」中的 Mobile 授权与「配对与设备」中的单设备授权决定。</p>
+        <p id="channelMobileScopeHint" class="tiny hidden">电脑级全局连接：不绑定任何项目目录。手机可访问电脑侧全部已注册项目；电脑删除项目后手机侧同步消失。</p>
         <div id="channelConfigFields"></div>
         <div class="modal-actions">
           <button type="button" id="channelEditorCancelBtn" class="btn secondary">取消</button>
@@ -555,6 +555,61 @@
       </div>
     </div>
 
+    <div id="talentCustomModal" class="modal hidden">
+      <div class="modal-mask"></div>
+      <div class="modal-card modal-card-md talent-detail-card">
+        <header class="modal-head">
+          <h3 id="talentCustomModalTitle">创建我的人才</h3>
+          <button type="button" id="talentCustomModalCloseBtn" class="icon-btn subtle" aria-label="关闭">✕</button>
+        </header>
+        <p class="tiny muted">把岗位方法、交付物和质量门槛保存为可复用的人才包。创建后会自动加入当前项目。</p>
+        <div class="field">
+          <label for="talentCustomRoleInput">人才名称</label>
+          <input id="talentCustomRoleInput" type="text" class="modal-input" placeholder="例如：需求评审专家" />
+        </div>
+        <div class="field">
+          <label for="talentCustomCategoryInput">分类</label>
+          <input id="talentCustomCategoryInput" type="text" class="modal-input" value="custom" placeholder="例如：product" />
+        </div>
+        <div class="field">
+          <label for="talentCustomDescriptionInput">职责说明</label>
+          <textarea id="talentCustomDescriptionInput" class="modal-input" rows="3" placeholder="负责什么问题，面向谁，最终产生什么价值"></textarea>
+        </div>
+        <div class="field">
+          <label for="talentCustomMethodologyInput">方法论（每行一项）</label>
+          <textarea id="talentCustomMethodologyInput" class="modal-input" rows="4" placeholder="先确认目标和约束&#10;再检查边界条件"></textarea>
+        </div>
+        <div class="field">
+          <label for="talentCustomInputsInput">所需输入（每行一项）</label>
+          <textarea id="talentCustomInputsInput" class="modal-input" rows="3" placeholder="需求背景&#10;现有实现或材料"></textarea>
+        </div>
+        <div class="field">
+          <label for="talentCustomDeliverablesInput">交付物（每行一项）</label>
+          <textarea id="talentCustomDeliverablesInput" class="modal-input" rows="3" placeholder="评审结论&#10;风险与验收清单"></textarea>
+        </div>
+        <div class="field">
+          <label for="talentCustomQualityInput">质量门槛（每行一项）</label>
+          <textarea id="talentCustomQualityInput" class="modal-input" rows="3" placeholder="每个结论有证据&#10;每个风险有验证方式"></textarea>
+        </div>
+        <div class="field">
+          <label for="talentCustomSkillsInput">Skills（逗号分隔）</label>
+          <input id="talentCustomSkillsInput" type="text" class="modal-input" placeholder="spec, brainstorming" />
+        </div>
+        <div class="field">
+          <label for="talentCustomToolsInput">Tools（逗号分隔）</label>
+          <input id="talentCustomToolsInput" type="text" class="modal-input" value="read_file, list_dir, grep" />
+        </div>
+        <details class="talent-detail-prompt">
+          <summary>高级：自定义 System Prompt</summary>
+          <textarea id="talentCustomPromptInput" class="modal-input" rows="7" placeholder="留空则根据名称和职责自动生成"></textarea>
+        </details>
+        <div class="modal-actions">
+          <button type="button" id="talentCustomCancelBtn" class="btn secondary">取消</button>
+          <button type="button" id="talentCustomSaveBtn" class="btn primary">创建并加入团队</button>
+        </div>
+      </div>
+    </div>
+
     <div id="talentDetailModal" class="modal hidden">
       <div class="modal-mask"></div>
       <div class="modal-card modal-card-md talent-detail-card">
@@ -600,6 +655,53 @@
           <button type="button" id="talentDetailFireBtn" class="btn secondary">解约</button>
           <button type="button" id="talentDetailCancelBtn" class="btn secondary">关闭</button>
           <button type="button" id="talentDetailSaveBtn" class="btn primary">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="talentTeamModal" class="modal hidden">
+      <div class="modal-mask"></div>
+      <div class="modal-card modal-card-md talent-detail-card">
+        <header class="modal-head">
+          <h3>创建人才团队</h3>
+          <button type="button" id="talentTeamModalCloseBtn" class="icon-btn subtle" aria-label="关闭">✕</button>
+        </header>
+        <div class="field">
+          <label for="talentTeamNameInput">团队名称</label>
+          <input id="talentTeamNameInput" type="text" class="modal-input" placeholder="例如：发布审查团" />
+        </div>
+        <div class="field">
+          <label for="talentTeamMentionInput">@ 提及名</label>
+          <input id="talentTeamMentionInput" type="text" class="modal-input" placeholder="例如：release-team" />
+        </div>
+        <div class="field">
+          <label for="talentTeamDescriptionInput">团队职责</label>
+          <textarea id="talentTeamDescriptionInput" class="modal-input" rows="3"></textarea>
+        </div>
+        <div class="field">
+          <label for="talentTeamMembersInput">成员与分工（每行：mention | 分工）</label>
+          <textarea id="talentTeamMembersInput" class="modal-input" rows="6" placeholder="pm | 检查需求和验收边界&#10;reviewer | 检查实现与回归风险"></textarea>
+          <p class="tiny muted">至少两名已租用人才，mention 不含 @。</p>
+        </div>
+        <div class="field">
+          <label for="talentTeamLeadInput">负责人 mention（可选）</label>
+          <input id="talentTeamLeadInput" type="text" class="modal-input" />
+        </div>
+        <div class="field">
+          <label for="talentTeamDeliverablesInput">最终交付（每行一项）</label>
+          <textarea id="talentTeamDeliverablesInput" class="modal-input" rows="3"></textarea>
+        </div>
+        <div class="field">
+          <label for="talentTeamModeSelect">执行模式</label>
+          <select id="talentTeamModeSelect" class="modal-input">
+            <option value="auto">自动判断依赖</option>
+            <option value="parallel">并行</option>
+            <option value="serial">串行</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button type="button" id="talentTeamCancelBtn" class="btn secondary">取消</button>
+          <button type="button" id="talentTeamSaveBtn" class="btn primary">创建团队</button>
         </div>
       </div>
     </div>

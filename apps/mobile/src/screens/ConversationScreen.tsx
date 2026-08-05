@@ -25,6 +25,7 @@ import type {
   Runtime,
   WorkspaceFile,
 } from "../data/forge-mobile-api";
+import { extractWorkspaceImagePaths } from "../data/forge-mobile-api";
 import type { ProjectItem } from "./project-sanitize";
 import type { MessageAttachment, MessageItem, SessionItem } from "./session-sanitize";
 import { appendStreamingText, parseRunEvents, type RunUiEvent } from "./run-event-sanitize";
@@ -77,6 +78,61 @@ import {
 } from "../storage/attachment-preview-cache";
 import { loadComposerTipsSeen, loadLastRunContext, saveComposerTipsSeen, saveLastRunContext } from "../storage/preferences-store";
 import { notifyPermissionNeeded, notifyRunFinished } from "../notifications/local-notify";
+
+function AssistantImagePreviews(props: {
+  api: ReturnType<typeof createForgeMobileApi>;
+  cwd: string;
+  text: string;
+}) {
+  const paths = useMemo(
+    () => extractWorkspaceImagePaths(props.text, props.cwd),
+    [props.cwd, props.text],
+  );
+  const [images, setImages] = useState<Array<{ path: string; dataUrl: string }>>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (paths.length === 0) {
+      setImages([]);
+      return () => { cancelled = true; };
+    }
+    void Promise.all(paths.map(async (path) => {
+      try {
+        const preview = await props.api.file(props.cwd, path);
+        return preview?.kind === "image" ? { path, dataUrl: preview.dataUrl } : null;
+      } catch {
+        return null;
+      }
+    })).then((previews) => {
+      if (!cancelled) setImages(previews.filter((item): item is { path: string; dataUrl: string } => item !== null));
+    });
+    return () => { cancelled = true; };
+  }, [paths, props.api, props.cwd]);
+
+  return images.length > 0 ? (
+    <View style={assistantImageStyles.list}>
+      {images.map((item) => (
+        <Image
+          key={item.path}
+          source={{ uri: item.dataUrl }}
+          style={assistantImageStyles.image}
+          resizeMode="contain"
+          accessibilityLabel={`任务截图 ${item.path}`}
+        />
+      ))}
+    </View>
+  ) : null;
+}
+
+const assistantImageStyles = StyleSheet.create({
+  list: { gap: spacing.sm, marginTop: spacing.sm },
+  image: {
+    width: "100%",
+    height: 220,
+    borderRadius: radii.md,
+    backgroundColor: colors.surface,
+  },
+});
 
 /**
  * Lift content above the software keyboard.
@@ -1320,6 +1376,7 @@ export function ConversationScreen(props: {
             return (
               <View key={`answer:${index}:${text.slice(0, 16)}`} style={styles.answerBlock}>
                 <MarkdownBody text={text} />
+                <AssistantImagePreviews api={props.api} cwd={context.cwd} text={text} />
                 {!running && options.showRuntime ? (
                   <View style={styles.answerActions}>
                     <Pressable

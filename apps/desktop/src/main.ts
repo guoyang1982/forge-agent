@@ -47,6 +47,7 @@ import {
   resolveRealWorkspaceFile,
   resolveWorkspaceImageFile,
 } from "./workspace-ipc-utils.js";
+import { startBrowserHost, type BrowserHostHandle } from "./browser/browser-host.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -58,6 +59,7 @@ const DAEMON_PING_MAX_ATTEMPTS = process.platform === "win32" ? 200 : 80;
 app.setName("Forge");
 
 const PICKER_EXTENSIONS = attachmentPickerExtensions();
+let browserHost: BrowserHostHandle | null = null;
 
 function mimeFromExtension(ext: string): string {
   switch (ext) {
@@ -197,14 +199,9 @@ function safeSendAgentEvent(
 }
 
 function sendAgentEvent(ev: AgentEvent): void {
-  const focused = BrowserWindow.getFocusedWindow();
-  const win =
-    focused && !focused.isDestroyed()
-      ? focused
-      : mainWindow && !mainWindow.isDestroyed()
-        ? mainWindow
-        : BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null;
-  safeSendAgentEvent(win?.webContents, ev);
+  // Browser tabs render untrusted web pages. Agent events must only be sent to
+  // Forge's own renderer, even when a managed browser tab is focused.
+  safeSendAgentEvent(mainWindow?.webContents, ev);
 }
 
 function bindWebContentsLifecycle(wc: WebContents): void {
@@ -635,6 +632,60 @@ function registerIpcHandlers(): void {
     async (_event, payload: { templateId: string }) => {
       const cfg = loadConfig({ cwd: process.cwd() });
       return requestDaemonMethod(cfg, DAEMON_METHODS.TALENTS_GET_TEMPLATE, payload);
+    },
+  );
+
+  ipcMain.handle(
+    "forge:create-custom-talent",
+    async (_event, payload: { talent: Record<string, unknown> }) => {
+      const cfg = loadConfig({ cwd: process.cwd() });
+      return requestDaemonMethod(cfg, DAEMON_METHODS.TALENTS_CREATE_CUSTOM, payload);
+    },
+  );
+
+  ipcMain.handle(
+    "forge:update-custom-talent",
+    async (_event, payload: { templateId: string; patch: Record<string, unknown> }) => {
+      const cfg = loadConfig({ cwd: process.cwd() });
+      return requestDaemonMethod(cfg, DAEMON_METHODS.TALENTS_UPDATE_CUSTOM, payload);
+    },
+  );
+
+  ipcMain.handle(
+    "forge:delete-custom-talent",
+    async (_event, payload: { templateId: string }) => {
+      const cfg = loadConfig({ cwd: process.cwd() });
+      return requestDaemonMethod(cfg, DAEMON_METHODS.TALENTS_DELETE_CUSTOM, payload);
+    },
+  );
+
+  ipcMain.handle("forge:list-talent-teams", async (_event, payload?: { cwd?: string }) => {
+    const resolvedCwd = payload?.cwd ?? process.cwd();
+    const cfg = loadConfig({ cwd: resolvedCwd });
+    return requestDaemonMethod(cfg, DAEMON_METHODS.TALENTS_LIST_TEAMS, { cwd: resolvedCwd });
+  });
+
+  ipcMain.handle(
+    "forge:create-talent-team",
+    async (_event, payload: Record<string, unknown> & { cwd?: string }) => {
+      const resolvedCwd = payload.cwd ?? process.cwd();
+      const cfg = loadConfig({ cwd: resolvedCwd });
+      return requestDaemonMethod(cfg, DAEMON_METHODS.TALENTS_CREATE_TEAM, {
+        ...payload,
+        cwd: resolvedCwd,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    "forge:delete-talent-team",
+    async (_event, payload: { idOrMention: string; cwd?: string }) => {
+      const resolvedCwd = payload.cwd ?? process.cwd();
+      const cfg = loadConfig({ cwd: resolvedCwd });
+      return requestDaemonMethod(cfg, DAEMON_METHODS.TALENTS_DELETE_TEAM, {
+        ...payload,
+        cwd: resolvedCwd,
+      });
     },
   );
 
@@ -1607,8 +1658,13 @@ async function requestDaemonMethodWithEvents<T>(
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   registerIpcHandlers();
+  try {
+    browserHost = await startBrowserHost(loadConfig().daemon.dataDir);
+  } catch (error) {
+    console.error("[forge-browser] failed to start browser host", error);
+  }
   const win = createWindow();
   void ensureDaemonEventSubscriber(loadConfig());
 
@@ -1623,7 +1679,7 @@ app.whenReady().then(() => {
   });
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (!mainWindow || mainWindow.isDestroyed()) createWindow();
   });
 });
 
@@ -1634,6 +1690,8 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   disposeAllTerminals();
+  void browserHost?.dispose();
+  browserHost = null;
 });
 
 ipcMain.on(AGENT_EVENT_METHOD, (_e, _payload) => {

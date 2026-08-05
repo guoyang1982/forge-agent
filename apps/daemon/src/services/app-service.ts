@@ -28,6 +28,7 @@ import {
 import {
   collectPluginSkillPaths,
   discoverPlugins,
+  resolveContributionPlugins,
   type DiscoveredPlugin,
   type PluginMcpServer,
 } from "@forge/plugin-registry";
@@ -207,8 +208,7 @@ export function handleListMcp(
   });
 
   const installed: McpListItem[] = [];
-  for (const plugin of plugins) {
-    if (!plugin.enabled) continue;
+  for (const plugin of resolveContributionPlugins(plugins)) {
     for (const m of plugin.manifest.capabilities?.mcpServers ?? []) {
       installed.push(
         toMcpListItem(m, `plugin:${plugin.manifest.id}`, configuredNames.has(m.name)),
