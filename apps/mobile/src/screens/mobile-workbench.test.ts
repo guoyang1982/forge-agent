@@ -113,8 +113,10 @@ describe("Workbench workspace file Diff UI contract", () => {
     expect(workbenchSource).toContain("常用工作空间");
     expect(workbenchSource).toContain("快速操作");
     expect(workbenchSource).toContain("已用时");
-    expect(workbenchSource).not.toContain("预计剩余");
-    expect(workbenchSource).not.toContain("ProgressStages");
+    expect(workbenchSource).toContain("预计剩余");
+    expect(workbenchSource).toContain("计算中");
+    expect(workbenchSource).toContain("ProgressStages");
+    expect(workbenchSource).toContain('["规划中", "执行中", "整理中"]');
     expect(workbenchSource).toContain("查看全部 >");
     expect(workbenchSource).toContain("onViewAllSessions");
     expect(workbenchSource).toContain("onViewAllWorkspaces");

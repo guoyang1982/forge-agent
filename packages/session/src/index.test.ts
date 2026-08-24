@@ -199,6 +199,48 @@ CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TE
     expect(store.listEvents(id)).toHaveLength(1);
   });
 
+  it("lists events from the latest session_start forward for desktop restore", () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-evstart-"));
+    const migrations = join(root, "migrations");
+    mkdirSync(migrations, { recursive: true });
+    writeFileSync(
+      join(migrations, "001_init.sql"),
+      `CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE workspace_checkpoints (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, sha TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE session_dispatch_plans (session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, turn_index));
+CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER, event_type TEXT NOT NULL, item_id TEXT, payload TEXT NOT NULL, emitted_at_ms INTEGER NOT NULL);`,
+    );
+    const store = new SessionStore(join(root, "data.db"), migrations);
+    const id = store.createSession("/tmp/p");
+    store.appendEvent(id, 0, { type: "session_start", sessionId: id, preview: "old" }, 1);
+    store.appendEvent(id, 0, { type: "status", phase: "model", message: "old-work" }, 2);
+    store.appendEvent(id, 1, { type: "session_start", sessionId: id, preview: "team" }, 10);
+    store.appendEvent(id, 1, { type: "subagent_start", talent: { mention: "nina" } }, 11);
+    for (let i = 0; i < 5; i += 1) {
+      store.appendEvent(id, 1, { type: "thinking_delta", delta: "x" }, 12 + i);
+    }
+    store.appendEvent(id, 1, { type: "subagent_end", talent: { mention: "nina" } }, 20);
+    store.appendEvent(id, 1, { type: "subagent_start", talent: { mention: "chengyan" } }, 21);
+
+    // Recent-tail of 3 would drop Nina's start and only see the end — wrong for restore.
+    const tail = store.listRecentEvents(id, 3);
+    expect(tail.some((row) => row.event?.type === "session_start")).toBe(false);
+
+    const fromStart = store.listEventsFromLatestSessionStart(id, 100);
+    expect(fromStart[0]?.event?.type).toBe("session_start");
+    expect(fromStart[0]?.emittedAtMs).toBe(10);
+    expect(fromStart.some((row) => row.event?.type === "subagent_start" && row.event?.talent?.mention === "nina")).toBe(true);
+    expect(fromStart.some((row) => row.event?.type === "subagent_start" && row.event?.talent?.mention === "chengyan")).toBe(true);
+    expect(store.hasEventsAfter(id, fromStart[fromStart.length - 1].sequence)).toBe(false);
+
+    const coalesced = SessionStore.coalesceEventsForRestore(fromStart);
+    expect(coalesced.filter((row) => row.event?.type === "thinking_delta")).toHaveLength(1);
+    expect(
+      coalesced.find((row) => row.event?.type === "thinking_delta")?.event,
+    ).toMatchObject({ delta: "xxxxx" });
+  });
+
   it("pages message rows by id for mobile history windows", () => {
     const root = mkdtempSync(join(tmpdir(), "forge-msgpage-"));
     const migrations = join(root, "migrations");

@@ -308,6 +308,9 @@ export function resolveSkill(
   if (!best) return { skill: null, mode: "none", score: 0 };
 
   const parts = scoreSkillMatchParts(best.skill, g);
+  // triggerScore > 0 is safe once ASCII triggers require word boundaries
+  // (so "ci" no longer hits inside "special"). Description-only matches still
+  // need to clear minScore.
   const strongSignal =
     parts.triggerScore > 0 ||
     parts.identityScore >= 40 ||
@@ -573,14 +576,11 @@ function scoreExplicitTerm(term: string, g: string): number {
   if (/[\u4e00-\u9fff]/.test(t)) {
     return g.includes(t) ? t.length * 3 : 0;
   }
-  if (t.length <= 3) {
-    return asciiTermMatches(t, g, { allowSubstring: true }) ? t.length * 4 : 0;
-  }
-  return asciiTermMatches(t, g, { allowSubstring: false })
-    ? t.length * 3
-    : asciiTermMatches(t, g, { allowSubstring: true })
-      ? t.length * 2
-      : 0;
+  // Always require a word boundary for ASCII triggers. Short tokens like
+  // "ci"/"bug" must not match as substrings inside unrelated English words.
+  if (!asciiTermMatches(t, g, { allowSubstring: false })) return 0;
+  if (t.length <= 3) return t.length * 4;
+  return t.length * 3;
 }
 
 function scorePhrase(

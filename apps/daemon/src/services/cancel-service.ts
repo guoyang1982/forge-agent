@@ -15,15 +15,18 @@ export class CancelService {
     }
   }
 
-  cancel(sessionId?: string): { ok: true } {
+  cancel(sessionId?: string): { ok: true; canceled: boolean } {
     if (sessionId) {
-      this.runs.get(sessionId)?.abort();
-      return { ok: true };
+      const abort = this.runs.get(sessionId);
+      if (!abort) return { ok: true, canceled: false };
+      abort.abort();
+      return { ok: true, canceled: true };
     }
+    const canceled = this.runs.size > 0;
     for (const abort of this.runs.values()) {
       abort.abort();
     }
-    return { ok: true };
+    return { ok: true, canceled };
   }
 
   hasActiveRun(): boolean {
@@ -32,5 +35,9 @@ export class CancelService {
 
   hasActiveRunForSession(sessionId: string): boolean {
     return this.runs.has(sessionId);
+  }
+
+  activeSessionIds(): string[] {
+    return [...this.runs.keys()];
   }
 }

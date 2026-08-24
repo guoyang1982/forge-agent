@@ -18,6 +18,7 @@ import {
   looksLikeCodingTask,
   countImagesInUserContent,
   countParsedDocumentAttachments,
+  buildUserMessageContent,
   runReActLoop,
 } from "@forge/agent-core";
 import { LlmClient, LlmError } from "@forge/llm";
@@ -58,8 +59,10 @@ import {
   type RunPlan,
 } from "@forge/run-orchestrator";
 import {
+  buildTalentAgentMemoryBlock,
   buildPriorTalentResultsBlock,
   buildTalentSystemBlock,
+  completeTalentAgentRun,
   createTalentToolAllowance,
   extractTalentMentions,
   expandTalentTeamMessage,
@@ -67,13 +70,19 @@ import {
   recordTalentTeamUsage,
   findHiredTalentByMention,
   isTalentForcedForeground,
+  listTalentAgentMemory,
   parseTalentAssignmentsFromMessage,
   detectsSerialDependency,
   recordTalentUsage,
+  rememberTalentAgentEpisode,
+  resolveTalentAgentExecutionMode,
+  resolveTalentAgentStatePaths,
   resolveTalentExecutionMode,
   resolveTalentStorePaths,
   resolveTalentTeamRosterPath,
+  startTalentAgentRun,
   type HiredTalent,
+  type TalentAgentExecutionMode,
   type TalentTemplate,
 } from "@forge/talent-registry";
 import { permissionService } from "./permission-service.js";
@@ -86,6 +95,14 @@ export interface RunServiceDeps {
   sessions: SessionStore;
   getRuntime: () => Promise<ForgeRuntime>;
   cancelService: CancelService;
+}
+
+function runPreviewFromAttachments(req: RunRequest): string {
+  const message = String(req.message || "").trim();
+  if (message) return message.slice(0, 120);
+  const names = (req.attachments ?? []).map((item) => item.name).filter(Boolean);
+  if (!names.length) return "";
+  return `[${names.length} 个附件] ${names.join("、")}`.slice(0, 120);
 }
 
 export async function handleRun(
@@ -152,7 +169,7 @@ export async function handleRun(
           ? `[自动化] ${req.automationRun.name}`
           : `[自动化] ${req.message}`
         ).slice(0, 120)
-      : req.message.slice(0, 120);
+      : runPreviewFromAttachments(req);
 
   runEmit({
     type: "session_start",
@@ -229,6 +246,24 @@ export async function handleRun(
   let talentUsageIds: string[] = [];
   let talentToolGate: ((name: string) => boolean) | undefined;
   let talentPaths: ReturnType<typeof resolveTalentStorePaths> | undefined;
+  let talentAgentStatePaths: ReturnType<typeof resolveTalentAgentStatePaths> | undefined;
+  let activeTalentRun: Awaited<ReturnType<typeof startTalentAgentRun>> | null = null;
+  let activeTalentExecutionMode: TalentAgentExecutionMode | null = null;
+  let talentRunFinalized = false;
+  const finalizeTalentRun = async (
+    status: "completed" | "failed" | "cancelled",
+    outcome: string,
+  ): Promise<void> => {
+    if (!activeTalentRun || !talentAgentStatePaths || talentRunFinalized) return;
+    talentRunFinalized = true;
+    await completeTalentAgentRun({
+      path: talentAgentStatePaths.runsPath,
+      runId: activeTalentRun.id,
+      status,
+      outcome,
+      tools: toolsCalled,
+    });
+  };
   let hookBindings: HookBinding[] = [];
   let hookCtx: HookRunContext | undefined;
   let stopHookSkills: SkillDoc[] = [];
@@ -236,7 +271,8 @@ export async function handleRun(
     finalText: string;
     reason: StopReason;
   }): Promise<RunResult> => {
-    if (hookCtx && hookBindings.length) {
+    let reason = abort.signal.aborted ? "cancelled" : options.reason;
+    if (reason !== "cancelled" && hookCtx && hookBindings.length) {
       const stop = await runStopHooks({
         bindings: hookBindings,
         ctx: hookCtx,
@@ -244,16 +280,25 @@ export async function handleRun(
         finalText: options.finalText,
         stepsUsed,
         toolsCalled,
-        reason: options.reason,
+        reason,
+        signal: abort.signal,
       });
+      reason = abort.signal.aborted ? "cancelled" : reason;
       if (stop.blocked) {
         runEmit({
           type: "warning",
           message: stop.blockReason ?? "Stop hook blocked run completion",
         });
-        return { sessionId, finalText: options.finalText };
+        if (reason !== "cancelled") {
+          await finalizeTalentRun("failed", options.finalText || stop.blockReason || "Stop hook blocked completion");
+          return { sessionId, finalText: options.finalText };
+        }
       }
     }
+    await finalizeTalentRun(
+      reason === "completed" ? "completed" : reason === "cancelled" ? "cancelled" : "failed",
+      options.finalText,
+    );
     runEmit({
       type: "done",
       sessionId,
@@ -272,7 +317,10 @@ export async function handleRun(
         phase: "runtime",
         message: `Runtime: ${externalRuntime.label}`,
       });
-      deps.sessions.appendMessage(sessionId, { role: "user", content: req.message });
+      deps.sessions.appendMessage(sessionId, {
+        role: "user",
+        content: buildUserMessageContent(req.message, req.attachments, true),
+      });
       const result = await externalRuntime.run({
         cwd: absCwd,
         sessionId,
@@ -336,6 +384,7 @@ export async function handleRun(
         runEmit,
         sessionId,
         abort.signal,
+        config.permissions?.apps,
       ),
       // When the message focuses a single hired talent, prioritize (or, in
       // strict mode, restrict to) that talent's bound skills during skill
@@ -399,7 +448,7 @@ export async function handleRun(
       );
     }
 
-    const initial = assembleRunMessages(freshMessages, historyPack.messages);
+    let initial = assembleRunMessages(freshMessages, historyPack.messages);
     // The current user message is persisted just below. Establish the replay
     // baseline now so cancellation during intent planning cannot append the
     // entire initial prompt (and duplicate that user message) in the catch path.
@@ -454,6 +503,44 @@ export async function handleRun(
         ),
       )
     ).filter((item): item is ActiveTalent => Boolean(item));
+    talentAgentStatePaths = resolveTalentAgentStatePaths(config.daemon.dataDir, cwd);
+    const talentMemoryByInstance = new Map<string, string>();
+    if (mentionedTalents.length) {
+      activeTalentExecutionMode = mentionedTalents.length > 1
+        ? "team"
+        : resolveTalentAgentExecutionMode(
+            effectiveMessage,
+            mentionedTalents[0]!.hired.mention,
+          );
+      for (const talent of mentionedTalents) {
+        const entries = await listTalentAgentMemory(
+          talentAgentStatePaths.memoryPath,
+          talent.hired.instanceId,
+          6,
+        );
+        talentMemoryByInstance.set(
+          talent.hired.instanceId,
+          buildTalentAgentMemoryBlock(entries),
+        );
+      }
+      activeTalentRun = await startTalentAgentRun({
+        path: talentAgentStatePaths.runsPath,
+        sessionId,
+        talentInstanceIds: mentionedTalents.map((talent) => talent.hired.instanceId),
+        talentMentions: mentionedTalents.map((talent) => talent.hired.mention),
+        mode: activeTalentExecutionMode,
+        task: effectiveMessage,
+      });
+      runEmit({
+        type: "status",
+        phase: "model",
+        message: activeTalentExecutionMode === "team"
+          ? `人才 Agent 模式：团队协作（${mentionedTalents.length} 位）`
+          : activeTalentExecutionMode === "isolated"
+            ? `人才 Agent 模式：@${mentionedTalents[0]!.hired.mention} 独立上下文执行`
+            : `人才 Agent 模式：@${mentionedTalents[0]!.hired.mention} 快速协助`,
+      });
+    }
     const rosterMentions = new Set(
       mentionedTalents.map((t) => t.hired.mention.toLowerCase()),
     );
@@ -537,13 +624,20 @@ export async function handleRun(
         isTalentForcedForeground(effectiveMessage, active.hired.mention) ||
         mentionedTalents.length === 1;
       if (foreground) {
+        if (activeTalentExecutionMode === "isolated") {
+          initial = assembleRunMessages(freshMessages, []);
+          initialLen = initial.length;
+        }
         injectSystemContext(initial, buildTalentSystemBlock(active));
+        const talentMemory = talentMemoryByInstance.get(active.hired.instanceId);
+        if (talentMemory) injectSystemContext(initial, talentMemory);
         talentToolGate = createTalentToolAllowance(active.hired, "foreground");
         talentUsageIds.push(active.hired.instanceId);
         runEmit({
           type: "talent_active",
           talent: talentEventInfo(active),
           mode: "foreground",
+          executionMode: activeTalentExecutionMode ?? "inline",
         });
       }
     }
@@ -727,6 +821,9 @@ export async function handleRun(
               signal: abort.signal,
               skillRoots,
               runEmit,
+              memoryBlock: talentMemoryByInstance.get(
+                assignment.activeTalent.hired.instanceId,
+              ),
               onUsage: (id) => talentUsageIds.push(id),
             });
           }),
@@ -829,6 +926,24 @@ export async function handleRun(
       );
     }
 
+    if (activeTalentRun && talentAgentStatePaths && output.finalText.length > 20) {
+      const memory = sanitizeMemoryContent(
+        `Task: ${req.message.slice(0, 240)} → Outcome: ${output.finalText.slice(0, 700)}`,
+      );
+      if (memory.ok) {
+        await Promise.all(
+          mentionedTalents.map((talent) =>
+            rememberTalentAgentEpisode({
+              path: talentAgentStatePaths!.memoryPath,
+              talentInstanceId: talent.hired.instanceId,
+              sourceRunId: activeTalentRun!.id,
+              content: memory.text,
+            }),
+          ),
+        );
+      }
+    }
+
     return await finishRun({
       finalText: output.finalText,
       reason: "completed",
@@ -867,6 +982,7 @@ export async function handleRun(
     if (e instanceof LlmError) {
       runEmit({ type: "error", message: e.message });
     }
+    await finalizeTalentRun("failed", e instanceof Error ? e.message : String(e));
     throw e;
   } finally {
     permissionService.cancelSession(sessionId);
@@ -1330,6 +1446,7 @@ async function runTalentSubagent(options: {
   sharedConfirmSoftware: (req: SoftwareConfirmRequest) => Promise<boolean>;
   signal: AbortSignal;
   skillRoots: string[];
+  memoryBlock?: string;
   runEmit: (event: AgentEvent) => void;
   onUsage: (instanceId: string) => void;
 }): Promise<TalentResult> {
@@ -1342,13 +1459,14 @@ async function runTalentSubagent(options: {
     : visibleTask;
   const task = [
     buildTalentSystemBlock(assignment.activeTalent),
+    options.memoryBlock || undefined,
     "",
     `[人才后台任务] ${executionTask}`,
     "",
     "你是一个被派发的只读人才子代理：可以 read_file / list_dir / grep 来调研，但不能写文件或执行命令。",
     "在开始写结论之前，你必须至少调用一次 list_dir 或 read_file 了解当前项目（优先 list_dir 项目根目录）。",
     "请把产出（完整文件内容、审查结论、设计建议或 JSON 等）完整放进最终回复。Coordinator 会收集结果后统一写盘和校验。",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
   options.runEmit({
     type: "subagent_start",
     task: `${activeTalentLabel}: ${visibleTask}`,

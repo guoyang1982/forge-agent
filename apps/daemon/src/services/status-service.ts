@@ -13,6 +13,7 @@ export async function handleStatus(deps: {
   return {
     version: deps.version,
     activeRun: deps.cancelService.hasActiveRun(),
+    activeSessionIds: deps.cancelService.activeSessionIds(),
     runtime: {
       loaded: true,
       skills: runtime.skills.length,

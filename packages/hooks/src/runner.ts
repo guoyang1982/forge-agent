@@ -82,9 +82,11 @@ async function runCommandHook(
   binding: HookBinding,
   input: HookInputPayload,
   ctx: HookRunContext,
+  signal?: AbortSignal,
 ): Promise<{ output: ReturnType<typeof parseHookCommandOutput>; exitCode: number | null }> {
   const cmd = binding.command?.trim();
   if (!cmd) return { output: {}, exitCode: 0 };
+  if (signal?.aborted) return { output: {}, exitCode: null };
 
   if (binding.async) {
     const child = spawn(cmd, {
@@ -109,6 +111,21 @@ async function runCommandHook(
     });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const finish = (result: {
+      output: ReturnType<typeof parseHookCommandOutput>;
+      exitCode: number | null;
+    }) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      resolve(result);
+    };
+    const onAbort = () => {
+      child.kill();
+      finish({ output: {}, exitCode: null });
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout?.on("data", (c) => {
       stdout += String(c);
     });
@@ -117,14 +134,15 @@ async function runCommandHook(
     });
     child.stdin?.write(JSON.stringify(input));
     child.stdin?.end();
-    child.on("error", () => resolve({ output: {}, exitCode: 1 }));
+    child.on("error", () => finish({ output: {}, exitCode: 1 }));
     child.on("close", (code) => {
+      if (settled) return;
       if (code !== 0 && code !== 2) {
         console.warn(
           `[forge:hook] ${binding.sourceId} command exit ${code}: ${stderr.slice(0, 200)}`,
         );
       }
-      resolve({
+      finish({
         output: code === 0 || code === 2 ? parseHookCommandOutput(stdout) : {},
         exitCode: code,
       });
@@ -159,6 +177,7 @@ async function runBinding(
   input: HookInputPayload,
   ctx: HookRunContext,
   skills: SkillDoc[],
+  signal?: AbortSignal,
 ): Promise<{
   context?: string;
   blocked?: boolean;
@@ -168,7 +187,7 @@ async function runBinding(
 }> {
   try {
     if (binding.type === "command") {
-      const { output, exitCode } = await runCommandHook(binding, input, ctx);
+      const { output, exitCode } = await runCommandHook(binding, input, ctx, signal);
       if (exitCode === 2) {
         return {
           ok: true,
@@ -209,6 +228,7 @@ function collectResults(
   skills: SkillDoc[],
   input: HookInputPayload,
   filter?: (binding: HookBinding) => boolean,
+  signal?: AbortSignal,
 ): Promise<{
   context: string;
   results: HookRunResult[];
@@ -218,7 +238,7 @@ function collectResults(
   const matched = bindings.filter(
     (b) => b.event === event && (filter ? filter(b) : true),
   );
-  return runBindings(matched, input, ctx, skills);
+  return runBindings(matched, input, ctx, skills, signal);
 }
 
 async function runBindings(
@@ -226,6 +246,7 @@ async function runBindings(
   input: HookInputPayload,
   ctx: HookRunContext,
   skills: SkillDoc[],
+  signal?: AbortSignal,
 ): Promise<{
   context: string;
   results: HookRunResult[];
@@ -238,7 +259,8 @@ async function runBindings(
   let blockReason: string | undefined;
 
   for (const binding of bindings) {
-    const r = await runBinding(binding, input, ctx, skills);
+    if (signal?.aborted) break;
+    const r = await runBinding(binding, input, ctx, skills, signal);
     if (r.context) chunks.push(r.context);
     if (r.blocked) {
       blocked = true;
@@ -385,6 +407,7 @@ export async function runStopHooks(options: {
   stepsUsed: number;
   toolsCalled: string[];
   reason: StopReason;
+  signal?: AbortSignal;
 }): Promise<{
   results: HookRunResult[];
   blocked: boolean;
@@ -406,6 +429,8 @@ export async function runStopHooks(options: {
     options.ctx,
     options.skills,
     input,
+    undefined,
+    options.signal,
   );
   if (out.context) {
     const sources = out.results

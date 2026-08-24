@@ -11,6 +11,7 @@ import {
   cacheDirectory,
 } from "expo-file-system/legacy";
 import {
+  collectSettledAttachments,
   estimateAttachmentChars,
   extensionOf,
   isImageFilename,
@@ -56,19 +57,18 @@ export async function pickImagesFromLibrary(
   if (result.canceled) return [];
   const assets = (result.assets ?? []).slice(0, room);
   if (!assets.length) return [];
-  const out: PendingAttachment[] = [];
-  for (let index = 0; index < assets.length; index += 1) {
-    const asset = assets[index]!;
+  const { items, errors } = await collectSettledAttachments(assets, async (asset, index) => {
     onProgress?.({
       phase: "encoding",
       label: `压缩图片 ${index + 1}/${assets.length}…`,
       current: index + 1,
       total: assets.length,
     });
-    out.push(await encodeImageAsset(asset.uri, asset.fileName || guessImageName(asset.uri)));
-  }
-  onProgress?.({ phase: "done", label: "完成", current: assets.length, total: assets.length });
-  return out;
+    return encodeImageAsset(asset.uri, asset.fileName || guessImageName(asset.uri));
+  });
+  onProgress?.({ phase: "done", label: "完成", current: items.length, total: assets.length });
+  if (!items.length) throw new Error(errors[0] || "无法添加图片");
+  return items;
 }
 
 export async function takePhotoAttachment(
@@ -107,19 +107,18 @@ export async function pickDocumentAttachments(
   });
   if (result.canceled) return [];
   const assets = result.assets.slice(0, room);
-  const out: PendingAttachment[] = [];
-  for (let index = 0; index < assets.length; index += 1) {
-    const asset = assets[index]!;
+  const { items, errors } = await collectSettledAttachments(assets, async (asset, index) => {
     onProgress?.({
       phase: "reading",
       label: `读取文件 ${index + 1}/${assets.length}…`,
       current: index + 1,
       total: assets.length,
     });
-    out.push(await encodeDocumentAsset(asset.uri, asset.name || "file", asset.mimeType || undefined));
-  }
-  onProgress?.({ phase: "done", label: "完成", current: assets.length, total: assets.length });
-  return out;
+    return encodeDocumentAsset(asset.uri, asset.name || "file", asset.mimeType || undefined);
+  });
+  onProgress?.({ phase: "done", label: "完成", current: items.length, total: assets.length });
+  if (!items.length) throw new Error(errors[0] || "无法添加文件");
+  return items;
 }
 
 /** Paste clipboard image (if any) into a pending attachment. */

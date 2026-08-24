@@ -184,10 +184,17 @@ const api = {
       | Array<{ id: string; updatedAt: string; preview: string }>
       | { sessions: Array<{ id: string; updatedAt: string; preview: string }> }
     >,
-  getSessionMessages: (sessionId: string, limit = 400) =>
+  // Omit eventLimit by default so the daemon loads the full latest-turn journal
+  // from session_start (up to its internal cap). A hard default like 1500 cuts
+  // off `done` on long talent runs (10k+ thinking_delta rows) and the UI never
+  // gets a conclusion card.
+  getSessionMessages: (sessionId: string, limit = 400, eventLimit?: number) =>
     ipcRenderer.invoke("forge:get-session-messages", {
       sessionId,
       limit,
+      ...(typeof eventLimit === "number" && Number.isFinite(eventLimit)
+        ? { eventLimit }
+        : {}),
     }) as Promise<{
       sessionId: string;
       messages: Array<{
@@ -209,6 +216,14 @@ const api = {
         emittedAtMs: number;
         event: Record<string, unknown>;
       }>;
+      checkpoints?: Array<{ turnIndex: number; sha: string }>;
+      dispatchPlans?: Array<Record<string, unknown>>;
+      page?: {
+        truncated: boolean;
+        messageIds: number[];
+        oldestMessageId: number | null;
+        oldestEventSequence: number | null;
+      };
     }>,
   openExternal: (url: string) =>
     ipcRenderer.invoke("forge:open-external", url) as Promise<{ ok?: boolean }>,
@@ -359,6 +374,10 @@ const api = {
     ipcRenderer.invoke("forge:delete-custom-talent", payload) as Promise<{ removed: boolean }>,
   listTalentTeams: (payload?: { cwd?: string }) =>
     ipcRenderer.invoke("forge:list-talent-teams", payload ?? {}) as Promise<{ teams: Array<Record<string, unknown>> }>,
+  listTalentAgentRuns: (payload?: { cwd?: string; talentInstanceId?: string; limit?: number }) =>
+    ipcRenderer.invoke("forge:list-talent-agent-runs", payload ?? {}) as Promise<{ runs: Array<Record<string, unknown>> }>,
+  listTalentAgentMemory: (payload: { cwd?: string; talentInstanceId: string; limit?: number }) =>
+    ipcRenderer.invoke("forge:list-talent-agent-memory", payload) as Promise<{ entries: Array<Record<string, unknown>> }>,
   createTalentTeam: (payload: Record<string, unknown> & { cwd?: string }) =>
     ipcRenderer.invoke("forge:create-talent-team", payload) as Promise<{ team: Record<string, unknown> }>,
   deleteTalentTeam: (payload: { idOrMention: string; cwd?: string }) =>
@@ -829,6 +848,7 @@ const api = {
   cancelRun: (sessionId?: string) =>
     ipcRenderer.invoke("forge:cancel-run", sessionId ? { sessionId } : {}) as Promise<{
       ok: boolean;
+      canceled: boolean;
     }>,
   respondPermission: (payload: {
     id: string;
@@ -878,6 +898,7 @@ const api = {
     ipcRenderer.invoke("forge:daemon-status") as Promise<{
       version?: string;
       activeRun?: boolean;
+      activeSessionIds?: string[];
       runtime?: { loaded?: boolean; skills?: number; plugins?: number };
       sessions?: { count?: number };
     }>,
@@ -915,6 +936,12 @@ const api = {
     ipcRenderer.on("forge:terminal-exit", wrapped);
     return () => ipcRenderer.off("forge:terminal-exit", wrapped);
   },
+
+  // --- Embedded browser panel ---
+  browserClearData: (payload: { kind: "cookies" | "cache" }) =>
+    ipcRenderer.invoke("forge:browser-clear-data", payload) as Promise<{
+      ok: boolean;
+    }>,
 };
 
 contextBridge.exposeInMainWorld("forgeDesktop", api);

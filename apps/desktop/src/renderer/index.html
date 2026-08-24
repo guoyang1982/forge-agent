@@ -125,6 +125,13 @@
           <h2 id="centerTitle">新对话</h2>
           <div class="top-actions">
             <button id="terminalToggleBtn" class="icon-btn subtle" type="button" title="打开终端（当前工作目录）" aria-label="打开终端">&gt;_</button>
+            <button id="browserToggleBtn" class="icon-btn subtle" type="button" title="打开浏览器" aria-label="打开浏览器">
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+                <circle cx="8" cy="8" r="6.4" />
+                <ellipse cx="8" cy="8" rx="2.9" ry="6.4" />
+                <path d="M1.6 8h12.8M2.5 4.8h11M2.5 11.2h11" />
+              </svg>
+            </button>
             <button id="toggleRightBtn" class="icon-btn subtle" title="展开/收起代码侧栏">⫶</button>
             <span id="runState" class="pill idle">空闲</span>
           </div>
@@ -344,7 +351,7 @@
                 class="composer-attach-menu-item"
                 data-attach-action="files"
                 role="menuitem"
-                title="图片、PDF/Office、代码与文本（单文件≤20MB）"
+                title="图片、PDF/Office、代码与文本（每个文件≤20MB，最多 8 个）"
               >
                 <span class="composer-attach-menu-icon" aria-hidden="true">📎</span>
                 添加照片和文件
@@ -394,14 +401,32 @@
         </div>
       </aside>
 
-      <section id="terminalPanel" class="terminal-panel collapsed" aria-hidden="true" aria-label="终端">
-        <header class="terminal-panel-head">
-          <div id="terminalTabs" class="terminal-tabs"></div>
-          <button id="terminalNewBtn" class="icon-btn subtle terminal-head-btn" type="button" title="新建终端">＋</button>
-          <div class="terminal-head-spacer"></div>
-          <button id="terminalCloseBtn" class="icon-btn subtle terminal-head-btn" type="button" title="关闭终端面板">✕</button>
+      <section id="toolsPanel" class="tools-panel collapsed" aria-hidden="true" aria-label="工具面板">
+        <header class="tools-panel-head">
+          <div id="toolsTabs" class="terminal-tabs tools-tabs"></div>
+          <div class="tools-add-wrap">
+            <button id="toolsAddBtn" class="icon-btn subtle tools-head-btn" type="button" title="新建标签页" aria-haspopup="menu" aria-expanded="false">＋</button>
+            <div id="toolsAddMenu" class="browser-menu tools-add-menu hidden" role="menu">
+              <button type="button" class="browser-menu-item" data-tools-add="terminal" role="menuitem">
+                <span class="tools-add-icon">&gt;_</span>
+                <span class="tools-add-label">终端</span>
+              </button>
+              <button type="button" class="browser-menu-item" data-tools-add="browser" role="menuitem">
+                <span class="tools-add-icon">
+                  <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">
+                    <circle cx="8" cy="8" r="6.4" />
+                    <ellipse cx="8" cy="8" rx="2.9" ry="6.4" />
+                    <path d="M1.6 8h12.8" />
+                  </svg>
+                </span>
+                <span class="tools-add-label">浏览器</span>
+              </button>
+            </div>
+          </div>
+          <div class="tools-head-spacer"></div>
+          <button id="toolsCloseBtn" class="icon-btn subtle tools-head-btn" type="button" title="关闭面板">✕</button>
         </header>
-        <div id="terminalBodies" class="terminal-bodies"></div>
+        <div id="toolsBodies" class="tools-bodies"></div>
       </section>
     </div>
 
@@ -903,7 +928,9 @@
     <script src="./file-preview.bundle.js"></script>
     <script src="./channel-login-qr.bundle.js"></script>
     <script src="./terminal.bundle.js"></script>
+    <script src="./tools-panel.js"></script>
     <script src="./terminal-panel.js"></script>
+    <script src="./browser-panel.js"></script>
     <script src="./slash-palette.js"></script>
     <script src="./file-mention.js"></script>
     <script src="./skills-marketplace.js"></script>

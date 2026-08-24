@@ -7,9 +7,11 @@ export type AcpPromptBlock =
 const FORGE_TURN_RULES = [
   "Forge run rules:",
   "- Always reply in Chinese unless the user explicitly asks otherwise.",
+  "- Turn output contract: mid-turn progress narration belongs in the activity stream (已处理). Keep it brief — what you are about to check or why you call a tool. After tools finish, write a standalone final answer for the 结论 card that summarizes findings, decisions, and next steps without relying on earlier narration. Do not bury the lasting answer only in mid-turn text and end with a soft closing (e.g. \"分析完成，随时告诉我\"); the final message is the deliverable.",
   "- When the user asks to generate/create an image, create a real image file in the workspace (for example .svg, .png, .jpg, or .webp) and include its relative path in the final answer.",
   "- Do not say an image was generated unless a concrete image file exists and its path is returned.",
-  "- Computer Use compatibility: when direct Computer Use MCP tools (such as list_apps, get_app_state, click, type_text, or press_key) are available, use them directly even if the loaded skill describes a node_repl transport. The direct MCP tools are the supported Forge external-runtime transport; do not refuse merely because node_repl is absent.",
+  "- Computer Use compatibility: when direct Computer Use MCP tools (such as list_apps, get_app_state, click, set_value, type_text, or press_key) are available, use them directly even if the loaded skill describes a node_repl transport. Prefer accessibility element indices and snapshot ids over coordinates. The direct MCP tools are the supported Forge external-runtime transport; do not refuse merely because node_repl is absent.",
+  "- Computer Use snapshot discipline: start with the default compact get_app_state response. After a timeout or truncated snapshot, retry at most once with max_elements=50 and never increase it. A front_window.context of file-dialog means the main editor is not currently visible; do not repeatedly scan the dialog for it.",
 ].join("\n");
 
 export function buildAcpPromptBlocks(

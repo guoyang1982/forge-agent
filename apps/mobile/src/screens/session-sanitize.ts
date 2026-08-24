@@ -140,40 +140,76 @@ function parseToolCalls(value: unknown): MessageToolCall[] {
 }
 
 function messageText(content: unknown): string {
-  if (typeof content === "string") return content;
+  if (typeof content === "string") return stripAttachedDocumentBlocks(content);
   if (!Array.isArray(content)) return "";
-  return content
-    .flatMap((part) => {
-      if (!part || typeof part !== "object") return [];
-      const value = part as Record<string, unknown>;
-      return value.type === "text" && typeof value.text === "string" ? [value.text] : [];
-    })
-    .join("\n");
+  return stripAttachedDocumentBlocks(
+    content
+      .flatMap((part) => {
+        if (!part || typeof part !== "object") return [];
+        const value = part as Record<string, unknown>;
+        return value.type === "text" && typeof value.text === "string" ? [value.text] : [];
+      })
+      .join("\n"),
+  );
 }
 
 function messageAttachments(content: unknown): MessageAttachment[] {
-  if (!Array.isArray(content)) return [];
   const out: MessageAttachment[] = [];
-  for (const part of content) {
-    if (!part || typeof part !== "object") continue;
-    const value = part as Record<string, unknown>;
-    if (value.type === "image_url") {
-      out.push({
-        kind: "image",
-        name: typeof value.name === "string" ? value.name.slice(0, 120) : "图片",
-      });
-      continue;
+  const texts: string[] = [];
+  if (typeof content === "string") {
+    texts.push(content);
+  } else if (Array.isArray(content)) {
+    for (const part of content) {
+      if (!part || typeof part !== "object") continue;
+      const value = part as Record<string, unknown>;
+      if (value.type === "text" && typeof value.text === "string") {
+        texts.push(value.text);
+      }
     }
-    if (value.type === "file" || value.type === "document") {
-      out.push({
-        kind: "file",
-        name: typeof value.name === "string"
-          ? value.name.slice(0, 120)
-          : (typeof value.filename === "string" ? value.filename.slice(0, 120) : "文件"),
-      });
+  }
+  for (const name of attachedDocumentNamesFromText(texts.join("\n"))) {
+    out.push({ kind: "file", name });
+  }
+  if (Array.isArray(content)) {
+    for (const part of content) {
+      if (!part || typeof part !== "object") continue;
+      const value = part as Record<string, unknown>;
+      if (value.type === "image_url") {
+        out.push({
+          kind: "image",
+          name: typeof value.name === "string" ? value.name.slice(0, 120) : "图片",
+        });
+        continue;
+      }
+      if (value.type === "file" || value.type === "document") {
+        out.push({
+          kind: "file",
+          name: typeof value.name === "string"
+            ? value.name.slice(0, 120)
+            : (typeof value.filename === "string" ? value.filename.slice(0, 120) : "文件"),
+        });
+      }
     }
   }
   return out.slice(0, 8);
+}
+
+function stripAttachedDocumentBlocks(text: string): string {
+  return String(text || "")
+    .replace(/(?:\n|^)### Attached document: [^\n]+\n[\s\S]*?(?=\n### Attached document: |$)/g, "")
+    .trim();
+}
+
+function attachedDocumentNamesFromText(text: string): string[] {
+  const names: string[] = [];
+  const re = /### Attached document: ([^\n]+)/g;
+  let match: RegExpExecArray | null = re.exec(text);
+  while (match) {
+    const name = match[1]?.trim();
+    if (name) names.push(name.slice(0, 120));
+    match = re.exec(text);
+  }
+  return names;
 }
 
 function isRole(value: unknown): value is MessageItem["role"] {

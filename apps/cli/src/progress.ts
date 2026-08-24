@@ -151,13 +151,13 @@ export function createProgressReporter(options?: {
             event.matchMode === "implicit" ? " · 触发词匹配" : "";
           console.log(
             dim(
-              `  ◆ 预加载 Skill: ${event.skillName}${id}${via} · 已加载 ${event.loadedCount} 个`,
+              `  ◆ 预加载 Skill: ${event.skillName}${id}${via}（Skill 目录共 ${event.loadedCount} 个）`,
             ),
           );
         } else {
           console.log(
             dim(
-              `  ◆ 已加载 ${event.loadedCount} 个 Skill（模型从目录按需选择，未预加载）`,
+              `  ◆ Skill 目录 ${event.loadedCount} 个（未预加载，模型按需读取）`,
             ),
           );
         }

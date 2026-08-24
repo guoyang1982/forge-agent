@@ -46,6 +46,35 @@ describe("hook output parsing", () => {
   });
 });
 
+describe("hook cancellation", () => {
+  it("interrupts a running Stop command hook", async () => {
+    const abort = new AbortController();
+    const binding: HookBinding = {
+      source: "user",
+      sourceId: "slow-stop",
+      event: "Stop",
+      type: "command",
+      command: "sleep 5",
+    };
+    const started = Date.now();
+    const pending = runStopHooks({
+      bindings: [binding],
+      ctx: { sessionId: "sess-stop", cwd: process.cwd(), source: "startup", message: "x" },
+      skills: [],
+      finalText: "",
+      stepsUsed: 1,
+      toolsCalled: [],
+      reason: "completed",
+      signal: abort.signal,
+    });
+
+    setTimeout(() => abort.abort(), 20);
+    await pending;
+
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+});
+
 describe("hook matcher", () => {
   it("matches startup|resume pattern", () => {
     expect(matchesSessionSource("startup|resume", "startup")).toBe(true);

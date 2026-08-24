@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentEvent } from "@forge/protocol";
+import type { AgentEvent, AppsPermissions, PermissionLevel } from "@forge/protocol";
 import type {
   McpServerRequest,
   McpServerRequestHandler,
@@ -24,6 +24,7 @@ export function createMcpServerRequestHandler(
   emit: (event: AgentEvent) => void,
   sessionId: string,
   signal?: AbortSignal,
+  appsPermissions?: AppsPermissions,
 ): McpServerRequestHandler {
   return async (request: McpServerRequest) => {
     if (request.method !== "elicitation/create") {
@@ -32,6 +33,10 @@ export function createMcpServerRequestHandler(
 
     const params = asRecord(request.params);
     const meta = asRecord(params._meta);
+    const permissionScope = stringValue(meta, "permissionScope");
+    const policy = resolveAppsPermissionPolicy(permissionScope, appsPermissions);
+    if (policy === "allow") return { action: "accept", content: {} };
+    if (policy === "deny") return { action: "decline" };
     const id = randomUUID();
     const summary = stringValue(params, "message") ?? "MCP 工具请求授权";
     emit({
@@ -59,4 +64,15 @@ export function createMcpServerRequestHandler(
       ? { action: "accept", content: {} }
       : { action: decision.dismissReason ? "cancel" : "decline" };
   };
+}
+
+function resolveAppsPermissionPolicy(
+  scope: string | undefined,
+  permissions: AppsPermissions | undefined,
+): PermissionLevel | undefined {
+  if (!permissions || (scope !== "apps.open" && scope !== "apps.control")) {
+    return undefined;
+  }
+  if (!permissions.enabled) return "deny";
+  return scope === "apps.open" ? permissions.open : permissions.control;
 }

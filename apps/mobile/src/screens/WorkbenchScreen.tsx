@@ -14,6 +14,7 @@ import type { MobileConnectionState } from "../transport/mobile-relay-client";
 import {
   Card,
   HostPicker,
+  ProgressStages,
   QuickAction,
   SectionTitle,
 } from "../ui/components";
@@ -138,10 +139,18 @@ export function WorkbenchScreen(props: {
                 </Text>
               </View>
             </View>
+            <ProgressStages stages={["规划中", "执行中", "整理中"]} activeIndex={1} />
             <View style={styles.timerRow}>
-              <Text style={styles.timerText}>
-                {props.runningSessionId ? `已用时 ${formatClock(elapsedSeconds)}` : "电脑端有任务在运行"}
-              </Text>
+              <View style={styles.timerMetric}>
+                <Text style={styles.timerLabel}>已用时</Text>
+                <Text style={styles.timerValue}>
+                  {props.runningSessionId ? formatClock(elapsedSeconds) : "运行中"}
+                </Text>
+              </View>
+              <View style={styles.timerMetric}>
+                <Text style={styles.timerLabel}>预计剩余</Text>
+                <Text style={styles.timerEstimate}>计算中</Text>
+              </View>
               {props.runningSessionId && props.onCancelRun ? (
                 <Pressable
                   style={styles.stopSquare}
@@ -291,14 +300,23 @@ const useStyles = makeStyles((colors) => ({
   runningTitle: { color: colors.textPrimary, fontSize: 16, fontWeight: "700" },
   timerRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-end",
     gap: spacing.md,
-    minHeight: 44,
+    minHeight: 52,
   },
-  timerText: { color: colors.textSecondary, fontSize: 12, fontWeight: "600", flex: 1 },
+  timerMetric: { flex: 1, gap: 3 },
+  timerLabel: { color: colors.textSecondary, fontSize: 11, fontWeight: "600" },
+  timerValue: {
+    color: colors.textPrimary,
+    fontSize: 20,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
+    letterSpacing: -0.4,
+  },
+  timerEstimate: { color: colors.textMuted, fontSize: 16, fontWeight: "700" },
   stopSquare: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
     borderRadius: radii.md,
     backgroundColor: colors.surface,
     borderWidth: 1,

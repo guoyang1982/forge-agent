@@ -21,7 +21,7 @@ describe("timeline refresh scroll position", () => {
     const source = appSource();
     expect(source).toContain("hydratePromptImagesFromMessages");
     expect(source).toContain("imageUrlsFromUserContent");
-    expect(source).toContain("appendPromptImageGallery");
+    expect(source).toContain("appendPromptAttachments");
     expect(source).toContain("openPromptImageLightbox");
     expect(source).not.toContain('window.open(url, "_blank"');
     const restoreFn =
@@ -97,7 +97,8 @@ describe("timeline refresh scroll position", () => {
     const restoreFn = source.match(
       /async function restoreSessionTimeline[\s\S]*?\n}\n/,
     )?.[0] ?? "";
-    const awaitIdx = restoreFn.indexOf("await requireBridge().getSessionMessages");
+    // The daemon round-trip is awaited via Promise.all (messages + status).
+    const awaitIdx = restoreFn.indexOf("requireBridge().getSessionMessages");
     const captureIdx = restoreFn.indexOf("captureTimelineUiState(timeline)");
     expect(awaitIdx).toBeGreaterThan(-1);
     expect(captureIdx).toBeGreaterThan(awaitIdx);

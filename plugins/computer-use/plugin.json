@@ -1,8 +1,8 @@
 {
   "id": "computer-use",
   "name": "Forge Computer Use",
-  "version": "1.0.0",
-  "description": "Forge-owned macOS desktop automation. Lists apps, reads window state, captures the target app, clicks, types, presses keys, and scrolls without requiring Codex.",
+  "version": "1.1.4",
+  "description": "Forge-owned macOS desktop automation with accessibility snapshots, element actions, target-app screenshots, keyboard, pointer, drag, and scroll control without requiring Codex.",
   "publisher": "forge",
   "enabledByDefault": true,
   "capabilities": {

@@ -54,6 +54,44 @@ describe("Mobile session response sanitization", () => {
     ]);
   });
 
+  it("keeps every inlined document and image on a user turn", () => {
+    expect(
+      parseMessages({
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: [
+                  "请对比",
+                  "### Attached document: a.pdf",
+                  "PDF BODY SHOULD NOT RENDER",
+                  "### Attached document: b.txt",
+                  "TXT BODY SHOULD NOT RENDER",
+                ].join("\n"),
+              },
+              { type: "image_url", image_url: { url: "data:one" } },
+              { type: "image_url", image_url: { url: "data:two" } },
+            ],
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        key: "0:user",
+        role: "user",
+        text: "请对比",
+        attachments: [
+          { kind: "file", name: "a.pdf" },
+          { kind: "file", name: "b.txt" },
+          { kind: "image", name: "图片" },
+          { kind: "image", name: "图片" },
+        ],
+      },
+    ]);
+  });
+
   it("keeps assistant tool_calls and tool results for timeline rebuild", () => {
     expect(
       parseMessages({

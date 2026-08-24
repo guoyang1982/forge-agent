@@ -561,6 +561,9 @@ export function ProgressStages(props: { stages: string[]; activeIndex: number })
         const done = index < props.activeIndex;
         return (
           <View key={stage} style={styles.stageItem}>
+            {index < props.stages.length - 1 ? (
+              <View style={[styles.stageLine, done ? styles.stageLineOn : null]} />
+            ) : null}
             <View style={[
               styles.stageDot,
               done ? styles.stageDotDone : null,
@@ -571,9 +574,6 @@ export function ProgressStages(props: { stages: string[]; activeIndex: number })
             <Text style={[styles.stageLabel, active ? styles.stageLabelActive : done ? styles.stageLabelDone : null]}>
               {stage}
             </Text>
-            {index < props.stages.length - 1 ? (
-              <View style={[styles.stageLine, done || active ? styles.stageLineOn : null]} />
-            ) : null}
           </View>
         );
       })}
@@ -913,8 +913,8 @@ const useStyles = makeStyles((colors) => ({
   pillDanger: { backgroundColor: colors.dangerSoft, borderColor: "#7F1D1D" },
   pillBrand: { backgroundColor: colors.brandSoft, borderColor: colors.brand },
   pillText: { fontSize: 11, fontWeight: "700" },
-  stages: { flexDirection: "row", alignItems: "center", marginVertical: spacing.sm },
-  stageItem: { flexDirection: "row", alignItems: "center", flex: 1 },
+  stages: { flexDirection: "row", alignItems: "flex-start", marginVertical: spacing.sm },
+  stageItem: { flex: 1, alignItems: "center", gap: 7 },
   stageDot: {
     width: 16,
     height: 16,
@@ -924,6 +924,7 @@ const useStyles = makeStyles((colors) => ({
     borderColor: colors.borderAlt,
     alignItems: "center",
     justifyContent: "center",
+    zIndex: 1,
   },
   stageDotDone: {
     backgroundColor: colors.brand,
@@ -939,10 +940,17 @@ const useStyles = makeStyles((colors) => ({
     shadowOffset: { width: 0, height: 0 },
   },
   stageCheck: { color: "white", fontSize: 9, fontWeight: "900", lineHeight: 10 },
-  stageLabel: { color: colors.textMuted, fontSize: 11, marginLeft: 6, marginRight: 4 },
+  stageLabel: { color: colors.textMuted, fontSize: 11, textAlign: "center" },
   stageLabelActive: { color: colors.brandActive, fontWeight: "800" },
   stageLabelDone: { color: colors.brandActive, fontWeight: "700" },
-  stageLine: { flex: 1, height: 2, backgroundColor: colors.border, marginRight: 4, minWidth: 12 },
+  stageLine: {
+    position: "absolute",
+    top: 7,
+    left: "50%",
+    width: "100%",
+    height: 2,
+    backgroundColor: colors.border,
+  },
   stageLineOn: { backgroundColor: colors.brand },
   quickAction: {
     flex: 1,

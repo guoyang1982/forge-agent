@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  collectSettledAttachments,
   estimateAttachmentChars,
   isImageFilename,
   isProbablyTextFilename,
@@ -47,5 +48,17 @@ describe("composer attachment helpers", () => {
       },
     ]);
     expect(estimateAttachmentChars(items)).toBeGreaterThan(10);
+  });
+
+  it("keeps successful items when one encode fails", async () => {
+    const { items, errors } = await collectSettledAttachments(
+      ["ok.png", "bad.png", "also.txt"],
+      async (name) => {
+        if (name === "bad.png") throw new Error(`文件过大：${name}`);
+        return { name };
+      },
+    );
+    expect(items).toEqual([{ name: "ok.png" }, { name: "also.txt" }]);
+    expect(errors).toEqual(["文件过大：bad.png"]);
   });
 });

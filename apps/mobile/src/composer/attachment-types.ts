@@ -110,6 +110,22 @@ export function toRpcAttachments(items: PendingAttachment[]): MobileAttachmentPa
   });
 }
 
+export async function collectSettledAttachments<T, R>(
+  items: T[],
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<{ items: R[]; errors: string[] }> {
+  const out: R[] = [];
+  const errors: string[] = [];
+  for (let index = 0; index < items.length; index += 1) {
+    try {
+      out.push(await mapper(items[index] as T, index));
+    } catch (cause) {
+      errors.push(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+  return { items: out, errors };
+}
+
 export function estimateAttachmentChars(items: PendingAttachment[]): number {
   return items.reduce((sum, item) => {
     return sum
