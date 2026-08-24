@@ -55,6 +55,7 @@ describe("run activity manual expansion", () => {
     )?.[0] ?? "";
 
     expect(closeOrphans).toContain('block.dataset.userPinned === "1"');
-    expect(closeOrphans).toContain("block.open");
+    expect(closeOrphans).not.toContain("block.open = false");
+    expect(closeOrphans).toContain("Do not force-collapse");
   });
 });

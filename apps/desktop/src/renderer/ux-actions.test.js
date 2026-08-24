@@ -35,6 +35,119 @@ describe("copy buttons in the timeline", () => {
     expect(css).toContain(".generated-images-list");
     expect(css).toContain(".image-file-preview");
   });
+
+  it("does not treat Java FQCNs or https URLs as generated image paths", () => {
+    const source = appSource();
+    const constRe = source.match(
+      /const IMAGE_FILE_EXT_RE = [^;]+;/,
+    )?.[0] ?? "";
+    const isImage =
+      source.match(/function isImageFilePath[\s\S]*?\n}\n/)?.[0] ?? "";
+    const isPlausible =
+      source.match(/function isPlausibleWorkspaceImagePath[\s\S]*?\n}\n/)?.[0] ?? "";
+    const extract =
+      source.match(/function extractImagePathsFromText[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(constRe).toBeTruthy();
+    expect(isImage).toBeTruthy();
+    expect(isPlausible).toBeTruthy();
+    expect(extract).toBeTruthy();
+
+    const factory = new Function(
+      "normalizeWorkspaceRelPath",
+      "getActiveProject",
+      `${constRe}\n${isImage}\n${isPlausible}\n${extract}\nreturn { extractImagePathsFromText };`,
+    );
+    const { extractImagePathsFromText } = factory(
+      (_cwd, p) => String(p || ""),
+      () => ({ cwd: "/proj" }),
+    );
+
+    const text = [
+      "涉及类 com.iqiyi.vip.autorenew.marketing.manager.Gif",
+      "以及 https://example.com/a.png 说明文档。",
+      "真实产出：![预览](assets/out/chart.png) 和 ./shots/demo.gif",
+      "还有 basename shot.webp",
+    ].join("\n");
+    const paths = extractImagePathsFromText(text);
+    expect(paths).toEqual(
+      expect.arrayContaining(["assets/out/chart.png", "./shots/demo.gif", "shot.webp"]),
+    );
+    expect(paths.some((p) => /manager\.Gif$/i.test(p))).toBe(false);
+    expect(paths.some((p) => /autorenew\.marketing/i.test(p))).toBe(false);
+    expect(paths.some((p) => /example\.com/i.test(p))).toBe(false);
+    expect(paths.some((p) => /^s:\/\//i.test(p))).toBe(false);
+  });
+});
+
+describe("per-turn run patch isolation", () => {
+  it("clears prior-turn file/image patches when a new turn begins", () => {
+    const source = appSource();
+    const begin =
+      source.match(/function beginSessionTurn[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(begin).toContain("runPatches.clear()");
+    expect(begin).toMatch(/runPatchesBySession\.(set|delete)/);
+
+    const record =
+      source.match(/function recordConclusionEntry[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(record).toContain("files:");
+
+    const render =
+      source.match(/function renderStructuredConclusionEntry[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(render).toContain("entry?.files");
+  });
+});
+
+describe("missing conclusion repair", () => {
+  it("marks conclusion rendered only after the card is placed on the mount", () => {
+    const source = appSource();
+    const fn = source.match(/function renderRunConclusion[\s\S]*?\n}\n/)?.[0] ?? "";
+    const placeIdx = fn.indexOf("placeRunConclusionOnMount(wrap, container)");
+    expect(placeIdx).toBeGreaterThan(-1);
+    // Successful place must set the per-turn flag afterwards (not before creating the card).
+    const flagAfterPlace = fn.indexOf("conclusionDomRenderedThisTurn.add", placeIdx);
+    expect(flagAfterPlace).toBeGreaterThan(placeIdx);
+    // skip-no-mount must return before any successful-path flag is set.
+    const noMountReturn = fn.indexOf("conclusion:skip-no-mount");
+    expect(noMountReturn).toBeGreaterThan(-1);
+    expect(noMountReturn).toBeLessThan(placeIdx);
+  });
+
+  it("still repairs a missing conclusion after replaying a richer cache", () => {
+    const source = appSource();
+    const fn =
+      source.match(/function reconcileSessionConclusion[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(fn).toContain("renderTimelineFromState(sessionId, mount)");
+    // Must not return right after cache paint when the cache had activity but
+    // no conclusion entry — fall through to repair-missing.
+    expect(fn).toContain("conclusion:repair-missing");
+    const cachePaint = fn.indexOf("renderTimelineFromState(sessionId, mount)");
+    const earlyReturn = fn.indexOf("return;", cachePaint);
+    const repair = fn.indexOf("conclusion:repair-missing");
+    expect(repair).toBeGreaterThan(cachePaint);
+    // No early return between cache paint and repair.
+    expect(earlyReturn === -1 || earlyReturn > repair).toBe(true);
+    expect(fn).toContain("closeOrphanThinkingBlocks");
+  });
+
+  it("finalizes stuck 思考中 labels even when the thinking block is expanded", () => {
+    const source = appSource();
+    const fn =
+      source.match(/function closeOrphanThinkingBlocks[\s\S]*?\n}\n/)?.[0] ?? "";
+    // Open/expanded blocks must still flip 思考中 → 思考完成 on done/restore.
+    expect(fn).not.toMatch(/block\.open\) return/);
+    expect(fn).toContain("思考完成");
+  });
+
+  it("treats viewingTimelineSessionId as the live view for event routing", () => {
+    const ui = readFileSync(join(here, "session-run-ui.js"), "utf-8");
+    const isViewing =
+      ui.match(/function isViewingSession\(sessionId\) \{[\s\S]*?\n    \}/)?.[0] ?? "";
+    expect(isViewing).toContain("viewingTimelineSessionId");
+    const refresh =
+      appSource().match(/function refreshLiveTimelineIfViewing[\s\S]*?\n}\n/)?.[0] ?? "";
+    // Don't require project.sessionId when the timeline is already on this session.
+    expect(refresh).not.toContain("getViewingSessionId() !== sessionId");
+  });
 });
 
 describe("MCP resource status", () => {
@@ -46,10 +159,17 @@ describe("MCP resource status", () => {
     expect(source).not.toContain("个默认安装 MCP 未写入当前 config");
   });
 
+  it("makes automatically managed plugin MCP visible on plugin cards", () => {
+    const source = appSource();
+    expect(source).toContain("plugin-card-capabilities");
+    expect(source).toContain('MCP${managedMcp ? " · 自动托管" : ""}');
+  });
+
   it("renders MCP elicitation as an application permission card", () => {
     const source = appSource();
     expect(source).toContain('if (ev.kind === "mcp")');
     expect(source).toContain("应用访问授权");
+    expect(source).toContain('isMcp ? "已允许应用访问" : "已允许网络操作"');
     expect(source).toContain('ev.kind === "mcp" ||');
   });
 });
@@ -572,6 +692,8 @@ describe("restored step narratives", () => {
     expect(conclusion).toContain("removeRunFilesChangedBars");
     expect(conclusion).toContain("recordConclusionEntry");
     expect(conclusion).toContain("syncTimelineCacheForSession");
+    expect(conclusion).not.toContain("resolveConclusionAgainstStepNarratives");
+    expect(conclusion).not.toContain("pruneStepNarrativesPromotedToConclusion");
   });
 
   it("uses standardized runtime activity events and does not persist duplicate live final text", () => {
@@ -600,6 +722,8 @@ describe("restored step narratives", () => {
     expect(strip).toContain('fullyCovered ? "" : original');
     expect(source).toContain("stripLeadingProcessNarrativeSentences");
     expect(source).toContain("recordRunModifiedFile");
+    expect(source).not.toContain("shouldKeepNarrativeInActivityOnly");
+    expect(source).not.toContain("pruneStepNarrativesPromotedToConclusion");
   });
 
   it("empties conclusion body when finalText only replays step narration", () => {
@@ -612,19 +736,59 @@ describe("restored step narratives", () => {
     const firstSentence = source.match(/function firstSentenceText[\s\S]*?\n}\n/)?.[0] ?? "";
     const processNarrative =
       source.match(/function isLikelyProcessNarrativeSentence[\s\S]*?\n}\n/)?.[0] ?? "";
+    const processBlock =
+      source.match(/function isLikelyProcessNarrativeBlock[\s\S]*?\n}\n/)?.[0] ?? "";
+    const splitBlocks = source.match(/function splitFinalAnswerBlocks[\s\S]*?\n}\n/)?.[0] ?? "";
+    const partition =
+      source.match(/function partitionProcessFromFinalAnswer[\s\S]*?\n}\n/)?.[0] ?? "";
     const nearLead =
       source.match(/function isNearDuplicateLeadSentence[\s\S]*?\n}\n/)?.[0] ?? "";
     const normalizeCopy =
       source.match(/function normalizeConclusionCopyText[\s\S]*?\n}\n/)?.[0] ?? "";
-    const stripFn = Function(
-      `${escape}${normalizeDedupe}${levenshtein}${firstSentence}${processNarrative}${nearLead}${normalizeCopy}${strip}; return stripLeadingStepNarratives;`,
-    )();
+    const helpers = `${escape}${normalizeDedupe}${levenshtein}${firstSentence}${processNarrative}${processBlock}${splitBlocks}${partition}${nearLead}${normalizeCopy}${strip}`;
+    const stripFn = Function(`${helpers}; return stripLeadingStepNarratives;`)();
+    const partitionFn = Function(`${helpers}; return partitionProcessFromFinalAnswer;`)();
     const intro = "我会按要求仅执行这条命令，并原样返回 stdout。";
     expect(stripFn(intro, [intro])).toBe("");
     expect(stripFn(`${intro}\n\nhello-permission-test`, [intro])).toBe(
       "hello-permission-test",
     );
     expect(stripFn("独立结论内容", ["我会先查看文件"])).toBe("独立结论内容");
+    // Mid-turn analysis stays in 已处理; 结论 only keeps text not already shown there.
+    const analysis =
+      "1. 分类管理：支付渠道分成 Apple ACA / 非 Apple ACA 两类。\n2. 签约时收敛：主动清理旧冲突记录。";
+    const closing =
+      "分析完成。如果你需要我进一步深入某个改造点的实现细节，随时告诉我。";
+    expect(stripFn(`${analysis}\n\n${closing}`, [analysis])).toBe(closing);
+
+    const attemptLog = [
+      "飞书文档需要登录，本地没有可直接复用的截图，我先在浏览器里打开文档并同时检查项目里是否已有相关截图/导出。",
+      "登录鉴权挡住了，我改用飞书桌面端打开同一文档继续抓内容。",
+      "页面是 Canvas 渲染，直接抽文本拿不到完整内容，我继续尝试导出/另存为和打印入口。",
+      "因为 Canvas 渲染拿不到全文，我将改用已知 PRD 结构 + 现有设计文档代码分析完成对比，并启动多个子代理并行。",
+      "1. 分类管理：支付渠道分成 Apple ACA / 非 Apple ACA 两类。",
+      "改造应落在签约清理与扣费选型两处。",
+    ].join("\n");
+    const parted = partitionFn(attemptLog);
+    expect(parted.processBlocks.length).toBeGreaterThanOrEqual(4);
+    expect(parted.conclusionText).toContain("分类管理");
+    expect(parted.conclusionText).toContain("改造应落在签约清理");
+    expect(parted.conclusionText).not.toContain("Canvas 渲染");
+    expect(parted.conclusionText).not.toContain("启动多个子代理");
+  });
+
+  it("moves process attempt logs out of 结论 into 已处理 before finalize", () => {
+    const source = appSource();
+    expect(source).toContain("partitionProcessFromFinalAnswer");
+    expect(source).toContain("persistProcessBlocksInActivity");
+    expect(source).toContain("isLikelyProcessNarrativeBlock");
+    const conclusion = source.match(/function renderRunConclusion[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(conclusion).toContain("partitionProcessFromFinalAnswer");
+    expect(conclusion).toContain("persistProcessBlocksInActivity");
+    const partitionIdx = conclusion.indexOf("partitionProcessFromFinalAnswer");
+    const finalizeIdx = conclusion.indexOf("finalizeRunActivity");
+    expect(partitionIdx).toBeGreaterThan(-1);
+    expect(finalizeIdx).toBeGreaterThan(partitionIdx);
   });
 
   it("keeps the active run timer ticking while work is running", () => {
@@ -718,6 +882,10 @@ describe("session restore timeline", () => {
     expect(usable).toContain("hasActivityChildren");
     expect(usable).toContain("leadingPromptOk");
     expect(usable).toContain("turnOrderOk");
+    // Incomplete team runs (no conclusion yet) must still hit the in-memory
+    // snapshot path — otherwise every sidebar click reloads the full journal.
+    expect(usable).toContain("!running && !hasConclusion");
+    expect(usable).toContain("hasUserTurn && hasRunActivity && hasActivityChildren");
     expect(source).toContain("structuredTimelineTurnOrderValid");
     expect(source).toContain("structuredTimelineRunActivityHasSubstantiveChildren");
     expect(source).toContain("clearStructuredTimelineForRestore");
@@ -731,6 +899,29 @@ describe("session restore timeline", () => {
     expect(source).toContain("structuredTimelineMatchesMessages");
     expect(source).toContain("mergeRunActivitySnapshot");
     expect(source).toContain("snapshotRunActivitiesFromCache");
+  });
+
+  it("paints from memory cache before clearing the timeline on session switch", () => {
+    const ui = readFileSync(join(here, "session-run-ui.js"), "utf-8");
+    const switchFn =
+      ui.match(/function switchSessionView\(project, newSessionId[\s\S]*?\n    \}/)?.[0] ?? "";
+    expect(switchFn).toContain("restoreTimelineSnapshot(newSessionId, switchGen)");
+    // On a real session id, try the in-memory snapshot first; only clear +
+    // daemon-restore when the cache is not usable.
+    const afterEmptyGuard = switchFn.slice(switchFn.indexOf("if (!newSessionId)"));
+    const snapIdx = afterEmptyGuard.indexOf(
+      "restoreTimelineSnapshot(newSessionId, switchGen)",
+    );
+    const missClearIdx = afterEmptyGuard.indexOf(
+      "clearTimeline()",
+      snapIdx,
+    );
+    expect(snapIdx).toBeGreaterThan(-1);
+    expect(missClearIdx).toBeGreaterThan(snapIdx);
+    // Incomplete idle caches soft-refresh so truncated restores can still
+    // pick up the journal `done` / conclusion card.
+    expect(switchFn).toContain("needsConclusionRepair");
+    expect(switchFn).toContain("structuredTimelineHasConclusion");
   });
 
   it("inserts later-turn prompts before their own 已处理/结论 blocks", () => {
@@ -793,15 +984,20 @@ describe("session restore timeline", () => {
     expect(source).toContain("turnIndex");
     expect(source).toContain("realignRunActivitiesToTurns");
     expect(source).toContain("findRunActivityDomForTurn(mount, turnIndex)");
-    expect(source).toContain("dedupeDomUserPrompts($(\"timeline\"), collectExpectedRestorePrompts(messages, sessionId))");
+    expect(source).toContain("dedupeDomUserPrompts(");
+    expect(source).toContain("collectExpectedRestorePrompts(messages, sessionId)");
     expect(source).toContain("structuredTimelineMatchesMessages");
     expect(source).toContain("countExpectedRestoreCompletedTurns");
     expect(source).toContain("countExpectedRestoreActivityTurns");
+    expect(source).toContain("messagesBeforeLatestTurns");
+    expect(source).toContain("countPersistedSessionStarts");
     const restore =
       source.match(/async function restoreSessionTimeline[\s\S]*?pushEvent\(`恢复会话失败/)?.[0] ?? "";
     expect(restore).toContain("structuredTimelineMatchesMessages(sessionId, messages)");
     expect(restore).toContain("snapshotRunActivitiesFromCache(sessionId)");
     expect(restore).toContain("mergeRunActivitySnapshot(sessionId, activitySnapshot)");
+    expect(restore).toContain("renderRestoredSession(sessionId, priorMessages");
+    expect(restore).toContain("expectedPrompts > journalStarts");
     const begin =
       source.match(/function beginRestoredRunActivity[\s\S]*?\n}\n/)?.[0] ?? "";
     expect(begin).toContain("activeRunEntry = null");
@@ -923,6 +1119,93 @@ describe("persistent error banner", () => {
   });
 });
 
+describe("composer multi-attachment ingest", () => {
+  it("keeps same-named files with different content and skips exact duplicates", () => {
+    const source = appSource();
+    const merge =
+      source.match(/function mergeComposerAttachments[\s\S]*?\n}\n/)?.[0] ?? "";
+    const fingerprint =
+      source.match(/function composerAttachmentFingerprint[\s\S]*?\n}\n/)?.[0] ?? "";
+    const uniquify =
+      source.match(/function uniquifyComposerAttachmentName[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(merge).toBeTruthy();
+    expect(fingerprint).toBeTruthy();
+    expect(uniquify).toBeTruthy();
+    const factory = new Function(
+      `${fingerprint}\n${uniquify}\n${merge}\nreturn { mergeComposerAttachments };`,
+    );
+    const { mergeComposerAttachments } = factory();
+    const first = mergeComposerAttachments(
+      [],
+      [
+        { kind: "image", name: "image.png", mimeType: "image/png", dataUrl: "data:a" },
+        { kind: "image", name: "image.png", mimeType: "image/png", dataUrl: "data:b" },
+        { kind: "file", name: "notes.txt", mimeType: "text/plain", text: "one" },
+        { kind: "file", name: "notes.txt", mimeType: "text/plain", text: "one" },
+      ],
+      8,
+    );
+    expect(first.attachments.map((item) => item.name)).toEqual([
+      "image.png",
+      "image (2).png",
+      "notes.txt",
+    ]);
+    expect(first.hitMax).toBe(false);
+
+    const second = mergeComposerAttachments(
+      first.attachments,
+      [{ kind: "file", name: "extra.md", mimeType: "text/markdown", text: "x" }],
+      3,
+    );
+    expect(second.attachments).toHaveLength(3);
+    expect(second.hitMax).toBe(true);
+  });
+
+  it("strips inlined documents from the prompt label and lists their names", () => {
+    const source = appSource();
+    const strip =
+      source.match(/function stripAttachedDocumentBlocks[\s\S]*?\n}\n/)?.[0] ?? "";
+    const names =
+      source.match(/function attachedDocumentNamesFromText[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(strip).toBeTruthy();
+    expect(names).toBeTruthy();
+    const factory = new Function(
+      `${strip}\n${names}\nreturn { stripAttachedDocumentBlocks, attachedDocumentNamesFromText };`,
+    );
+    const { stripAttachedDocumentBlocks, attachedDocumentNamesFromText } = factory();
+    const raw = [
+      "请对比这两份材料",
+      "### Attached document: a.pdf",
+      "PDF BODY",
+      "### Attached document: b.txt",
+      "TXT BODY",
+    ].join("\n");
+    expect(stripAttachedDocumentBlocks(raw)).toBe("请对比这两份材料");
+    expect(attachedDocumentNamesFromText(raw)).toEqual(["a.pdf", "b.txt"]);
+  });
+
+  it("renders file chips beside image thumbs and merges extra attachments", () => {
+    const source = appSource();
+    const css = readFileSync(join(here, "styles.css"), "utf-8");
+    expect(source).toContain("function appendPromptAttachments");
+    expect(source).toContain("user-prompt-files");
+    expect(source).toContain("promptFileNames");
+    expect(source).toContain("mergeComposerAttachments");
+    expect(source).toContain("userPromptLabelFromNode");
+    const gallery =
+      source.match(/function appendPromptAttachments[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(gallery).toContain('querySelector(".user-prompt-images")');
+    expect(gallery).not.toContain("if (promptLine.querySelector(\".user-prompt-images\")) return");
+    expect(css).toContain(".user-prompt-files");
+    const hasPrompt =
+      source.match(/function timelineHasPromptText[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(hasPrompt).toContain("userPromptLabelFromNode");
+    const exec =
+      source.match(/async function executeAgentRun[\s\S]*?\n  }\n/)?.[0] ?? "";
+    expect(exec).toContain("renderUserPromptOnce(preview, promptImageUrls, promptFileNames)");
+  });
+});
+
 describe("timeline prompt and source-link handling", () => {
   it("dedupes start prompts even when one side is truncated", () => {
     const source = appSource();
@@ -936,7 +1219,7 @@ describe("timeline prompt and source-link handling", () => {
     const source = appSource();
     const exec = source.match(/async function executeAgentRun[\s\S]*?\n  }\n/)?.[0] ?? "";
     expect(exec).toContain("if (routeSid)");
-    expect(exec).toContain("renderUserPromptOnce(preview, promptImageUrls)");
+    expect(exec).toContain("renderUserPromptOnce(preview, promptImageUrls, promptFileNames)");
     expect(exec).toContain("sessionRuns.withEventRoute(routeSid");
   });
 

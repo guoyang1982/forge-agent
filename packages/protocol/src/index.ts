@@ -258,6 +258,8 @@ export interface CompactSessionResult {
 export interface DaemonStatusResult {
   version: string;
   activeRun: boolean;
+  /** Session-scoped source of truth; persisted session_start events may be stale after a restart. */
+  activeSessionIds: string[];
   runtime: {
     loaded: boolean;
     skills: number;
@@ -855,6 +857,41 @@ export interface UpdateTalentTeamResult { team: TalentTeam }
 export interface DeleteTalentTeamRequest { cwd?: string; idOrMention: string }
 export interface DeleteTalentTeamResult { removed: boolean }
 
+export type TalentAgentExecutionMode = "inline" | "isolated" | "team";
+export interface TalentAgentRun {
+  id: string;
+  sessionId: string;
+  talentInstanceIds: string[];
+  talentMentions: string[];
+  mode: TalentAgentExecutionMode;
+  task: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+  outcomePreview: string;
+  tools: string[];
+}
+export interface TalentAgentMemoryEntry {
+  id: string;
+  talentInstanceId: string;
+  sourceRunId?: string;
+  content: string;
+  createdAt: string;
+}
+export interface ListTalentAgentRunsRequest {
+  cwd?: string;
+  talentInstanceId?: string;
+  limit?: number;
+}
+export interface ListTalentAgentRunsResult { runs: TalentAgentRun[] }
+export interface ListTalentAgentMemoryRequest {
+  cwd?: string;
+  talentInstanceId: string;
+  limit?: number;
+}
+export interface ListTalentAgentMemoryResult { entries: TalentAgentMemoryEntry[] }
+
 export interface TalentSyncRequest {
   categories?: string[];
   /** Local checkout of agency-agents; skips GitHub fetch when set. */
@@ -1107,6 +1144,8 @@ export type AgentEvent =
       talent: TalentEventInfo;
       /** foreground = 单 @ 前台接管；background 保留给后续扩展 */
       mode: "foreground" | "background";
+      /** Runtime strategy selected for this talent invocation. */
+      executionMode?: "inline" | "isolated" | "team";
     }
   | {
       type: "subagent_start";
@@ -1496,6 +1535,8 @@ export const DAEMON_METHODS = {
   TALENTS_CREATE_TEAM: "talents.create_team",
   TALENTS_UPDATE_TEAM: "talents.update_team",
   TALENTS_DELETE_TEAM: "talents.delete_team",
+  TALENTS_LIST_AGENT_RUNS: "talents.list_agent_runs",
+  TALENTS_LIST_AGENT_MEMORY: "talents.list_agent_memory",
   GET_CONFIG: "get_config",
   RELOAD_RUNTIME: "reload_runtime",
   LIST_AUTOMATIONS: "list_automations",

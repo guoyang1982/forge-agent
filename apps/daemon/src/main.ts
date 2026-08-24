@@ -122,6 +122,8 @@ import {
   handleGetTalentTemplate,
   handleHireTalent,
   handleListTalentRoster,
+  handleListTalentAgentMemory,
+  handleListTalentAgentRuns,
   handleListTalentTeams,
   handleListTalentTemplates,
   handleRenameTalent,
@@ -480,6 +482,14 @@ async function handleRpc(
 
   if (method === DAEMON_METHODS.TALENTS_DELETE_TEAM) {
     return handleDeleteTalentTeam(params, { dataDir: bootConfig.daemon.dataDir });
+  }
+
+  if (method === DAEMON_METHODS.TALENTS_LIST_AGENT_RUNS) {
+    return handleListTalentAgentRuns(params, { dataDir: bootConfig.daemon.dataDir });
+  }
+
+  if (method === DAEMON_METHODS.TALENTS_LIST_AGENT_MEMORY) {
+    return handleListTalentAgentMemory(params, { dataDir: bootConfig.daemon.dataDir });
   }
 
   if (method === DAEMON_METHODS.APPLY_PATCH) {

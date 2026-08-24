@@ -29,6 +29,33 @@ describe("cross-device session synchronization", () => {
     ).toBe(false);
   });
 
+  it("does not resurrect a journal-only run after the daemon lost it", () => {
+    const api = loadSessionRunUi();
+    const records = [
+      { event: { type: "session_start", sessionId: "ghost" } },
+      { event: { type: "status", sessionId: "ghost" } },
+    ];
+
+    expect(
+      api.reconciledPersistedSessionIsRunning(records, {
+        activeRun: false,
+        activeSessionIds: [],
+      }),
+    ).toBe(false);
+    expect(
+      api.reconciledPersistedSessionIsRunning(records, {
+        activeRun: true,
+        activeSessionIds: ["other-session"],
+      }),
+    ).toBe(false);
+    expect(
+      api.reconciledPersistedSessionIsRunning(records, {
+        activeRun: true,
+        activeSessionIds: ["ghost"],
+      }),
+    ).toBe(true);
+  });
+
   it("keeps polling an externally-owned run but not a local live run", () => {
     const api = loadSessionRunUi();
 
@@ -57,10 +84,21 @@ describe("cross-device session synchronization", () => {
         /async function refreshViewedSessionFromDaemonIfChanged[\s\S]*?\n}\n/,
       )?.[0] ?? "";
 
-    expect(replay).toContain("persistedSessionIsRunning(records)");
+    expect(replay).toContain("reconciledPersistedSessionIsRunning(");
     expect(replay).toContain("sessionRuns.markSessionRunning(");
     expect(refresh).toContain("shouldRefreshSessionTimeline");
     expect(refresh).toContain("state.clientRuns.values()");
+  });
+
+  it("clears a journal-only ghost run when cancel finds no backend work", () => {
+    const source = appSource();
+    const submit =
+      source.match(/async function handleComposerSubmit[\s\S]*?\n  }\n\n  \/\*\*/)?.[0] ??
+      source;
+
+    expect(submit).toContain("cancelResult?.canceled === false");
+    expect(submit).toContain("sessionRuns.markSessionRunning(stopSid, false)");
+    expect(submit).toContain("已清除残留运行状态");
   });
 
   it("does not reuse a previous turn activity for a text-only desktop turn", () => {
@@ -116,7 +154,7 @@ describe("cross-device session synchronization", () => {
     // Desktop and mobile both treat daemon session storage as the shared source of truth:
     // desktop rebuilds from persisted records; mobile reloads session.messages after run.result.
     expect(refresh).toContain("shouldRefreshSessionTimeline");
-    expect(replay).toContain("persistedSessionIsRunning(records)");
+    expect(replay).toContain("reconciledPersistedSessionIsRunning(");
     expect(source).toMatch(/session\.events|getSession|listSession|persist/i);
   });
 });

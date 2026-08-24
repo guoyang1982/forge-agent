@@ -17,6 +17,10 @@ import type {
   ListTalentRosterResult,
   ListTalentTeamsRequest,
   ListTalentTeamsResult,
+  ListTalentAgentMemoryRequest,
+  ListTalentAgentMemoryResult,
+  ListTalentAgentRunsRequest,
+  ListTalentAgentRunsResult,
   RenameTalentRequest,
   RenameTalentResult,
   TalentSyncRequest,
@@ -42,10 +46,13 @@ import {
   hireTalent,
   listTalentTemplates,
   readMergedTalentRoster,
+  listTalentAgentMemory,
+  listTalentAgentRuns,
   readTalentTemplate,
   readTalentTeamRoster,
   renameTalent,
   resolveTalentStorePaths,
+  resolveTalentAgentStatePaths,
   resolveTalentTeamRosterPath,
   resolveWritableRosterPath,
   syncTalentTemplates,
@@ -347,6 +354,37 @@ export async function handleDeleteTalentTeam(
     resolveTalentTeamRosterPath(deps.dataDir, req.cwd),
     req.idOrMention,
   );
+}
+
+export async function handleListTalentAgentRuns(
+  params: unknown,
+  deps: { dataDir: string },
+): Promise<ListTalentAgentRunsResult> {
+  const req = params as ListTalentAgentRunsRequest | undefined;
+  const paths = resolveTalentAgentStatePaths(deps.dataDir, req?.cwd);
+  return {
+    runs: await listTalentAgentRuns(
+      paths.runsPath,
+      req?.talentInstanceId,
+      req?.limit ?? 20,
+    ),
+  };
+}
+
+export async function handleListTalentAgentMemory(
+  params: unknown,
+  deps: { dataDir: string },
+): Promise<ListTalentAgentMemoryResult> {
+  const req = params as ListTalentAgentMemoryRequest | undefined;
+  if (!req?.talentInstanceId) throw new Error("talentInstanceId is required");
+  const paths = resolveTalentAgentStatePaths(deps.dataDir, req.cwd);
+  return {
+    entries: await listTalentAgentMemory(
+      paths.memoryPath,
+      req.talentInstanceId,
+      req.limit ?? 8,
+    ),
+  };
 }
 
 function toTalentTemplateResult(template: TalentTemplate): NonNullable<GetTalentTemplateResult["template"]> {

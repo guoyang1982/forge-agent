@@ -257,7 +257,13 @@ async function respondNetworkPermission(id, approved, remember = false) {
       approved ? "done" : "warn",
     );
   } else {
-    pushEvent(approved ? "已允许网络操作" : "已拒绝网络操作", approved ? "done" : "warn");
+    const isMcp = ev?.kind === "mcp";
+    pushEvent(
+      approved
+        ? isMcp ? "已允许应用访问" : "已允许网络操作"
+        : isMcp ? "已拒绝应用访问" : "已拒绝网络操作",
+      approved ? "done" : "warn",
+    );
   }
 }
 
@@ -539,7 +545,8 @@ const state = {
   panelLeftWidth: PANEL_DEFAULT_LEFT,
   panelRightWidth: PANEL_DEFAULT_RIGHT,
   // Which view occupies the right region: "code" (code/skill/plugin/talent
-  // panel) or "terminal". The two are mutually exclusive in the same slot.
+  // panel) or "tools" (the tabbed terminal/browser panel). The two are
+  // mutually exclusive in the same slot.
   rightMode: "code",
   workspaceExplorerOpen: false,
   workspaceExplorerExpanded: new Set(["."]),
@@ -602,7 +609,6 @@ function flushTimelineCacheSync() {}
 function refreshLiveTimelineIfViewing(sessionId) {
   if (!sessionId || state.offscreenTimelineEl) return;
   if (state.viewingTimelineSessionId !== sessionId) return;
-  if (sessionRuns?.getViewingSessionId() !== sessionId) return;
   const live = $("timeline");
   if (!live) return;
   const running = sessionRuns?.isSessionRunning(sessionId);
@@ -740,6 +746,38 @@ function snapshotDomTimelineChild(node, sessionId) {
       createdAt: Date.now(),
     };
   }
+  if (node.matches?.("details.subagent-talent-activity")) {
+    const mention = normalizeTalentMention(node.dataset.talentMention || "");
+    const live = mention ? getSubagentEntry(mention) : null;
+    const label = node.querySelector(".run-activity-label")?.textContent || "";
+    const meta = node.querySelector(".run-activity-meta")?.textContent || "";
+    const body = node.querySelector(".subagent-talent-body");
+    const talent = live?.talent || {
+      mention,
+      displayName: mention,
+      role: "",
+      emoji: "",
+      avatar: "",
+    };
+    return {
+      type: "subagent",
+      id: node.dataset.timelineEntryId || timelineEntryId(),
+      talent: {
+        mention,
+        displayName: talent.displayName || mention,
+        role: talent.role || "",
+        emoji: talent.emoji || "",
+        avatar: talent.avatar || "",
+      },
+      taskLabel: live?.taskLabel || "",
+      label,
+      meta,
+      finalized: !node.classList.contains("subagent-talent-active"),
+      open: node.open,
+      children: snapshotRunActivityBodyChildren(body, sessionId),
+      createdAt: Date.now(),
+    };
+  }
   return null;
 }
 
@@ -767,6 +805,18 @@ function snapshotRunActivityBodyChildren(body, sessionId) {
   };
   walk(body);
   return children;
+}
+
+/**
+ * Prefer the DOM snapshot, but keep structured subagent shells when the DOM
+ * walk somehow missed them (older builds / partial hosts).
+ */
+function mergeRunActivityChildrenPreservingSubagents(structured, domChildren) {
+  const fromDom = Array.isArray(domChildren) ? [...domChildren] : [];
+  if (fromDom.some((child) => child?.type === "subagent")) return fromDom;
+  const keep = (structured || []).filter((child) => child?.type === "subagent");
+  if (!keep.length) return fromDom;
+  return [...keep, ...fromDom];
 }
 
 /** Live stream host for the active run (flat timeline sibling while running). */
@@ -934,7 +984,10 @@ function syncStructuredTimelineFromDom(sessionId) {
           : body;
       const domChildren = snapshotRunActivityBodyChildren(contentHost, sessionId);
       if (domChildren.length >= (runEntry.children?.length ?? 0)) {
-        runEntry.children = domChildren;
+        runEntry.children = mergeRunActivityChildrenPreservingSubagents(
+          runEntry.children,
+          domChildren,
+        );
       }
       if (!activity.classList.contains("subagent-talent-activity")) {
         const turnIndex = inferRunActivityTurnIndexFromDom(activity, mount);
@@ -1050,6 +1103,27 @@ function isRestoreEligibleUserTurn(turn) {
 
 function countExpectedRestoreUserTurns(messages) {
   return turnsWithDedupedPrompts(messages).filter(isRestoreEligibleUserTurn).length;
+}
+
+function countPersistedSessionStarts(records) {
+  return (records || []).filter((record) => record?.event?.type === "session_start")
+    .length;
+}
+
+/**
+ * Flat messages for every user turn before the trailing `keepLatestTurns`.
+ * Used so latest-turn journal replay can sit on top of older message-built turns.
+ */
+function messagesBeforeLatestTurns(messages, keepLatestTurns = 1) {
+  const keep = Math.max(0, Math.floor(Number(keepLatestTurns) || 0));
+  const turns = turnsWithDedupedPrompts(messages);
+  if (!turns.length || keep <= 0 || turns.length <= keep) return [];
+  const out = [];
+  for (const turn of turns.slice(0, -keep)) {
+    if (turn.user) out.push(turn.user);
+    for (const msg of turn.msgs || []) out.push(msg);
+  }
+  return out;
 }
 
 function countExpectedRestoreCompletedTurns(messages) {
@@ -1534,17 +1608,30 @@ function recordConclusionEntry(sessionId, finalText) {
   if (!timelineState) return;
   const entries = ensureTimelineEntries(timelineState);
   if (window.ForgeSessionRunUi.currentTurnHasStructuredConclusion(entries)) return;
+  const patchMap = state.runPatchesBySession.get(sessionId) || state.runPatches;
   entries.push({
     type: "conclusion",
     id: timelineEntryId(),
     sessionId,
     text: String(finalText || state.runFinalText || "").trim(),
+    files: patchMap ? [...patchMap.keys()] : [],
     createdAt: Date.now(),
   });
   touchTimelineState(sessionId);
 }
 
-function recordThinkingEntry(sessionId, thinkingId, talent, summary, content) {
+function findThinkingEntryDeep(children, thinkingId) {
+  for (const child of children || []) {
+    if (child.type === "thinking" && child.id === thinkingId) return child;
+    if (child.type === "subagent") {
+      const nested = findThinkingEntryDeep(child.children, thinkingId);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+function recordThinkingEntry(sessionId, thinkingId, talent, summary, content, holder) {
   if (state.suppressTimelineRecording) return;
   const timelineState = getNormalTimelineState(sessionId, true);
   if (!timelineState) return;
@@ -1552,9 +1639,12 @@ function recordThinkingEntry(sessionId, thinkingId, talent, summary, content) {
   if (!runEntry) return;
   if (!runEntry.children) runEntry.children = [];
   const mention = talent?.mention ? normalizeTalentMention(talent.mention) : "";
-  let entry = runEntry.children.find(
-    (child) => child.type === "thinking" && child.id === thinkingId,
-  );
+  // Thinking rendered inside a talent fold must be recorded under that
+  // subagent child. Recording it at the run-activity top level makes replays
+  // (offscreen virtual roots, session restore) place it outside the fold,
+  // where the next thinking_delta can't find it — duplicating the block.
+  const subagent = holder ? findTimelineSubagentChild(runEntry, holder) : null;
+  let entry = findThinkingEntryDeep(runEntry.children, thinkingId);
   if (!entry) {
     entry = {
       type: "thinking",
@@ -1565,7 +1655,12 @@ function recordThinkingEntry(sessionId, thinkingId, talent, summary, content) {
       open: false,
       createdAt: Date.now(),
     };
-    runEntry.children.push(entry);
+    if (subagent) {
+      if (!subagent.children) subagent.children = [];
+      subagent.children.push(entry);
+    } else {
+      runEntry.children.push(entry);
+    }
   }
   if (summary) entry.summary = summary;
   if (content != null) entry.content = content;
@@ -1754,10 +1849,15 @@ function structuredTimelineCacheUsable(sessionId, running = false) {
   if (!leadingPromptOk) return false;
   if (!turnOrderOk) return false;
   if (!running && hasConclusion && !hasUserTurn) return false;
-  if (!running && !hasConclusion) return false;
   if (running && !hasUserTurn && !hasRunActivity) return false;
   // Empty 已处理 shells are not trustworthy once a turn has finished.
   if (!running && hasRunActivity && !hasActivityChildren && hasConclusion) return false;
+  // Idle sessions without a conclusion (e.g. team run stuck after Nina) still
+  // reuse a rich in-memory snapshot so switching back is instant — otherwise
+  // every click re-downloads and replays the full journal.
+  if (!running && !hasConclusion) {
+    return hasUserTurn && hasRunActivity && hasActivityChildren;
+  }
   return true;
 }
 
@@ -2022,27 +2122,45 @@ function isImageFilePath(path) {
   return IMAGE_FILE_EXT_RE.test(String(path || "").split(/[?#]/, 1)[0]);
 }
 
+/**
+ * Workspace image paths only — reject Java FQCNs (pkg.Class.Gif), remote URLs,
+ * and https:// fragments mangled into s:// by bare-path regexes.
+ */
+function isPlausibleWorkspaceImagePath(path) {
+  const value = String(path || "").trim();
+  if (!value || !isImageFilePath(value)) return false;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return false;
+  if (/^\/\//.test(value)) return false;
+  // Multi-dot identifiers without a path separator are package/class names, not files.
+  if (!/[\\/]/.test(value) && (value.match(/\./g) || []).length > 1) return false;
+  return true;
+}
+
 function extractImagePathsFromText(text) {
   const seen = new Set();
   const out = [];
   const push = (raw) => {
     const value = String(raw || "").trim().replace(/^file:\/\//i, "");
-    if (!value || !isImageFilePath(value)) return;
+    if (!value || !isPlausibleWorkspaceImagePath(value)) return;
     const norm = normalizeWorkspaceRelPath(getActiveProject()?.cwd, value) || value;
+    if (!isPlausibleWorkspaceImagePath(norm)) return;
     if (seen.has(norm)) return;
     seen.add(norm);
     out.push(norm);
   };
   const source = String(text || "");
   for (const match of source.matchAll(/!\[[^\]]*]\(([^)\s]+)\)/g)) push(match[1]);
-  for (const match of source.matchAll(/[`"']?((?:[A-Za-z]:)?[~./\w@-][^`"'\s，。；、:：)]*\.(?:png|jpe?g|gif|webp|bmp|svg))[`"']?/gi)) {
+  // Windows drive must include the following slash so "https://" cannot become "s://…".
+  for (const match of source.matchAll(
+    /[`"']?((?:[A-Za-z]:[\\/]|[~./\\]|\w)[^`"'\s，。；、:：)]*\.(?:png|jpe?g|gif|webp|bmp|svg))[`"']?/gi,
+  )) {
     push(match[1]);
   }
   return out.slice(0, 12);
 }
 
 function buildRunGeneratedImagesHtml(files) {
-  const images = files.filter((path) => isImageFilePath(path));
+  const images = files.filter((path) => isPlausibleWorkspaceImagePath(path));
   if (!images.length) return "";
   return `<div class="run-conclusion-heading">生成的图片</div>
     <div class="generated-images-list">
@@ -2065,6 +2183,8 @@ function mergeConclusionImageFiles(files, finalText) {
   const push = (path) => {
     const norm = normalizeWorkspaceRelPath(getActiveProject()?.cwd, path) || path;
     if (!norm || seen.has(norm)) return;
+    // Keep non-image code files from the patch map; only gate image-looking paths.
+    if (isImageFilePath(norm) && !isPlausibleWorkspaceImagePath(norm)) return;
     seen.add(norm);
     merged.push(norm);
   };
@@ -2152,9 +2272,23 @@ function renderStructuredConclusionEntry(sessionId, mount, entry) {
   ).trim();
   const activity =
     mount?.querySelector?.(":scope > details.run-activity:last-of-type") || null;
-  const finalText = dedupeConclusionAgainstStepNarratives(rawText, sessionId, mount, activity);
+  const partitioned = partitionProcessFromFinalAnswer(rawText);
+  if (partitioned.processBlocks.length) {
+    persistProcessBlocksInActivity(partitioned.processBlocks);
+  }
+  const finalText = dedupeConclusionAgainstStepNarratives(
+    partitioned.conclusionText,
+    sessionId,
+    mount,
+    activity,
+  );
   const patchMap = state.runPatchesBySession.get(sessionId);
-  const files = patchMap ? [...patchMap.keys()] : [];
+  // Prefer the turn-scoped snapshot so later turns don't rewrite older conclusions.
+  const files = Array.isArray(entry?.files)
+    ? entry.files
+    : patchMap
+      ? [...patchMap.keys()]
+      : [];
   if (!mount) return null;
   const wrap = document.createElement("div");
   populateRunConclusionElement(wrap, finalText, files, patchMap || state.runPatches);
@@ -2357,7 +2491,8 @@ function reconcileSessionConclusion(sessionId) {
     loadSessionRunArtifacts(sessionId);
     renderTimelineFromState(sessionId, mount);
     restoreTimelineUiState(ui, mount);
-    return;
+    // Cache may have activity without a conclusion entry (stale flags). Fall
+    // through so repair-missing can still place the card.
   }
 
   if (concluded && !timelineHasConclusion(mount)) {
@@ -2366,6 +2501,9 @@ function reconcileSessionConclusion(sessionId) {
     state.runConclusionRendered = false;
     loadSessionRunArtifacts(sessionId);
     renderRunConclusion(storedText, sessionId);
+  } else {
+    // Session is idle: never leave talent/coordinator thinking stuck on 思考中.
+    closeOrphanThinkingBlocks(mount);
   }
 }
 
@@ -2481,6 +2619,12 @@ function initSessionRuns() {
       const prevRoute = state.eventRouteSessionId;
       const prevLive = state.liveRunSessionId;
       const prevOffscreen = state.offscreenTimelineEl;
+      // Per-session run artifacts: swap in the offscreen session's own copies
+      // so its events can't pollute the currently-viewed session's globals
+      // (e.g. generated images leaking into another session's 文件已修改).
+      const prevPatches = state.runPatches;
+      const prevFinalText = state.runFinalText;
+      const prevConclusionRendered = state.runConclusionRendered;
       state.eventRouteSessionId = sessionId;
       state.liveRunSessionId = null;
       state.runActivityEl = null;
@@ -2498,8 +2642,13 @@ function initSessionRuns() {
         state.streamFlushTimer = null;
       }
       const virtual = document.createElement("div");
-      renderTimelineFromState(sessionId, virtual);
+      // The offscreen root must be active BEFORE replaying the cache:
+      // renderers that resolve their own mount (dispatch/reflection cards)
+      // would otherwise paint this session's cards onto the visible timeline
+      // of whichever session the user is currently viewing.
       state.offscreenTimelineEl = virtual;
+      loadSessionRunArtifacts(sessionId);
+      renderTimelineFromState(sessionId, virtual);
       bindThinkingFromMount();
       if (state.runningSessions.has(sessionId)) {
         reattachLiveRunDomRefs(virtual);
@@ -2512,6 +2661,9 @@ function initSessionRuns() {
         state.offscreenTimelineEl = prevOffscreen;
         state.eventRouteSessionId = prevRoute;
         state.liveRunSessionId = prevLive;
+        state.runPatches = prevPatches;
+        state.runFinalText = prevFinalText;
+        state.runConclusionRendered = prevConclusionRendered;
       }
       refreshLiveTimelineIfViewing(sessionId);
     },
@@ -2758,7 +2910,7 @@ function timelineHasPromptText(label) {
     if (node.classList?.contains("run-conclusion")) return false;
     node = node.nextElementSibling;
   }
-  const text = normalizeUserPromptLabel(last.textContent || "");
+  const text = userPromptLabelFromNode(last);
   if (text === wanted) return true;
   // Some providers emit the same preview with small truncation differences.
   if (text.length >= 24 && wanted.length >= 24) {
@@ -2767,20 +2919,29 @@ function timelineHasPromptText(label) {
   return false;
 }
 
-function renderUserPromptOnce(preview, imageUrls = []) {
+function userPromptLabelFromNode(node) {
+  if (!node) return "";
+  const clone = node.cloneNode(true);
+  clone.querySelectorAll?.(
+    ".user-prompt-images, .user-prompt-files, .checkpoint-btn",
+  ).forEach((el) => el.remove());
+  return normalizeUserPromptLabel(clone.textContent || "");
+}
+
+function renderUserPromptOnce(preview, imageUrls = [], fileNames = []) {
   const label = formatUserPromptForDisplay(preview);
   const text = label || preview;
   if (!text || timelineHasPromptText(text)) {
-    if (imageUrls.length) {
+    if (imageUrls.length || fileNames.length) {
       const mount = getTimelineMount();
       const prompts = mount?.querySelectorAll?.(":scope > .event.user-prompt");
       const last = prompts?.[prompts.length - 1];
-      appendPromptImageGallery(last, imageUrls);
+      appendPromptAttachments(last, imageUrls, fileNames);
     }
     return;
   }
   const line = pushEvent(`开始执行: ${text}`);
-  appendPromptImageGallery(line, imageUrls);
+  appendPromptAttachments(line, imageUrls, fileNames);
 }
 
 function normalizeRuntimeProvider(runtime) {
@@ -3120,7 +3281,9 @@ function renderCodexActivityChip(payload) {
   }
   const previousStats = line?.dataset.codexStats || "";
   if (!line) {
-    if (!state.stepToolGroupBody?.isConnected) beginStepToolGroup();
+    // Same rule as beginToolLine: talent-routed chips skip the root tool group.
+    const grouped = !state.pushEventMountOverride;
+    if (grouped && !state.stepToolGroupBody?.isConnected) beginStepToolGroup();
     const mount = getToolEventMount();
     line = document.createElement("div");
     line.className = "codex-activity-chip";
@@ -3128,7 +3291,7 @@ function renderCodexActivityChip(payload) {
     line.dataset.timelineNodeId = timelineEntryId();
     line.dataset.iconKey = String(payload.icon || "command");
     mount.appendChild(line);
-    bumpStepToolGroupCount();
+    if (grouped) bumpStepToolGroupCount();
   }
   const running = payload.status === "running";
   line.classList.toggle("is-running", running);
@@ -3513,10 +3676,14 @@ function beginSessionTurn(sessionId, startedAtMs = Date.now()) {
     // Near-duplicate skip must be per-turn; seeding from prior turns drops this
     // turn's intro when the model reuses similar preamble wording.
     state.codexCommentarySeenBySession.delete(sessionId);
+    // Each turn owns its own modified-file / generated-image list.
+    state.runPatchesBySession.set(sessionId, new Map());
   }
   state.runConclusionRendered = false;
   state.runFinalText = "";
   state.coordinatorPhaseAnnounced = false;
+  // Drop prior-turn patches from the live map so conclusions don't accumulate history.
+  state.runPatches.clear();
   resetRunActivityState();
   if (sessionId && sessionRuns?.isViewingSession(sessionId)) {
     ensureLiveRunSession(sessionId);
@@ -4241,13 +4408,17 @@ function runActivityHasExpandedContent(details) {
 function closeOrphanThinkingBlocks(mount = $("timeline")) {
   if (!mount?.querySelectorAll) return;
   mount.querySelectorAll("details.event.thinking").forEach((block) => {
-    if (block.dataset.userPinned === "1" || block.open) return;
+    if (block.dataset.userPinned === "1") return;
     const summary = block.querySelector("summary");
     if (!summary?.textContent?.includes("思考中")) return;
     const pre = block.querySelector(".event-pre");
     const chars = pre?.textContent?.length ?? 0;
-    summary.textContent = `思考完成 · ${chars} 字`;
-    block.open = false;
+    // Keep talent prefixes (e.g. "🧑 老周 · "); only flip the in-progress label.
+    // Do not force-collapse — user may have expanded the block.
+    summary.textContent = String(summary.textContent || "").replace(
+      /思考中（可展开）|思考中/,
+      `思考完成 · ${chars} 字`,
+    );
   });
   if (state.thinkingPre && !state.thinkingPre.isConnected) state.thinkingPre = null;
 }
@@ -4627,7 +4798,10 @@ function finalizeSubagentActivityGroup(talent, resultText) {
   const emoji = talent.emoji || "🧑";
   if (labelEl) labelEl.textContent = `${emoji} ${talent.displayName} · 完成`;
   if (metaEl) {
-    metaEl.textContent = formatDurationMs(Date.now() - entry.startedAt);
+    const startedAt = Number(entry.startedAt) || Date.now();
+    metaEl.textContent = formatDurationMs(
+      Math.min(Math.max(0, Date.now() - startedAt), 3 * 60 * 60 * 1000),
+    );
   }
 
   ensureSubagentActivityVisible(body, talent, resultText);
@@ -4659,6 +4833,64 @@ function finalizeSubagentActivityGroup(talent, resultText) {
   if (runActivityBodyShouldAutoScroll()) scheduleRunViewScroll();
 }
 
+/**
+ * When a run ends or an idle session is restored, close talent folds that never
+ * got subagent_end (UI left them on 进行中 while the outer shell said 已处理).
+ */
+function finalizeOrphanSubagentFolds(mount = getTimelineMount()) {
+  if (!mount?.querySelectorAll) return;
+  rebuildSubagentActivityMapFromDom(mount);
+  mount
+    .querySelectorAll("details.subagent-talent-activity.subagent-talent-active")
+    .forEach((details) => {
+      const mention = details.dataset.talentMention || "";
+      if (!mention) return;
+      const entry = getSubagentEntry(mention);
+      const talent = entry?.talent || {
+        mention,
+        displayName:
+          details
+            .querySelector(".run-activity-label")
+            ?.textContent?.replace(/^[^\s]+\s+/, "")
+            .split(" · ")[0]
+            ?.trim() || mention,
+        role: "",
+        emoji: "",
+      };
+      details.classList.remove("subagent-talent-active");
+      const labelEl = details.querySelector(".run-activity-label");
+      const metaEl = details.querySelector(".run-activity-meta");
+      const emoji = talent.emoji || "🧑";
+      const name = talent.displayName || mention;
+      if (labelEl) {
+        const raw = String(labelEl.textContent || "");
+        if (!/ · 完成\s*$/.test(raw)) {
+          labelEl.textContent = `${emoji} ${name} · 完成`;
+        }
+      }
+      if (metaEl) {
+        const meta = String(metaEl.textContent || "");
+        if (!meta || /进行中|处理中/.test(meta)) {
+          metaEl.textContent = "已结束";
+        }
+      }
+      state.subagentStreamByMention.delete(normalizeTalentMention(mention));
+      state.activeSubagentMentions.delete(normalizeTalentMention(mention));
+      if (entry) {
+        setSubagentEntry(mention, { ...entry, finalized: true });
+      }
+      const sid = getActiveEventSessionId();
+      if (sid) {
+        syncSubagentShellEntry(sid, talent, {
+          finalized: true,
+          label: labelEl?.textContent || "",
+          meta: metaEl?.textContent || "",
+          open: details.open,
+        });
+      }
+    });
+}
+
 function trackRunActivityStats(text, cls = "") {
   const stats = state.runActivityStats;
   if (!stats) return;
@@ -4680,17 +4912,25 @@ function updateRunActivitySummary(opts = {}) {
 
   if (opts.finalized) {
     details.classList.remove("run-activity-active");
-    const completedAtMs = Number.isFinite(opts.completedAtMs)
-      ? opts.completedAtMs
-      : Date.now();
-    const elapsed = Math.max(0, completedAtMs - stats.startedAt);
     const t = getForegroundTalent(
       state.eventRouteSessionId || state.liveRunSessionId,
     );
     const who = t ? `${t.displayName} · ` : "";
     if (stats.hadError) labelEl.textContent = `${who}处理失败`;
     else if (stats.stopped) labelEl.textContent = `${who}已停止`;
-    else labelEl.textContent = `${who}已处理 ${formatRunDurationMs(elapsed)}`;
+    else if (opts.omitDuration) labelEl.textContent = `${who}已处理`;
+    else {
+      const completedAtMs = Number.isFinite(opts.completedAtMs)
+        ? opts.completedAtMs
+        : Date.now();
+      // Stuck/interrupted coordinator sessions can span many hours; don't paint
+      // ghost labels like "已处理 609m" after idle restore.
+      const elapsed = Math.min(
+        Math.max(0, completedAtMs - stats.startedAt),
+        3 * 60 * 60 * 1000,
+      );
+      labelEl.textContent = `${who}已处理 ${formatRunDurationMs(elapsed)}`;
+    }
   } else if (opts.live) {
     details.classList.add("run-activity-active");
     labelEl.textContent = opts.live;
@@ -4718,7 +4958,10 @@ function updateRunActivitySummary(opts = {}) {
   if (opts.finalized) {
     metaEl.textContent = parts.length ? parts.join(" · ") : "点击展开查看详情";
   } else {
-    const elapsed = Math.floor((Date.now() - stats.startedAt) / 1000);
+    const elapsed = Math.min(
+      Math.max(0, Math.floor((Date.now() - stats.startedAt) / 1000)),
+      3 * 60 * 60,
+    );
     if (elapsed > 0) metaEl.textContent = [...parts, `${elapsed}s`].join(" · ");
     else metaEl.textContent = parts.join(" · ");
   }
@@ -4772,7 +5015,12 @@ function finalizeRunActivity(options = {}) {
     );
     if (all.length) targets = [all[all.length - 1]];
   }
-  if (!targets.length) return;
+  if (!targets.length) {
+    finalizeOrphanSubagentFolds(mount);
+    closeOrphanThinkingBlocks(mount);
+    stopRunActivityTimer();
+    return;
+  }
 
   for (const details of targets) {
     if (details.classList.contains("subagent-talent-activity")) continue;
@@ -4788,10 +5036,18 @@ function finalizeRunActivity(options = {}) {
     if (shouldFold) {
       foldLiveRunActivityContent(details);
       if (!runActivityHasExpandedContent(details)) details.open = false;
-      updateRunActivitySummary({ finalized: true, completedAtMs: options.completedAtMs });
+      updateRunActivitySummary({
+        finalized: true,
+        completedAtMs: options.completedAtMs,
+        omitDuration: Boolean(options.omitDuration),
+      });
     } else {
       // Short runs stay as ordinary dialog output — drop the empty 已处理 chip.
-      updateRunActivitySummary({ finalized: true, completedAtMs: options.completedAtMs });
+      updateRunActivitySummary({
+        finalized: true,
+        completedAtMs: options.completedAtMs,
+        omitDuration: Boolean(options.omitDuration),
+      });
       unwrapLiveRunActivityContent(details);
       continue;
     }
@@ -4807,6 +5063,7 @@ function finalizeRunActivity(options = {}) {
   state.streamTextBuffer = "";
   state.streamTextRaw = "";
   state.runActivityStats = null;
+  finalizeOrphanSubagentFolds(mount);
   closeOrphanThinkingBlocks(mount);
   state.thinkingPre = null;
 }
@@ -4837,11 +5094,40 @@ function accumulateRuntimeFileStats(contributions, key, adds, dels) {
   return { contributions: next, ...totals };
 }
 
+/**
+ * True when sessionId's run patches live in the global state.runPatches right
+ * now. Async continuations (git-diff reconcile, edit polls) can resolve after
+ * a session switch or after the offscreen wrapper restored the viewer's map —
+ * writing to the global then would pollute another session's 文件已修改.
+ */
+function isRunPatchSessionLoaded(sessionId) {
+  if (!sessionId) return true;
+  const loadedSid =
+    state.eventRouteSessionId ||
+    state.liveRunSessionId ||
+    state.viewingTimelineSessionId ||
+    "";
+  return loadedSid === sessionId;
+}
+
+function ensureSavedRunPatchMap(sessionId) {
+  let map = state.runPatchesBySession.get(sessionId);
+  if (!map) {
+    map = new Map();
+    state.runPatchesBySession.set(sessionId, map);
+  }
+  return map;
+}
+
 function recordRunModifiedFile(path, options = {}) {
   const relPath = normalizeWorkspaceRelPath(getActiveProject()?.cwd, path);
   if (!relPath) return null;
-  const sid = state.eventRouteSessionId || state.liveRunSessionId;
-  const existing = state.runPatches.get(relPath) || {};
+  const sid = options.sessionId || state.eventRouteSessionId || state.liveRunSessionId;
+  // Session-pinned writes go straight into that session's saved map when it
+  // is no longer the loaded one; UI side effects only apply to the loaded run.
+  const attached = !options.sessionId || isRunPatchSessionLoaded(options.sessionId);
+  const patchMap = attached ? state.runPatches : ensureSavedRunPatchMap(options.sessionId);
+  const existing = patchMap.get(relPath) || {};
   const patch = options.patch?.unifiedDiff
     ? {
         path: relPath,
@@ -4868,11 +5154,13 @@ function recordRunModifiedFile(path, options = {}) {
         }
       : {}),
   };
-  state.runPatches.set(relPath, nextEntry);
-  if (sid) saveRunPatchesForSession(sid);
-  syncFileEditLiveLabel(relPath, false);
-  updateRunFilesChangedBar();
-  updateRunActivitySummary();
+  patchMap.set(relPath, nextEntry);
+  if (attached) {
+    if (sid) saveRunPatchesForSession(sid);
+    syncFileEditLiveLabel(relPath, false);
+    updateRunFilesChangedBar();
+    updateRunActivitySummary();
+  }
   return nextEntry;
 }
 
@@ -4922,13 +5210,25 @@ function clearAllWorkspaceTurnDiffPolls() {
 
 function scheduleWorkspaceTurnDiffPoll(pendingKey) {
   if (state.workspaceDiffPollTimers.has(pendingKey)) return;
+  // Pin the session at schedule time: by the time a tick fires the user may
+  // be viewing another session, and route/live would resolve to that one.
+  const sid = state.eventRouteSessionId || state.liveRunSessionId || "";
   const tick = async () => {
     if (!state.pendingToolLines.has(pendingKey)) {
       clearWorkspaceTurnDiffPoll(pendingKey);
       return;
     }
-    const sid = state.eventRouteSessionId || state.liveRunSessionId || "";
     await reconcileRunPatchesFromWorkspace(sid);
+    if (!isRunPatchSessionLoaded(sid)) {
+      // Another session's globals are loaded — reconcile already wrote into
+      // the pinned session's saved map; skip all UI side effects.
+      if (state.pendingToolLines.has(pendingKey)) {
+        state.workspaceDiffPollTimers.set(pendingKey, setTimeout(() => void tick(), 1200));
+      } else {
+        clearWorkspaceTurnDiffPoll(pendingKey);
+      }
+      return;
+    }
     const paths = [...state.runPatches.keys()];
     const path = paths[paths.length - 1];
     if (path) {
@@ -4961,6 +5261,7 @@ function scheduleWorkspaceTurnDiffPoll(pendingKey) {
 function scheduleCodexChipDiffPoll(callId) {
   const pollKey = `chip:${callId}`;
   if (state.workspaceDiffPollTimers.has(pollKey)) return;
+  const sid = state.eventRouteSessionId || state.liveRunSessionId || "";
   const tick = async () => {
     const body = state.runActivityBody;
     const chip = body?.querySelector(`[data-codex-activity-id="${cssEscape(callId)}"]`);
@@ -4968,8 +5269,11 @@ function scheduleCodexChipDiffPoll(callId) {
       clearWorkspaceTurnDiffPoll(pollKey);
       return;
     }
-    const sid = state.eventRouteSessionId || state.liveRunSessionId || "";
     await reconcileRunPatchesFromWorkspace(sid);
+    if (!isRunPatchSessionLoaded(sid)) {
+      clearWorkspaceTurnDiffPoll(pollKey);
+      return;
+    }
     const paths = [...state.runPatches.keys()];
     const lastPath = paths[paths.length - 1];
     if (lastPath) {
@@ -5026,13 +5330,19 @@ async function reconcileRunPatchesFromWorkspace(sessionId) {
       baseSha: baseSha || undefined,
     });
     if (!res?.ok || !Array.isArray(res.files)) return;
+    // The await above may resolve after a session switch: pin every write to
+    // the requested session so it can't land in another session's loaded map.
+    const patchMap = isRunPatchSessionLoaded(sessionId)
+      ? state.runPatches
+      : state.runPatchesBySession.get(sessionId);
     for (const file of res.files) {
       if (!file?.path) continue;
       const relPath = normalizeWorkspaceRelPath(active.cwd, file.path);
       if (!relPath) continue;
-      const existing = state.runPatches.get(relPath);
+      const existing = patchMap?.get(relPath);
       if (existing?.patch?.unifiedDiff && !file.unifiedDiff) continue;
       recordRunModifiedFile(relPath, {
+        sessionId: sessionId || undefined,
         patch: file.unifiedDiff
           ? { path: relPath, unifiedDiff: file.unifiedDiff, applied: true }
           : undefined,
@@ -6203,6 +6513,24 @@ function dispatchPlanToPlanItems(ev) {
   return items;
 }
 
+/**
+ * Defense-in-depth for per-session timeline cards: when rendering onto the
+ * LIVE (visible) timeline, a card that belongs to a different session must
+ * never be painted — it would leak one session's dispatch/reflection card
+ * into whichever session the user is currently viewing.
+ */
+function timelineCardSessionMismatch(cardSessionId) {
+  if (state.offscreenTimelineEl) return false;
+  const viewing =
+    state.viewingTimelineSessionId || sessionRuns?.getViewingSessionId() || "";
+  return Boolean(
+    cardSessionId &&
+    cardSessionId !== "_anonymous" &&
+    viewing &&
+    cardSessionId !== viewing,
+  );
+}
+
 function getDispatchTimelineState(sessionId, create = false) {
   const sid = sessionId || getActiveEventSessionId() || "_anonymous";
   if (!state.dispatchTimelineBySession.has(sid) && create) {
@@ -6362,6 +6690,7 @@ function reduceDispatchTimelineEvent(ev) {
 
 function renderDispatchTimelineCard(dispatchState) {
   if (!dispatchState) return;
+  if (timelineCardSessionMismatch(dispatchState.sessionId)) return;
   const mount = getTimelineMount();
   if (!mount) return;
   let card = mount.querySelector(
@@ -6513,6 +6842,7 @@ function markReflectionDelivered(sessionId) {
 
 function renderReflectionCard(reflectionState) {
   if (!reflectionState) return;
+  if (timelineCardSessionMismatch(reflectionState.sessionId)) return;
   const mount = getTimelineMount();
   if (!mount) return;
   let card = mount.querySelector(
@@ -6802,12 +7132,21 @@ function renderRunConclusion(finalText, explicitSessionId, options = {}) {
   });
   const hadToolSteps = (state.runActivityStats?.tools ?? 0) > 0;
   const concludingActivity = resolveTurnRunActivityForConclusion(getTimelineMount());
-  // Capture before finalizeRunActivity unwraps/folds the flat stream — otherwise
-  // short tool turns lose step narratives for conclusion dedupe.
+  let text = finalCandidate;
+  // Intermediate step narration is persisted inside 已处理 at each segment boundary.
+  // Conclusion is only the final user-facing answer from the done event.
+  if (!text && streamedText && !hadToolSteps) text = streamedText;
+  // Process attempt logs that the model stuffed into finalText still belong in 已处理.
+  const partitioned = partitionProcessFromFinalAnswer(text);
+  if (partitioned.processBlocks.length) {
+    persistProcessBlocksInActivity(partitioned.processBlocks);
+  }
+  text = partitioned.conclusionText;
+  // Capture after process blocks are moved so conclusion dedupe sees them.
   const turnNarratives = collectStepNarrativeTexts(
     sid,
     getTimelineMount(),
-    concludingActivity,
+    concludingActivity || state.runActivityEl,
   );
   stripNarrativeFromActivity();
   hoistOrphanNodesIntoRunActivity();
@@ -6815,15 +7154,11 @@ function renderRunConclusion(finalText, explicitSessionId, options = {}) {
   if (sid) syncStructuredTimelineFromDom(sid);
   finalizeRunActivity({ completedAtMs: options.completedAtMs });
 
-  let text = finalCandidate;
-  // Intermediate step narration is persisted inside 已处理 at each segment boundary.
-  // Conclusion is only the final user-facing answer from the done event.
-  if (!text && streamedText && !hadToolSteps) text = streamedText;
   text = dedupeConclusionAgainstStepNarratives(
     text,
     sid,
     getTimelineMount(),
-    concludingActivity,
+    concludingActivity || state.runActivityEl,
     turnNarratives,
   );
   state.runFinalText = text || "";
@@ -6839,20 +7174,26 @@ function renderRunConclusion(finalText, explicitSessionId, options = {}) {
 
   if (!state.runPatches.size && hadToolSteps) {
     void reconcileRunPatchesFromWorkspace(sid).then(() => {
-      if (!state.runPatches.size) return;
-      const updatedFiles = [...state.runPatches.keys()];
+      // Session-pinned read: after the await the global map may belong to a
+      // different session — never render or snapshot someone else's files.
+      const attached = isRunPatchSessionLoaded(sid);
+      const patchMap = attached
+        ? state.runPatches
+        : state.runPatchesBySession.get(sid);
+      if (!patchMap?.size) return;
+      const updatedFiles = [...patchMap.keys()];
       const wrap = container?.querySelector(".run-conclusion");
       if (!wrap) return;
       const existingFilesSection = wrap.querySelector(".modified-files-list");
       if (existingFilesSection) return;
       const inner = wrap.querySelector(".run-conclusion-inner");
       if (!inner) return;
-      const filesHtml = buildRunConclusionFilesHtml(updatedFiles, state.runPatches);
+      const filesHtml = buildRunConclusionFilesHtml(updatedFiles, patchMap);
       if (!filesHtml) return;
       inner.insertAdjacentHTML("beforeend",
         `<div class="run-conclusion-heading">${updatedFiles.length} 个文件已修改</div>
          <div class="modified-files-list">${filesHtml}</div>`);
-      if (sid) saveRunPatchesForSession(sid);
+      if (sid && attached) saveRunPatchesForSession(sid);
     });
   }
 
@@ -6862,14 +7203,17 @@ function renderRunConclusion(finalText, explicitSessionId, options = {}) {
     forgeSessionLog("conclusion:skip-no-mount", { sid, explicitSessionId });
     return;
   }
-  if (sid) {
-    state.conclusionDomRenderedThisTurn.add(sid);
-    state.runConclusionBySession.set(sid, true);
-  }
 
   const turnActivity = resolveTurnRunActivityForConclusion(container);
   if (turnHasConclusionAfter(turnActivity)) {
     forgeSessionLog("conclusion:skip-turn-existing", { sid, explicitSessionId });
+    // Card already on the mount for this turn — mark concluded so repair/finally
+    // don't keep retrying, and close any stuck 思考中 labels.
+    if (sid) {
+      state.conclusionDomRenderedThisTurn.add(sid);
+      state.runConclusionBySession.set(sid, true);
+    }
+    closeOrphanThinkingBlocks(container);
     return;
   }
 
@@ -6877,6 +7221,10 @@ function renderRunConclusion(finalText, explicitSessionId, options = {}) {
   removeRunFilesChangedBars(container);
   populateRunConclusionElement(wrap, state.runFinalText, files, state.runPatches);
   placeRunConclusionOnMount(wrap, container);
+  if (sid) {
+    state.conclusionDomRenderedThisTurn.add(sid);
+    state.runConclusionBySession.set(sid, true);
+  }
   hoistRunActivityOutOfConclusion(container);
   pruneRunActivityConclusionCopies(state.runFinalText, container);
   scheduleRunViewScroll();
@@ -6896,7 +7244,9 @@ function renderRunConclusion(finalText, explicitSessionId, options = {}) {
   void reconcileRunPatchesFromWorkspace(
     sid || state.eventRouteSessionId || state.liveRunSessionId || "",
   ).then(() => {
-    if (sid) {
+    // Snapshotting the global map is only valid while sid still owns it —
+    // detached reconciles already wrote into the session's own saved map.
+    if (sid && isRunPatchSessionLoaded(sid)) {
       saveRunPatchesForSession(sid);
       syncTimelineCacheForSession(sid);
       syncStructuredTimelineFromDom(sid);
@@ -7027,14 +7377,19 @@ function bindPanelResize() {
   bindHandle($("resizeHandleRight"), "right");
 }
 
-/** Show exactly one of the right-region panels (code vs terminal), or neither. */
+/** Show exactly one of the right-region panels (code vs tools), or neither. */
 function applyRightMode() {
-  const showTerminal = state.rightOpen && state.rightMode === "terminal";
+  const showTools = state.rightOpen && state.rightMode === "tools";
   const showCode = state.rightOpen && state.rightMode === "code";
   $("rightPanel")?.classList.toggle("collapsed", !showCode);
-  $("terminalPanel")?.classList.toggle("collapsed", !showTerminal);
-  $("terminalPanel")?.setAttribute("aria-hidden", showTerminal ? "false" : "true");
-  $("terminalToggleBtn")?.classList.toggle("active", showTerminal);
+  $("toolsPanel")?.classList.toggle("collapsed", !showTools);
+  $("toolsPanel")?.setAttribute("aria-hidden", showTools ? "false" : "true");
+  // Top-bar launchers highlight when their tab kind is the active tools tab.
+  const activeKind = showTools
+    ? (window.forgeToolsPanel?.activeKind?.() ?? null)
+    : null;
+  $("terminalToggleBtn")?.classList.toggle("active", activeKind === "terminal");
+  $("browserToggleBtn")?.classList.toggle("active", activeKind === "browser");
   $("toggleRightBtn")?.classList.toggle("active", showCode);
 }
 
@@ -7046,8 +7401,7 @@ function openRight(open, mode = "code") {
   }
   applyRightMode();
   applyPanelWidths();
-  if (open && state.rightMode === "terminal") {
-    window.forgeTerminalPanel?.ensureStarted?.();
+  if (open && state.rightMode === "tools") {
     requestAnimationFrame(() => window.forgeTerminalPanel?.refit?.());
   }
 }
@@ -7518,6 +7872,22 @@ function showTalentTemplateDetail(meta, content) {
   const provenance = meta.provenance
     ? `<p class="tiny muted">版本 ${escapeHtml(meta.version || "1.0.0")} · 来源 ${escapeHtml(meta.provenance.source || "unknown")}${meta.provenance.author ? ` · 作者 ${escapeHtml(meta.provenance.author)}` : ""}${meta.provenance.reviewed ? " · 已审查" : " · 未审查"}</p>`
     : "";
+  const agentRuns = meta.agentRuns || [];
+  const agentMemory = meta.agentMemory || [];
+  const modeLabel = (mode) => mode === "team" ? "团队" : mode === "isolated" ? "独立" : "快速";
+  const statusLabel = (status) => status === "completed" ? "完成" : status === "running" ? "执行中" : status === "cancelled" ? "已取消" : "失败";
+  const agentActivity = meta.hired
+    ? `<section class="talent-agent-activity">
+        <div class="talent-agent-activity-head">
+          <div><span>AGENT STATE</span><h5>人才运行状态</h5></div>
+          <div class="talent-agent-metrics"><b>${agentRuns.length}</b><span>近期运行</span><b>${agentMemory.length}</b><span>记忆</span></div>
+        </div>
+        ${agentRuns.length
+          ? `<div class="talent-agent-runs">${agentRuns.slice(0, 3).map((run) => `<div class="talent-agent-run"><span class="talent-agent-mode is-${escapeHtml(run.mode)}">${escapeHtml(modeLabel(run.mode))}</span><div><strong>${escapeHtml(String(run.task || "人才任务").replace(/@[^\s]+!?\s*/u, "").slice(0, 80))}</strong><small>${escapeHtml(statusLabel(run.status))} · ${run.durationMs != null ? escapeHtml(formatRunDurationMs(run.durationMs)) : escapeHtml(formatRelativeTime(run.startedAt))}</small></div></div>`).join("")}</div>`
+          : '<p class="tiny muted">尚无运行记录。首次 @ 召唤后会在这里记录执行模式和结果。</p>'}
+        ${agentMemory.length ? `<details class="talent-agent-memory"><summary>查看已沉淀的专业记忆</summary><ul>${agentMemory.slice(0, 3).map((entry) => `<li>${escapeHtml(entry.content)}</li>`).join("")}</ul></details>` : ""}
+      </section>`
+    : "";
 
   root.innerHTML = `
     <div class="code-card skill-detail-card talent-template-detail-card">
@@ -7532,6 +7902,7 @@ function showTalentTemplateDetail(meta, content) {
       ${provenance}
       ${chipsHtml}
       ${packageSections ? `<div class="talent-package-sections">${packageSections}</div>` : ""}
+      ${agentActivity}
       <div class="code-detail-tabs skill-detail-tabs">
         <div class="code-detail-tab-list">
           <button type="button" class="code-tab active" data-tab="preview">Markdown 预览</button>
@@ -7827,6 +8198,34 @@ function showCodeDetail(detail) {
   }
 
   applyPendingCodeDetailScroll(root);
+}
+
+/**
+ * Session-switch loading placeholder. Shown while the timeline pane is blank
+ * (a switch just cleared it) so fetching + rebuilding a large session doesn't
+ * read as a frozen black pane. Removed by the restore flow when done.
+ */
+function showTimelineLoading() {
+  const timeline = $("timeline");
+  if (!timeline) return null;
+  let el = timeline.querySelector(":scope > .timeline-loading");
+  if (el) return el;
+  el = document.createElement("div");
+  el.className = "timeline-loading";
+  const spinner = document.createElement("div");
+  spinner.className = "timeline-loading-spinner";
+  const text = document.createElement("div");
+  text.className = "timeline-loading-text";
+  text.textContent = "正在加载会话…";
+  const hint = document.createElement("div");
+  hint.className = "timeline-loading-hint";
+  hint.textContent = "会话内容较多时可能需要几秒钟";
+  el.append(spinner, text, hint);
+  timeline.appendChild(el);
+  // Make sure the pane hosting the spinner is visible (e.g. when coming from
+  // the new-chat empty state).
+  showChatEmpty(false);
+  return el;
 }
 
 function clearTimeline() {
@@ -8303,7 +8702,7 @@ async function tryHandleSlashCommand(message) {
 }
 
 function formatUserPromptForDisplay(text) {
-  const t = String(text || "").trim();
+  const t = stripAttachedDocumentBlocks(String(text || "").trim());
   if (!t) return "";
   const stripped = t
     .replace(/^开始执行:\s*/, "")
@@ -8311,6 +8710,23 @@ function formatUserPromptForDisplay(text) {
     .replace(/^\[微信[^\]]*\]\s*/, "")
     .trim();
   return stripped || t;
+}
+
+function stripAttachedDocumentBlocks(text) {
+  return String(text || "")
+    .replace(/(?:\n|^)### Attached document: [^\n]+\n[\s\S]*?(?=\n### Attached document: |$)/g, "")
+    .trim();
+}
+
+function attachedDocumentNamesFromText(text) {
+  const names = [];
+  const re = /### Attached document: ([^\n]+)/g;
+  let match;
+  while ((match = re.exec(String(text || "")))) {
+    const name = String(match[1] || "").trim();
+    if (name) names.push(name);
+  }
+  return names;
 }
 
 /** Collect displayable image URLs from multimodal user message content. */
@@ -8389,29 +8805,61 @@ function openPromptImageLightbox(url) {
   overlay.classList.remove("hidden");
 }
 
-/** Attach image thumbnails under a user-prompt timeline row. */
-function appendPromptImageGallery(promptLine, urls) {
-  if (!promptLine || !urls?.length) return;
-  if (promptLine.querySelector(".user-prompt-images")) return;
-  const gallery = document.createElement("div");
-  gallery.className = "user-prompt-images";
-  for (const url of urls) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "user-prompt-image-btn";
-    btn.title = "查看大图";
-    const img = document.createElement("img");
-    img.src = url;
-    img.alt = "附件图片";
-    img.loading = "lazy";
-    btn.appendChild(img);
-    btn.addEventListener("click", (event) => {
-      event.stopPropagation();
-      openPromptImageLightbox(url);
-    });
-    gallery.appendChild(btn);
+/** Attach image thumbnails and file chips under a user-prompt timeline row. */
+function appendPromptAttachments(promptLine, urls = [], fileNames = []) {
+  if (!promptLine) return;
+  if (urls?.length) {
+    let gallery = promptLine.querySelector(".user-prompt-images");
+    if (!gallery) {
+      gallery = document.createElement("div");
+      gallery.className = "user-prompt-images";
+      promptLine.appendChild(gallery);
+    }
+    const existing = new Set(
+      [...gallery.querySelectorAll("img")].map((img) => img.getAttribute("src")),
+    );
+    for (const url of urls) {
+      if (!url || existing.has(url)) continue;
+      existing.add(url);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "user-prompt-image-btn";
+      btn.title = "查看大图";
+      const img = document.createElement("img");
+      img.src = url;
+      img.alt = "";
+      img.loading = "lazy";
+      btn.appendChild(img);
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openPromptImageLightbox(url);
+      });
+      gallery.appendChild(btn);
+    }
   }
-  promptLine.appendChild(gallery);
+  if (fileNames?.length) {
+    let files = promptLine.querySelector(".user-prompt-files");
+    if (!files) {
+      files = document.createElement("div");
+      files.className = "user-prompt-files";
+      promptLine.appendChild(files);
+    }
+    const existing = new Set(
+      [...files.querySelectorAll("[data-file-name]")].map((el) =>
+        el.getAttribute("data-file-name"),
+      ),
+    );
+    for (const name of fileNames) {
+      if (!name || existing.has(name)) continue;
+      existing.add(name);
+      const chip = document.createElement("span");
+      chip.className = "user-prompt-file-chip";
+      chip.setAttribute("data-file-name", name);
+      chip.title = name;
+      chip.textContent = name;
+      files.appendChild(chip);
+    }
+  }
 }
 
 function composerAttachmentId() {
@@ -8734,23 +9182,77 @@ function renderComposerAttachments() {
   });
 }
 
-function addComposerAttachments(items) {
-  const max = 8;
-  for (const attachment of items) {
-    if (state.composerAttachments.length >= max) {
-      notifyUser(`最多附加 ${max} 个文件`, "warn");
+function composerAttachmentFingerprint(a) {
+  return `${a?.kind || ""}\0${a?.name || ""}\0${a?.dataUrl || ""}\0${a?.text || ""}`;
+}
+
+function uniquifyComposerAttachmentName(name, existingNames) {
+  const used = new Set(existingNames);
+  if (!used.has(name)) return name;
+  const dot = name.lastIndexOf(".");
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : "";
+  let n = 2;
+  let next = `${base} (${n})${ext}`;
+  while (used.has(next)) {
+    n += 1;
+    next = `${base} (${n})${ext}`;
+  }
+  return next;
+}
+
+function mergeComposerAttachments(existing, incoming, max = 8) {
+  const attachments = [...(existing || [])];
+  let hitMax = false;
+  for (const attachment of incoming || []) {
+    if (attachments.length >= max) {
+      hitMax = true;
       break;
     }
-    if (state.composerAttachments.some((x) => x.attachment.name === attachment.name)) {
+    const fingerprint = composerAttachmentFingerprint(attachment);
+    if (attachments.some((item) => composerAttachmentFingerprint(item) === fingerprint)) {
       continue;
     }
+    if (attachments.some((item) => item.name === attachment.name)) {
+      attachments.push({
+        ...attachment,
+        name: uniquifyComposerAttachmentName(
+          attachment.name,
+          attachments.map((item) => item.name),
+        ),
+      });
+    } else {
+      attachments.push(attachment);
+    }
+  }
+  return { attachments, hitMax };
+}
+
+function addComposerAttachments(items) {
+  const max = 8;
+  const merged = mergeComposerAttachments(
+    state.composerAttachments.map((x) => x.attachment),
+    items,
+    max,
+  );
+  if (merged.hitMax) {
+    notifyUser(`最多附加 ${max} 个文件`, "warn");
+  }
+  const byFp = new Map(
+    state.composerAttachments.map((x) => [composerAttachmentFingerprint(x.attachment), x]),
+  );
+  state.composerAttachments = merged.attachments.map((attachment) => {
+    const prev = byFp.get(composerAttachmentFingerprint(attachment));
+    if (prev) return prev;
+    return { id: composerAttachmentId(), attachment };
+  });
+  for (const attachment of items || []) {
     if (
       attachment.kind === "file" &&
       attachment.text?.includes("未能解析为文本")
     ) {
       notifyUser(`${attachment.name}: 未能提取正文`, "warn");
     }
-    state.composerAttachments.push({ id: composerAttachmentId(), attachment });
   }
   renderComposerAttachments();
 }
@@ -8809,8 +9311,12 @@ async function ingestDataTransfer(dt) {
   }
   const items = [];
   if (paths.length && getBridge()?.readAttachmentPaths) {
-    const res = await getBridge().readAttachmentPaths(paths);
-    items.push(...(res?.items ?? []));
+    try {
+      const res = await getBridge().readAttachmentPaths(paths);
+      items.push(...(res?.items ?? []));
+    } catch (err) {
+      notifyUser(`无法读取部分文件: ${String(err)}`, "warn");
+    }
   }
   for (const file of browserFiles) {
     try {
@@ -9288,6 +9794,7 @@ function deepFindPathInObject(value, depth = 0) {
 
 function recordGeneratedImagePathsFromText(text) {
   for (const path of extractImagePathsFromText(text)) {
+    if (!isPlausibleWorkspaceImagePath(path)) continue;
     recordRunModifiedFile(path, { meta: "已生成图片" });
   }
 }
@@ -9552,11 +10059,15 @@ function toolLineKey(name, callId) {
 /** One line per tool call: created at tool_start, completed in place at tool_end. */
 function beginToolLine(name, args, callId, talentOverride) {
   const detail = buildToolEventDetail(name, args, null, talentOverride);
-  if (!state.stepToolGroupBody?.isConnected) beginStepToolGroup();
+  // Talent-routed events mount straight into the talent fold; creating or
+  // counting the root "工具操作" group there would leave an empty group with a
+  // phantom count at the top level.
+  const grouped = !state.pushEventMountOverride;
+  if (grouped && !state.stepToolGroupBody?.isConnected) beginStepToolGroup();
   const mount = getToolEventMount();
   trackRunActivityStats(toolLineText(name, args, false, talentOverride), "tool-event is-running");
   const line = pushEventIn(mount, toolLineText(name, args, false, talentOverride), "tool-event is-running", detail);
-  bumpStepToolGroupCount();
+  if (grouped) bumpStepToolGroupCount();
   const liveLabel = toolLineText(name, args, false, talentOverride).replace(/^⏺\s*/, "");
   const key = toolLineKey(name, callId);
   if (isFileEditRuntimeTool(name)) {
@@ -9660,14 +10171,15 @@ function completeToolLine(name, result, callId) {
     }
   }
   // Start line lost (view switch mid-tool) — emit a single completed line.
-  if (!state.stepToolGroupBody?.isConnected) beginStepToolGroup();
+  const grouped = !state.pushEventMountOverride;
+  if (grouped && !state.stepToolGroupBody?.isConnected) beginStepToolGroup();
   pushEventIn(
     getToolEventMount(),
     toolLineText(name, {}, true),
     "tool-event is-done",
     buildToolEventDetail(name, {}, result),
   );
-  bumpStepToolGroupCount();
+  if (grouped) bumpStepToolGroupCount();
   maybeCollapseStepToolGroup();
 }
 
@@ -10114,6 +10626,81 @@ function isLikelyProcessNarrativeSentence(text) {
     /(查看|检查|定位|梳理|整理|补上|补充|创建|新建|修改|修复|实现|完善|输出|给你|发你|同步|说明)/.test(sentence);
 }
 
+/** Attempt / pivot / obstacle logs that belong in 已处理, not 结论. */
+function isLikelyProcessNarrativeBlock(text) {
+  const sentence = String(text || "").trim();
+  if (!sentence) return false;
+  if (isLikelyProcessNarrativeSentence(sentence)) return true;
+  // Numbered findings / markdown headings are deliverables, not process.
+  if (/^\s*\d+[\.、)\]]\s/.test(sentence) || /^#{1,6}\s/.test(sentence)) return false;
+  if (
+    /^(我先|我将|我再|我改用|我继续|我尝试|接着我|随后我|然后我|接下来我|下面我|现在我|目前我)/.test(
+      sentence,
+    )
+  ) {
+    return true;
+  }
+  if (/^(接着|随后|同时)(在|用|打开|尝试|调用|检查|查看|抓|滚)/.test(sentence)) {
+    return true;
+  }
+  if (
+    /(需要登录|Canvas|拿不到|打不开|抓不到|抽不到|抽取|无法完整|权限|超时)/.test(sentence) &&
+    /(尝试|改用|继续|打开|调用|滚动|浏览器|接口|菜单|导出|打印|桌面端|截图|复用|本地没有|受.*限制)/.test(
+      sentence,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /(启动多个|并行子代理|子代理并行|继续调用|改用已知|先在浏览器|本地没有可直接|强制滚动|导出\/另存|打印入口)/.test(
+      sentence,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /(，我先|，接着|，我改用|，我继续|，我将|，同时尝试)/.test(sentence) &&
+    /(打开|查看|调用|抓取|抽取|滚动|尝试|检查|复用)/.test(sentence)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function splitFinalAnswerBlocks(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return [];
+  const parts = /\n\s*\n/.test(raw) ? raw.split(/\n\s*\n/) : raw.split(/\n+/);
+  return parts.map((part) => part.trim()).filter(Boolean);
+}
+
+/**
+ * Split a model "final" blob into process narration (→ 已处理) and the lasting answer (→ 结论).
+ * Cursor/Codex keep commentary out of the final answer card; Forge mirrors that in the UI.
+ */
+function partitionProcessFromFinalAnswer(text) {
+  const blocks = splitFinalAnswerBlocks(text);
+  if (!blocks.length) return { conclusionText: "", processBlocks: [] };
+  const processBlocks = [];
+  const conclusionBlocks = [];
+  for (const block of blocks) {
+    if (isLikelyProcessNarrativeBlock(block)) processBlocks.push(block);
+    else conclusionBlocks.push(block);
+  }
+  return {
+    conclusionText: conclusionBlocks.join("\n\n"),
+    processBlocks,
+  };
+}
+
+function persistProcessBlocksInActivity(processBlocks) {
+  if (!processBlocks?.length) return;
+  ensureRunActivity({ force: true });
+  for (const block of processBlocks) {
+    appendRestoredAssistantText(block);
+  }
+}
+
 function isNearDuplicateLeadSentence(conclusionText, narrativeText) {
   const a = normalizeDedupeSentence(firstSentenceText(conclusionText));
   const b = normalizeDedupeSentence(firstSentenceText(narrativeText));
@@ -10242,13 +10829,13 @@ function stripLeadingStepNarratives(conclusionText, narratives) {
   return fullyCovered ? "" : original;
 }
 
-function stripLeadingProcessNarrativeSentences(conclusionText, maxDrop = 3) {
+function stripLeadingProcessNarrativeSentences(conclusionText, maxDrop = 12) {
   let text = String(conclusionText || "").trim();
   if (!text) return text;
   let dropped = 0;
   while (dropped < maxDrop) {
     const lead = firstSentenceText(text);
-    if (!lead || !isLikelyProcessNarrativeSentence(lead)) break;
+    if (!lead || !isLikelyProcessNarrativeBlock(lead)) break;
     const next = text.slice(lead.length).replace(/^[\s。；;，,\n]+/, "").trim();
     if (!next || next === text) break;
     text = next;
@@ -10257,6 +10844,10 @@ function stripLeadingProcessNarrativeSentences(conclusionText, maxDrop = 3) {
   return text;
 }
 
+/**
+ * 已处理 keeps mid-turn narration; 结论 keeps only the final answer.
+ * Strip text already shown as step/commentary narratives so it is not duplicated.
+ */
 function dedupeConclusionAgainstStepNarratives(
   text,
   sessionId,
@@ -10266,7 +10857,8 @@ function dedupeConclusionAgainstStepNarratives(
 ) {
   const list =
     narratives || collectStepNarrativeTexts(sessionId, root, activityEl);
-  const deduped = stripLeadingStepNarratives(text, list);
+  const partitioned = partitionProcessFromFinalAnswer(text);
+  const deduped = stripLeadingStepNarratives(partitioned.conclusionText, list);
   const trimmed = stripLeadingProcessNarrativeSentences(deduped);
   return trimmed || deduped;
 }
@@ -10364,7 +10956,7 @@ function dedupeDomUserPrompts(mount, expectedLabels = []) {
 
   let prev = "";
   for (const line of [...mount.querySelectorAll(":scope > .event.user-prompt")]) {
-    const label = normalizeUserPromptLabel(line.textContent);
+    const label = userPromptLabelFromNode(line);
     if (label && label === prev) {
       line.remove();
       continue;
@@ -10373,41 +10965,62 @@ function dedupeDomUserPrompts(mount, expectedLabels = []) {
   }
 }
 
+function insertRestoredUserPromptAt(mount, sessionId, userText, turnIndex) {
+  if (!mount || !userText) return;
+  const text = `开始执行: ${userText}`;
+  const line = document.createElement("div");
+  line.className = "event user-prompt";
+  line.textContent = text;
+  if (sessionId) line.dataset.eventDetailSession = sessionId;
+  const prompts = mount.querySelectorAll(":scope > .event.user-prompt");
+  const beforePrompt = prompts[turnIndex];
+  if (beforePrompt) {
+    mount.insertBefore(line, beforePrompt);
+  } else {
+    const anchor = findTurnPromptDomAnchor(mount, turnIndex);
+    if (anchor) mount.insertBefore(line, anchor);
+    else mount.appendChild(line);
+  }
+  const timelineState = getNormalTimelineState(sessionId, true);
+  const entries = ensureTimelineEntries(timelineState);
+  recordTimelineEvent(mount, line, text, "", undefined, {
+    insertIndex: findTurnPromptCacheInsertIndex(entries, turnIndex),
+  });
+  markTimelineEventUserPrompt(line);
+}
+
 function ensureRestoredPromptFromPreview(sessionId, messages = []) {
   const mount = $("timeline");
   if (!mount) return;
   const expectedTurns = collectExpectedRestorePrompts(messages, sessionId);
   if (!expectedTurns.length) return;
 
-  const existingPrompts = [
-    ...mount.querySelectorAll(":scope > .event.user-prompt"),
-  ].map((line) => normalizeUserPromptLabel(line.textContent));
-
   dedupeDomUserPrompts(mount, expectedTurns);
   const afterDedupe = [
     ...mount.querySelectorAll(":scope > .event.user-prompt"),
-  ].map((line) => normalizeUserPromptLabel(line.textContent));
+  ].map((line) => userPromptLabelFromNode(line));
   if (afterDedupe.length >= expectedTurns.length) return;
 
   const prevRoute = state.eventRouteSessionId;
   state.eventRouteSessionId = sessionId || prevRoute;
   try {
-    const timelineState = getNormalTimelineState(sessionId, true);
-    const entries = ensureTimelineEntries(timelineState);
-    for (let i = afterDedupe.length; i < expectedTurns.length; i += 1) {
-      const userText = expectedTurns[i];
-      const text = `开始执行: ${userText}`;
-      const line = document.createElement("div");
-      line.className = "event user-prompt";
-      line.textContent = text;
-      if (sessionId) line.dataset.eventDetailSession = sessionId;
-      const anchor = findTurnPromptDomAnchor(mount, i);
-      if (anchor) mount.insertBefore(line, anchor);
-      else mount.appendChild(line);
-      recordTimelineEvent(mount, line, text, "", undefined, {
-        insertIndex: findTurnPromptCacheInsertIndex(entries, i),
-      });
-      markTimelineEventUserPrompt(line);
+    // Latest-turn journal leaves a SUFFIX prompt (the newest turn), not a
+    // prefix. Prepend the missing earlier labels instead of appending clones
+    // of the latest prompt (which produced duplicate「开始执行：再分析下」).
+    const isLatestSuffix =
+      afterDedupe.length > 0 &&
+      afterDedupe[afterDedupe.length - 1] ===
+        expectedTurns[expectedTurns.length - 1] &&
+      afterDedupe[0] !== expectedTurns[0];
+    if (isLatestSuffix) {
+      const missingCount = expectedTurns.length - afterDedupe.length;
+      for (let i = 0; i < missingCount; i += 1) {
+        insertRestoredUserPromptAt(mount, sessionId, expectedTurns[i], i);
+      }
+    } else {
+      for (let i = afterDedupe.length; i < expectedTurns.length; i += 1) {
+        insertRestoredUserPromptAt(mount, sessionId, expectedTurns[i], i);
+      }
     }
     normalizeTimelineTurnOrder(mount);
   } finally {
@@ -10420,11 +11033,15 @@ function renderRestoredTurnConclusion(finalText, sessionId, hadActivity = false)
   if (!container) return;
   const turnActivity = hadActivity ? resolveTurnRunActivityForConclusion(container) : null;
   if (turnActivity && turnHasConclusionAfter(turnActivity)) return;
+  const partitioned = partitionProcessFromFinalAnswer(String(finalText || "").trim());
+  if (partitioned.processBlocks.length) {
+    persistProcessBlocksInActivity(partitioned.processBlocks);
+  }
   const text = dedupeConclusionAgainstStepNarratives(
-    String(finalText || "").trim(),
+    partitioned.conclusionText,
     sessionId,
     container,
-    turnActivity,
+    turnActivity || state.runActivityEl,
   );
   const files = [...state.runPatches.keys()];
   const wrap = document.createElement("div");
@@ -10469,6 +11086,9 @@ function renderRestoredSession(sessionId, messages, checkpoints = [], dispatchPl
     }
 
     const imageUrls = imageUrlsFromUserContent(turn.user?.content);
+    const fileNames = attachedDocumentNamesFromText(
+      plainUserContent(turn.user?.content, { includeImagePlaceholders: false }),
+    );
     const rawUser =
       plainUserContent(turn.user?.content, {
         includeImagePlaceholders: imageUrls.length === 0,
@@ -10482,15 +11102,15 @@ function renderRestoredSession(sessionId, messages, checkpoints = [], dispatchPl
     }
 
     const userText = formatUserPromptForDisplay(rawUser);
-    if (userText || imageUrls.length) {
+    if (userText || imageUrls.length || fileNames.length) {
       const isSummary = rawUser.startsWith("Conversation summary");
       const promptLine = pushEvent(
         isSummary
           ? "会话摘要（已压缩历史）"
-          : `开始执行: ${userText || "（图片附件）"}`,
+          : `开始执行: ${userText || (fileNames.length ? fileNames.join("、") : "（图片附件）")}`,
       );
       if (!isSummary) {
-        appendPromptImageGallery(promptLine, imageUrls);
+        appendPromptAttachments(promptLine, imageUrls, fileNames);
         const sha = checkpointByTurn.get(userTurnOrdinal);
         if (sha) decoratePromptWithCheckpoint(promptLine, sha, userTurnOrdinal);
         applyRestoredDispatchPlan(turnState, userTurnOrdinal, dispatchByTurn);
@@ -10605,7 +11225,7 @@ function renderRestoredSession(sessionId, messages, checkpoints = [], dispatchPl
 }
 
 /** Replay the durable daemon event journal. Legacy sessions fall back to message reconstruction. */
-function renderPersistedSessionEvents(sessionId, records) {
+function renderPersistedSessionEvents(sessionId, records, daemonStatus, options = {}) {
   const persistedRecords = (records || []).filter((record) => record?.event);
   if (
     !sessionId ||
@@ -10629,6 +11249,9 @@ function renderPersistedSessionEvents(sessionId, records) {
         flushStreamText();
         clearLiveStatusLine();
         clearNetworkPermissionsForSession(sessionId);
+        // Each journal done is its own turn — allow a fresh conclusion card.
+        state.conclusionDomRenderedThisTurn.delete(sessionId);
+        state.runConclusionRendered = false;
         renderRunConclusion(event.finalText || "", sessionId, {
           completedAtMs: record.emittedAtMs,
         });
@@ -10641,11 +11264,20 @@ function renderPersistedSessionEvents(sessionId, records) {
       handleLiveAgentEvent({ ...event, sessionId });
     }
     flushStreamText();
-    syncStructuredTimelineFromDom(sessionId);
-    sanitizeStructuredTimelineCache(sessionId);
+    // Never snapshot a truncated replay into structured cache — that permanently
+    // poisons later restores (only Nina survives, 程砚/老周 vanish).
+    if (!options.truncated) {
+      syncStructuredTimelineFromDom(sessionId);
+      sanitizeStructuredTimelineCache(sessionId);
+    } else {
+      clearStructuredTimelineForRestore(sessionId);
+    }
     sessionRuns.markSessionRunning(
       sessionId,
-      window.ForgeSessionRunUi.persistedSessionIsRunning(records),
+      window.ForgeSessionRunUi.reconciledPersistedSessionIsRunning(
+        records,
+        daemonStatus,
+      ),
     );
     return true;
   } finally {
@@ -10664,7 +11296,10 @@ function hydratePromptImagesFromMessages(messages) {
   const count = Math.min(prompts.length, turns.length);
   for (let i = 0; i < count; i += 1) {
     const urls = imageUrlsFromUserContent(turns[i].user.content);
-    if (urls.length) appendPromptImageGallery(prompts[i], urls);
+    const files = attachedDocumentNamesFromText(
+      plainUserContent(turns[i].user.content, { includeImagePlaceholders: false }),
+    );
+    if (urls.length || files.length) appendPromptAttachments(prompts[i], urls, files);
   }
 }
 
@@ -10672,12 +11307,31 @@ async function restoreSessionTimeline(sessionId, switchGen, options = {}) {
   if (state.unreadDoneSessions.delete(sessionId)) renderProjects();
   const timeline = $("timeline");
   void loadTalentRoster();
+  // A blank pane means a session switch just cleared it: surface a loading
+  // hint right away. Painted during the daemon round-trip below, it stays on
+  // screen through the (blocking) rebuild, so big sessions never look hung.
+  const loadingEl =
+    timeline && timeline.childElementCount === 0 ? showTimelineLoading() : null;
   try {
-    const res = await requireBridge().getSessionMessages(sessionId, 2000);
+    const [res, daemonStatus] = await Promise.all([
+      // No eventLimit: daemon loads the full latest-turn journal from session_start.
+      // A recent-tail window (e.g. 1500) drops later talents once thinking streams grow.
+      requireBridge().getSessionMessages(sessionId, 2000),
+      requireBridge().daemonStatus().catch(() => null),
+    ]);
     if (!isViewSwitchCurrent(switchGen)) return;
     if (sessionId !== state.viewingTimelineSessionId) return;
     const messages = Array.isArray(res?.messages) ? res.messages : [];
     const persistedEvents = Array.isArray(res?.events) ? res.events : [];
+    // Reconcile before consulting structured caches: otherwise a cache hit can
+    // preserve a ghost run without replaying the journal path below.
+    sessionRuns.markSessionRunning(
+      sessionId,
+      window.ForgeSessionRunUi.reconciledPersistedSessionIsRunning(
+        persistedEvents,
+        daemonStatus,
+      ),
+    );
     // An emptied session (e.g. after a full rewind truncation) shows the
     // new-chat state instead of a blank pane or a resurrected conclusion.
     if (!messages.length) {
@@ -10700,28 +11354,73 @@ async function restoreSessionTimeline(sessionId, switchGen, options = {}) {
     }
     clearTimeline();
     const running = sessionRuns?.isSessionRunning(sessionId);
+    // Idle + no conclusion must replay the journal — an earlier truncated
+    // restore (or live drop of `done`) can leave a rich-looking cache that
+    // would otherwise skip the real finalText forever.
+    const cacheHasConclusion =
+      structuredTimelineHasConclusion(sessionId) ||
+      Boolean(state.runFinalTextBySession.get(sessionId));
     const cacheOk =
       structuredTimelineCacheUsable(sessionId, running) &&
-      structuredTimelineMatchesMessages(sessionId, messages);
+      structuredTimelineMatchesMessages(sessionId, messages) &&
+      (running || cacheHasConclusion);
     if (cacheOk) {
       loadSessionRunArtifacts(sessionId);
       renderTimelineFromState(sessionId, timeline);
-    } else if (renderPersistedSessionEvents(sessionId, persistedEvents)) {
-      ensureRestoredPromptFromPreview(sessionId, messages);
     } else {
+      const checkpoints = Array.isArray(res?.checkpoints) ? res.checkpoints : [];
+      const dispatchPlans = Array.isArray(res?.dispatchPlans) ? res.dispatchPlans : [];
+      const journalStarts = countPersistedSessionStarts(persistedEvents);
+      const expectedPrompts = countExpectedRestoreUserTurns(messages);
+      // Daemon events are latest-turn only (from last session_start). Replaying
+      // that journal alone + ensureRestoredPromptFromPreview left older turns as
+      // bare「开始执行」rows with no answers. Rebuild prior turns from messages,
+      // then append the rich latest-turn journal on top.
+      const priorMessages =
+        journalStarts > 0 && expectedPrompts > journalStarts
+          ? messagesBeforeLatestTurns(messages, journalStarts)
+          : [];
       const activitySnapshot = snapshotRunActivitiesFromCache(sessionId);
-      clearStructuredTimelineForRestore(sessionId);
-      renderRestoredSession(
-        sessionId,
-        messages,
-        Array.isArray(res?.checkpoints) ? res.checkpoints : [],
-        Array.isArray(res?.dispatchPlans) ? res.dispatchPlans : [],
-      );
-      ensureRestoredPromptFromPreview(sessionId, messages);
-      mergeRunActivitySnapshot(sessionId, activitySnapshot);
-      dedupeDomUserPrompts($("timeline"), collectExpectedRestorePrompts(messages, sessionId));
-      sanitizeStructuredTimelineCache(sessionId);
-      realignRunActivitiesToTurns($("timeline"));
+      const journalOpts = { truncated: Boolean(res?.page?.truncated) };
+
+      if (priorMessages.length) {
+        clearStructuredTimelineForRestore(sessionId);
+        renderRestoredSession(sessionId, priorMessages, checkpoints, dispatchPlans);
+        renderPersistedSessionEvents(
+          sessionId,
+          persistedEvents,
+          daemonStatus,
+          journalOpts,
+        );
+        ensureRestoredPromptFromPreview(sessionId, messages);
+        mergeRunActivitySnapshot(sessionId, activitySnapshot);
+        dedupeDomUserPrompts(
+          $("timeline"),
+          collectExpectedRestorePrompts(messages, sessionId),
+        );
+        sanitizeStructuredTimelineCache(sessionId);
+        realignRunActivitiesToTurns($("timeline"));
+      } else if (
+        renderPersistedSessionEvents(
+          sessionId,
+          persistedEvents,
+          daemonStatus,
+          journalOpts,
+        )
+      ) {
+        ensureRestoredPromptFromPreview(sessionId, messages);
+      } else {
+        clearStructuredTimelineForRestore(sessionId);
+        renderRestoredSession(sessionId, messages, checkpoints, dispatchPlans);
+        ensureRestoredPromptFromPreview(sessionId, messages);
+        mergeRunActivitySnapshot(sessionId, activitySnapshot);
+        dedupeDomUserPrompts(
+          $("timeline"),
+          collectExpectedRestorePrompts(messages, sessionId),
+        );
+        sanitizeStructuredTimelineCache(sessionId);
+        realignRunActivitiesToTurns($("timeline"));
+      }
     }
     // Persisted-event / structured-cache paths only restore text previews.
     // Always rehydrate image_url parts from session messages onto prompt rows.
@@ -10731,11 +11430,18 @@ async function restoreSessionTimeline(sessionId, switchGen, options = {}) {
     repairTimelineDomStructure($("timeline"));
     rebindTimelineAfterRestore($("timeline"));
     loadSessionRunArtifacts(sessionId);
-    reconcileSessionConclusion(sessionId);
     if (sessionRuns?.isSessionRunning(sessionId)) {
       ensureLiveRunSession(sessionId);
       reattachLiveRunDomRefs();
+    } else {
+      // Idle session: collapse leftover 进行中 shells (stuck talent folds, 思考中)
+      // before repairing the conclusion card. omitDuration avoids "已处理 609m"
+      // from an ancient session_start timestamp.
+      finalizeRunActivity({ omitDuration: true });
+      finalizeOrphanSubagentFolds($("timeline"));
+      closeOrphanThinkingBlocks($("timeline"));
     }
+    reconcileSessionConclusion(sessionId);
     restoreTimelineUiState(
       {
         ...previousUi,
@@ -10746,6 +11452,9 @@ async function restoreSessionTimeline(sessionId, switchGen, options = {}) {
   } catch (e) {
     if (!isViewSwitchCurrent(switchGen)) return;
     pushEvent(`恢复会话失败: ${String(e)}`, "err");
+  } finally {
+    // Usually already gone via clearTimeline(); covers early returns/errors.
+    loadingEl?.remove();
   }
 }
 
@@ -11038,7 +11747,7 @@ function beginThinking(talentOverride) {
   state.thinkingPre = wrap.querySelector(".event-pre");
   const sid = getActiveEventSessionId();
   if (sid) {
-    recordThinkingEntry(sid, wrap.dataset.thinkingId, talentOverride, thinkingLabel, "");
+    recordThinkingEntry(sid, wrap.dataset.thinkingId, talentOverride, thinkingLabel, "", wrap);
   }
 }
 
@@ -11060,6 +11769,7 @@ function appendThinking(text, talentOverride) {
       t,
       holder.querySelector("summary")?.textContent || "",
       state.thinkingPre.textContent || "",
+      holder,
     );
   }
   maybeScrollActivityBody();
@@ -11108,6 +11818,7 @@ function endThinking(charCount, durationMs, talentOverride) {
         t,
         summary?.textContent || "",
         pre.textContent || "",
+        holder,
       );
     }
   }
@@ -12662,6 +13373,7 @@ function buildTalentPreviewMeta(templateId, source = "market") {
     templateId,
     source,
     hired,
+    talentInstanceId: rosterTalent?.instanceId || "",
     rosterMention: rosterTalent?.mention || "",
     emoji: rosterTalent ? talentEmoji(rosterTalent) : listItem?.emoji || "",
     avatar: rosterTalent?.avatar || listItem?.avatar || "",
@@ -12692,7 +13404,18 @@ async function openTalentTemplatePreview(templateId, source = "market") {
     return;
   }
   try {
-    const res = await bridge.getTalentTemplate({ templateId });
+    const activityPayload = meta.talentInstanceId
+      ? { cwd: talentProjectCwd() || undefined, talentInstanceId: meta.talentInstanceId }
+      : null;
+    const [res, runsResult, memoryResult] = await Promise.all([
+      bridge.getTalentTemplate({ templateId }),
+      activityPayload && bridge.listTalentAgentRuns
+        ? bridge.listTalentAgentRuns({ ...activityPayload, limit: 5 }).catch(() => ({ runs: [] }))
+        : Promise.resolve({ runs: [] }),
+      activityPayload && bridge.listTalentAgentMemory
+        ? bridge.listTalentAgentMemory({ ...activityPayload, limit: 5 }).catch(() => ({ entries: [] }))
+        : Promise.resolve({ entries: [] }),
+    ]);
     const tpl = res?.template;
     if (state.activeTalentTemplateId !== templateId && state.talentPreviewTemplateId !== templateId) {
       return;
@@ -12719,6 +13442,8 @@ async function openTalentTemplatePreview(templateId, source = "market") {
         connectors: tpl.connectors || [],
         version: tpl.version || meta.version,
         provenance: tpl.provenance || meta.provenance,
+        agentRuns: runsResult?.runs || [],
+        agentMemory: memoryResult?.entries || [],
       },
       tpl.systemPrompt || meta.description || "（无人设正文）",
     );
@@ -13599,6 +14324,13 @@ function renderPluginCard(plugin) {
   const caps = pluginCapsLine(plugin.capabilities);
   const detail = [plugin.description, caps].filter(Boolean).join(" · ");
   const meta = `v${plugin.version}${detail ? ` · ${detail}` : ""}`;
+  const managedMcp = plugin.source === "builtin" && (plugin.capabilities?.mcpServers ?? 0) > 0;
+  const capabilityBadges = [
+    (plugin.capabilities?.skills ?? 0) > 0 ? `${plugin.capabilities.skills} Skill` : "",
+    (plugin.capabilities?.mcpServers ?? 0) > 0
+      ? `${plugin.capabilities.mcpServers} MCP${managedMcp ? " · 自动托管" : ""}`
+      : "",
+  ].filter(Boolean);
   const toggleHtml = `<button type="button" class="skill-toggle${enabled ? " is-on" : ""}" data-plugin-toggle="${escapeHtml(plugin.id)}" data-enabled="${enabled ? "0" : "1"}" aria-pressed="${enabled}" aria-label="${enabled ? "禁用" : "启用"} ${escapeHtml(plugin.name)}"></button>`;
   const active = state.activePluginId === plugin.id ? " active" : "";
   const hub = globalThis.ForgeExtensionHub;
@@ -13618,6 +14350,7 @@ function renderPluginCard(plugin) {
           <span class="skill-card-source">${escapeHtml(pluginSourceBadge(plugin.source))}</span>
         </div>
         <p class="skill-card-desc" title="${escapeHtml(meta)}">${escapeHtml(meta)}</p>
+        ${capabilityBadges.length ? `<div class="plugin-card-capabilities">${capabilityBadges.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
       </div>
       ${actions}
     </div>
@@ -16864,10 +17597,40 @@ function bindActions() {
     openRight(!closeIt, "code");
   });
   $("terminalToggleBtn")?.addEventListener("click", () => {
-    const closeIt = state.rightOpen && state.rightMode === "terminal";
-    openRight(!closeIt, "terminal");
+    const isActive =
+      state.rightOpen &&
+      state.rightMode === "tools" &&
+      window.forgeToolsPanel?.activeKind?.() === "terminal";
+    if (isActive) {
+      openRight(false);
+      return;
+    }
+    openRight(true, "tools");
+    window.forgeTerminalPanel?.ensureStarted?.();
   });
-  $("terminalCloseBtn")?.addEventListener("click", () => openRight(false));
+  $("browserToggleBtn")?.addEventListener("click", () => {
+    const isActive =
+      state.rightOpen &&
+      state.rightMode === "tools" &&
+      window.forgeToolsPanel?.activeKind?.() === "browser";
+    if (isActive) {
+      openRight(false);
+      return;
+    }
+    openRight(true, "tools");
+    window.forgeBrowserPanel?.ensureStarted?.();
+  });
+  $("toolsCloseBtn")?.addEventListener("click", () => openRight(false));
+  // Keep launcher highlights in sync with tab switches, and close the right
+  // region when the last tools tab is closed.
+  document.addEventListener("forge-tools-changed", () => {
+    if (state.rightMode !== "tools") return;
+    if (state.rightOpen && !window.forgeToolsPanel?.hasTabs?.()) {
+      openRight(false);
+      return;
+    }
+    applyRightMode();
+  });
   bindRightPanelOutsideClose();
   document.addEventListener("click", () => {
     openProjectMenuId = null;
@@ -17186,6 +17949,9 @@ function bindActions() {
     const promptImageUrls = (attachments || [])
       .filter((item) => item?.kind === "image" && item?.dataUrl)
       .map((item) => item.dataUrl);
+    const promptFileNames = (attachments || [])
+      .filter((item) => item?.kind === "file" && item?.name)
+      .map((item) => item.name);
 
     if (routeSid) {
       state.runtimeBySession.set(routeSid, runtimeProvider);
@@ -17193,6 +17959,8 @@ function bindActions() {
     } else {
       setTimelineRuntime(runtimeProvider);
       state.runConclusionRendered = false;
+      // New session (no id yet): don't inherit the previous session's file list.
+      state.runPatches.clear();
     }
 
     if (viewingThis) {
@@ -17202,14 +17970,14 @@ function bindActions() {
         sessionRuns.withEventRoute(routeSid, () => {
           // Existing sessions may skip an immediate session_start event for follow-up turns.
           // Render this turn's prompt now so run-activity/tools/conclusion anchor correctly.
-          renderUserPromptOnce(preview, promptImageUrls);
+          renderUserPromptOnce(preview, promptImageUrls, promptFileNames);
           updateStatusLine({
             message: `已请求 ${runtimeName}，等待后端确认…`,
             elapsedSec: 0,
           });
         });
       } else {
-        renderUserPromptOnce(preview, promptImageUrls);
+        renderUserPromptOnce(preview, promptImageUrls, promptFileNames);
         updateStatusLine({
           message: `已请求 ${runtimeName}，等待后端确认…`,
           elapsedSec: 0,
@@ -17418,7 +18186,15 @@ function bindActions() {
       state.stopRequestedBySession.set(stopSid, true);
       sessionRuns.syncComposerRunChrome();
       try {
-        await requireBridge().cancelRun(stopSid);
+        const cancelResult = await requireBridge().cancelRun(stopSid);
+        if (cancelResult?.canceled === false) {
+          state.stopRequestedBySession.delete(stopSid);
+          sessionRuns.markSessionRunning(stopSid, false);
+          clearLiveStatusLine();
+          finalizeRunActivity();
+          pushEvent("该会话已不在后端运行，已清除残留运行状态", "warn");
+          return;
+        }
         pushEvent("正在停止执行…", "warn");
       } catch (e) {
         state.stopRequestedBySession.delete(stopSid);
@@ -17675,6 +18451,8 @@ function handleForgeAgentEvent(ev) {
         sessionRuns.runOffscreen(ev.sessionId, () => {
           state.runConclusionBySession.delete(ev.sessionId);
           state.conclusionDomRenderedThisTurn.delete(ev.sessionId);
+          state.runPatches.clear();
+          state.runPatchesBySession.set(ev.sessionId, new Map());
           resetRunActivityState();
           renderUserPromptOnce(ev.preview);
           updateStatusLine({ message: "正在提交任务…", elapsedSec: 0 });
@@ -17769,12 +18547,12 @@ function handleLiveAgentEventBody(ev, opts = {}) {
       ) {
         const via = ev.matchMode === "implicit" ? " · 触发词匹配" : "";
         pushEvent(
-          `预加载 Skill: ${ev.skillName}${ev.skillId ? ` (${ev.skillId})` : ""}${via} · 已加载 ${ev.loadedCount} 个`,
+          `预加载 Skill: ${ev.skillName}${ev.skillId ? ` (${ev.skillId})` : ""}${via}（Skill 目录共 ${ev.loadedCount} 个）`,
           "skill-hit",
         );
       } else {
         pushEvent(
-          `已加载 ${ev.loadedCount} 个 Skill（模型从目录按需选择，未预加载）`,
+          `Skill 目录 ${ev.loadedCount} 个（未预加载，模型按需读取）`,
           "status",
         );
       }
@@ -17909,8 +18687,11 @@ function handleLiveAgentEventBody(ev, opts = {}) {
       applyDispatchTimelineEvent(ev);
       if (t) {
         const emoji = t.emoji || "🧑";
-        const modeLabel =
-          ev.mode === "foreground" ? "前台接管本轮" : "已派出任务";
+        const modeLabel = ev.executionMode === "isolated"
+          ? "独立 Agent · 隔离上下文"
+          : ev.executionMode === "inline"
+            ? "快速 Agent · 当前上下文"
+            : ev.mode === "foreground" ? "前台接管本轮" : "已派出任务";
         pushEvent(`${emoji} ${t.displayName} · ${modeLabel}`, "skill-hit", {
           title: `${t.displayName} (@${t.mention})`,
           meta: t.role || "人才",

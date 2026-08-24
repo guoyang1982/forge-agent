@@ -69,6 +69,48 @@ describe("buildUserMessageContent", () => {
     expect(content).toContain("请分析以上附件文档");
   });
 
+  it("keeps every image and document in one turn", () => {
+    const content = buildUserMessageContent(
+      "compare these",
+      [
+        {
+          kind: "image",
+          name: "a.png",
+          mimeType: "image/png",
+          dataUrl: "data:image/png;base64,aaa",
+        },
+        {
+          kind: "image",
+          name: "b.png",
+          mimeType: "image/png",
+          dataUrl: "data:image/png;base64,bbb",
+        },
+        {
+          kind: "file",
+          name: "notes.txt",
+          mimeType: "text/plain",
+          text: "hello notes",
+        },
+        {
+          kind: "file",
+          name: "report.pdf",
+          mimeType: "application/pdf",
+          text: "chapter one",
+        },
+      ],
+      true,
+    );
+    expect(Array.isArray(content)).toBe(true);
+    const parts = content as Array<Record<string, unknown>>;
+    expect(parts.filter((p) => p.type === "image_url")).toHaveLength(2);
+    const text = String(parts.find((p) => p.type === "text")?.text ?? "");
+    expect(text).toContain("compare these");
+    expect(text).toContain("Attached document: notes.txt");
+    expect(text).toContain("Attached document: report.pdf");
+    expect(text).toContain("hello notes");
+    expect(text).toContain("chapter one");
+  });
+
   it("notes skipped images when vision unsupported", () => {
     const content = buildUserMessageContent(
       "hi",

@@ -104,6 +104,33 @@ Legacy body.
     expect(resolveSkill(skills, "这里有个 bug").mode).toBe("implicit");
   });
 
+  it("does not preload on short-trigger substrings inside unrelated words", async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-skill-ci-fp-"));
+    writeFileSync(
+      join(root, "run-ci-local.md"),
+      `---
+name: Run CI locally
+triggers: ci, pipeline, github actions, 流水线, workflow
+---
+Body.
+`,
+    );
+    const skills = await loadSkillsFromPaths([join(root, "run-ci-local.md")]);
+
+    // "ci" inside "special" / URLs must not preload the CI skill.
+    expect(resolveSkill(skills, "这个 special 需求怎么梳理").mode).toBe("none");
+    expect(
+      resolveSkill(
+        skills,
+        "梳理下这个产品需求，和现有代码里的实现对比下，给下改造点以及需求规则的总结",
+      ).mode,
+    ).toBe("none");
+    // A real word-boundary "ci" still preloads.
+    expect(resolveSkill(skills, "帮我跑一下 ci").mode).toBe("implicit");
+    expect(resolveSkill(skills, "帮我跑一下 ci").skill?.id).toBe("run-ci-local");
+    expect(resolveSkill(skills, "看看 github actions").mode).toBe("implicit");
+  });
+
   it("matches brainstorm prefix but not unrelated skill mentions", async () => {
     const root = mkdtempSync(join(tmpdir(), "forge-skill-false-positive-"));
     const skillRoot = join(root, "finishing-a-development-branch");

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildPriorTalentResultsBlock,
+  buildTalentAgentMemoryBlock,
   buildTalentSystemBlock,
   bundledTalentTemplatesDir,
   createTalentToolAllowance,
@@ -19,6 +20,8 @@ import {
   isTalentForcedForeground,
   parseAgencyAgentMarkdown,
   parseTalentAssignmentsFromMessage,
+  readTalentAgentRunLog,
+  rememberTalentAgentEpisode,
   readMergedTalentRoster,
   readTalentTemplate,
   readTalentTeamRoster,
@@ -28,9 +31,15 @@ import {
   renameTalent,
   detectsSerialDependency,
   resolveTalentExecutionMode,
+  resolveTalentAgentExecutionMode,
+  resolveTalentAgentStatePaths,
   resolveTalentStorePaths,
   renderTalentPackagePrompt,
   syncTalentTemplates,
+  startTalentAgentRun,
+  completeTalentAgentRun,
+  listTalentAgentMemory,
+  listTalentAgentRuns,
   updateTalentBindings,
   updateCustomTalentTemplate,
   writeTalentTemplate,
@@ -264,6 +273,52 @@ Body`,
         { mention: "reviewer", responsibility: "审查" },
       ],
     })).rejects.toThrow("Team lead must be one of the team members");
+  });
+
+  it("persists talent agent runs and scoped memory", async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-talent-agent-state-"));
+    const paths = resolveTalentAgentStatePaths(root, root);
+    const run = await startTalentAgentRun({
+      path: paths.runsPath,
+      sessionId: "session-1",
+      talentInstanceIds: ["talent-1"],
+      talentMentions: ["reviewer"],
+      mode: "isolated",
+      task: "审查发布风险",
+    });
+    await completeTalentAgentRun({
+      path: paths.runsPath,
+      runId: run.id,
+      status: "completed",
+      outcome: "发现两个阻断问题",
+      tools: ["read_file", "grep"],
+    });
+    await rememberTalentAgentEpisode({
+      path: paths.memoryPath,
+      talentInstanceId: "talent-1",
+      sourceRunId: run.id,
+      content: "该项目发布前必须检查权限回归。",
+    });
+
+    expect((await readTalentAgentRunLog(paths.runsPath)).runs[0]).toMatchObject({
+      id: run.id,
+      status: "completed",
+      mode: "isolated",
+    });
+    expect(await listTalentAgentRuns(paths.runsPath, "talent-1")).toHaveLength(1);
+    const memory = await listTalentAgentMemory(paths.memoryPath, "talent-1");
+    expect(memory).toHaveLength(1);
+    expect(buildTalentAgentMemoryBlock(memory)).toContain("发布前必须检查权限回归");
+  });
+
+  it("routes focused talents between inline and isolated execution", () => {
+    expect(resolveTalentAgentExecutionMode("@reviewer 看下这个命名", "reviewer")).toBe("inline");
+    expect(resolveTalentAgentExecutionMode("@reviewer! 独立执行这个审查", "reviewer")).toBe("inline");
+    expect(resolveTalentAgentExecutionMode("@reviewer (独立) 审查当前版本", "reviewer")).toBe("isolated");
+    expect(resolveTalentAgentExecutionMode(
+      "@reviewer 分析当前实现，然后输出风险报告，最后验证发布条件",
+      "reviewer",
+    )).toBe("isolated");
   });
 
   it("syncs templates from a local agency-agents directory", async () => {

@@ -314,6 +314,40 @@ export class SessionStore {
     );
   }
 
+  /**
+   * Merge adjacent thinking/text deltas for desktop restore. Team runs can
+   * emit 30k+ delta rows; replaying them raw truncates under caps and freezes
+   * the UI, while coalescing still preserves subagent_start/end and done.
+   */
+  static coalesceEventsForRestore(events: SessionEventRecord[]): SessionEventRecord[] {
+    const out: SessionEventRecord[] = [];
+    for (const record of events) {
+      const type = record.event?.type;
+      const prev = out[out.length - 1];
+      if (
+        prev &&
+        (type === "thinking_delta" || type === "text_delta") &&
+        prev.event?.type === type &&
+        (prev.itemId ?? null) === (record.itemId ?? null)
+      ) {
+        const prevDelta =
+          prev.event && "delta" in prev.event ? String(prev.event.delta ?? "") : "";
+        const nextDelta =
+          record.event && "delta" in record.event
+            ? String(record.event.delta ?? "")
+            : "";
+        prev.event = { ...prev.event, delta: prevDelta + nextDelta } as AgentEvent;
+        prev.emittedAtMs = record.emittedAtMs;
+        continue;
+      }
+      out.push({
+        ...record,
+        event: { ...record.event } as AgentEvent,
+      });
+    }
+    return out;
+  }
+
   /** Most recent events in chronological order (oldest → newest within the window). */
   listRecentEvents(sessionId: string, limit: number): SessionEventRecord[] {
     const safeLimit = Math.max(1, Math.floor(limit));
@@ -326,6 +360,33 @@ export class SessionStore {
     );
     rows.reverse();
     return rows;
+  }
+
+  /**
+   * Events from the latest session_start forward (chronological). Desktop restore
+   * must use this — a recent-tail window drops early dispatch/subagent_start once
+   * thinking streams exceed the limit, so later talents never reappear.
+   */
+  listEventsFromLatestSessionStart(
+    sessionId: string,
+    limit: number,
+  ): SessionEventRecord[] {
+    const safeLimit = Math.max(1, Math.floor(limit));
+    const start = this.db
+      .prepare(
+        `SELECT id AS sequence FROM session_events
+         WHERE session_id = ? AND event_type = 'session_start'
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(sessionId) as { sequence: number } | undefined;
+    if (!start?.sequence) return this.listRecentEvents(sessionId, safeLimit);
+    return this.readEvents(
+      `SELECT id AS sequence, session_id AS sessionId, turn_index AS turnIndex,
+              event_type AS eventType, item_id AS itemId, payload,
+              emitted_at_ms AS emittedAtMs
+       FROM session_events WHERE session_id = ? AND id >= ? ORDER BY id ASC LIMIT ?`,
+      [sessionId, start.sequence, safeLimit],
+    );
   }
 
   /** Events with id < beforeSequence, chronological within the window. */
@@ -352,6 +413,15 @@ export class SessionStore {
         `SELECT 1 AS ok FROM session_events WHERE session_id = ? AND id < ? LIMIT 1`,
       )
       .get(sessionId, beforeSequence) as { ok: number } | undefined;
+    return Boolean(row);
+  }
+
+  hasEventsAfter(sessionId: string, afterSequence: number): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS ok FROM session_events WHERE session_id = ? AND id > ? LIMIT 1`,
+      )
+      .get(sessionId, afterSequence) as { ok: number } | undefined;
     return Boolean(row);
   }
 

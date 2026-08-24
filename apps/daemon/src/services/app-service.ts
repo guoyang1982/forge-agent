@@ -18,7 +18,7 @@ import type {
   SessionEventRecord,
   SkillListItem,
 } from "@forge/protocol";
-import type { SessionStore } from "@forge/session";
+import { SessionStore } from "@forge/session";
 import {
   loadSkills,
   loadSkillsFromPaths,
@@ -282,15 +282,34 @@ export function handleGetSessionMessages(
         : [];
   } else if (eventLimit != null) {
     messageRows = deps.sessions.loadRecentMessageRows(req.sessionId, messageLimit);
-    events = deps.sessions.listRecentEvents(req.sessionId, eventLimit);
+    // From latest session_start forward — never a recent tail. Team runs emit
+    // thousands of thinking_delta rows; a tail window drops subagent_start for
+    // later talents and the restore UI only shows Nina.
+    events = SessionStore.coalesceEventsForRestore(
+      deps.sessions.listEventsFromLatestSessionStart(req.sessionId, eventLimit),
+    );
   } else {
-    // Desktop / unbounded: preserve prior behavior.
+    // Desktop default: full latest-turn journal from session_start, with deltas
+    // coalesced so 50k-row team runs still deliver done + later talents.
+    const raw = deps.sessions.listEventsFromLatestSessionStart(
+      req.sessionId,
+      500_000,
+    );
+    const newest = raw.length ? raw[raw.length - 1]?.sequence ?? null : null;
+    const truncated =
+      newest != null && deps.sessions.hasEventsAfter(req.sessionId, newest);
     return {
       sessionId: req.sessionId,
       messages: deps.sessions.loadMessages(req.sessionId, messageLimit),
-      events: deps.sessions.listEvents(req.sessionId),
+      events: SessionStore.coalesceEventsForRestore(raw),
       checkpoints: deps.sessions.listCheckpoints(req.sessionId),
       dispatchPlans: deps.sessions.listDispatchPlans(req.sessionId),
+      page: {
+        truncated,
+        messageIds: [],
+        oldestMessageId: null,
+        oldestEventSequence: raw[0]?.sequence ?? null,
+      },
     };
   }
 
@@ -302,9 +321,15 @@ export function handleGetSessionMessages(
   const oldestEventSequence = events[0]?.sequence
     ?? beforeEventSequence
     ?? null;
+  const newestEventSequence = events.length
+    ? events[events.length - 1]?.sequence ?? null
+    : null;
   const truncated =
     (oldestMessageId != null && deps.sessions.hasMessagesBefore(req.sessionId, oldestMessageId))
-    || (oldestEventSequence != null
+    || (newestEventSequence != null
+      && deps.sessions.hasEventsAfter(req.sessionId, newestEventSequence))
+    || (paging
+      && oldestEventSequence != null
       && deps.sessions.hasEventsBefore(req.sessionId, oldestEventSequence));
 
   return {
@@ -317,9 +342,8 @@ export function handleGetSessionMessages(
       oldestMessageId,
       oldestEventSequence,
     },
-    // Mobile callers drop these; desktop unbounded path above still returns them.
-    checkpoints: [],
-    dispatchPlans: [],
+    checkpoints: deps.sessions.listCheckpoints(req.sessionId),
+    dispatchPlans: deps.sessions.listDispatchPlans(req.sessionId),
   };
 }
 

@@ -10,6 +10,24 @@
     return running;
   }
 
+  function reconciledPersistedSessionIsRunning(records, daemonStatus) {
+    const journalSaysRunning = persistedSessionIsRunning(records);
+    if (!journalSaysRunning) return false;
+    if (Array.isArray(daemonStatus?.activeSessionIds)) {
+      const latestStart = [...(records || [])]
+        .reverse()
+        .find((record) => (record?.event ?? record)?.type === "session_start");
+      const sessionId = (latestStart?.event ?? latestStart)?.sessionId;
+      return Boolean(sessionId && daemonStatus.activeSessionIds.includes(sessionId));
+    }
+    if (typeof daemonStatus?.activeRun === "boolean") {
+      return daemonStatus.activeRun;
+    }
+    // Status is unavailable (for example during a rolling desktop/daemon
+    // upgrade), so preserve the journal state until it can be reconciled.
+    return true;
+  }
+
   function shouldRefreshSessionTimeline({
     running,
     locallyOwned,
@@ -52,7 +70,11 @@
     }
 
     function isViewingSession(sessionId) {
-      return Boolean(sessionId) && getViewingSessionId() === sessionId;
+      if (!sessionId) return false;
+      if (getViewingSessionId() === sessionId) return true;
+      // Timeline may already be pinned to this session before project.sessionId
+      // catches up (or after a brief desync) — still treat it as live view.
+      return getState().viewingTimelineSessionId === sessionId;
     }
 
     function shouldRouteEventToView(sessionId) {
@@ -160,9 +182,11 @@
       const running = isSessionRunning(sessionId);
       if (!helpers.structuredTimelineCacheUsable?.(sessionId, running)) return false;
       const timeline = $("timeline");
+      if (!timeline) return false;
       const sameSession = sessionId === state.viewingTimelineSessionId;
       const ui = sameSession ? helpers.captureTimelineUiState?.(timeline) : null;
       helpers.loadSessionRunArtifacts?.(sessionId);
+      // renderTimelineFromState replaces the mount; previous session DOM goes away.
       if (!helpers.renderTimelineFromState?.(sessionId, timeline)) return false;
       showChatEmpty(false);
       helpers.reconcileSessionConclusion?.(sessionId);
@@ -301,7 +325,6 @@
       project.sessionId = newSessionId;
       saveProjects();
       helpers.detachLiveRunSession();
-      clearTimeline();
 
       const finish = () => {
         syncComposerRunChrome();
@@ -309,15 +332,37 @@
       };
 
       if (!newSessionId) {
+        clearTimeline();
         showChatEmpty(true);
         syncComposerRunChrome();
         return Promise.resolve(false);
       }
 
+      // Paint from in-memory structured cache first — no daemon round-trip,
+      // no "正在加载会话…" flash when the snapshot is rich enough.
       if (restoreTimelineSnapshot(newSessionId, switchGen)) {
+        // Incomplete idle snapshots (stuck 思考中, no 结论) still soft-refresh
+        // from the daemon so a previously truncated journal can deliver `done`.
+        const needsConclusionRepair =
+          !isSessionRunning(newSessionId) &&
+          !helpers.structuredTimelineHasConclusion?.(newSessionId) &&
+          !st.runFinalTextBySession?.get?.(newSessionId);
+        if (needsConclusionRepair && helpers.restoreSessionTimeline) {
+          void helpers
+            .restoreSessionTimeline(newSessionId, switchGen, {
+              scrollToBottom: false,
+            })
+            .then(() => {
+              if (!helpers.isViewSwitchCurrent?.(switchGen)) return;
+              if (newSessionId !== st.viewingTimelineSessionId) return;
+              finishRestoreSessionView(newSessionId, switchGen);
+              finish();
+            });
+        }
         return Promise.resolve(finish());
       }
 
+      clearTimeline();
       return helpers
         .restoreSessionTimeline(newSessionId, switchGen, { scrollToBottom: true })
         .then(() => {
@@ -364,6 +409,7 @@
   window.ForgeSessionRunUi = {
     createSessionRunApi,
     persistedSessionIsRunning,
+    reconciledPersistedSessionIsRunning,
     shouldRefreshSessionTimeline,
     currentTurnHasStructuredConclusion,
   };

@@ -3,6 +3,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  session,
   shell,
   type WebContents,
 } from "electron";
@@ -508,7 +509,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(
     "forge:get-session-messages",
-    async (_event, payload: { sessionId: string; limit?: number }) => {
+    async (
+      _event,
+      payload: { sessionId: string; limit?: number; eventLimit?: number },
+    ) => {
       const cfg = loadConfig();
       return requestDaemonMethod(cfg, DAEMON_METHODS.GET_SESSION_MESSAGES, payload);
     },
@@ -666,6 +670,30 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(
+    "forge:list-talent-agent-runs",
+    async (_event, payload?: { cwd?: string; talentInstanceId?: string; limit?: number }) => {
+      const resolvedCwd = payload?.cwd ?? process.cwd();
+      const cfg = loadConfig({ cwd: resolvedCwd });
+      return requestDaemonMethod(cfg, DAEMON_METHODS.TALENTS_LIST_AGENT_RUNS, {
+        ...payload,
+        cwd: resolvedCwd,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    "forge:list-talent-agent-memory",
+    async (_event, payload: { cwd?: string; talentInstanceId: string; limit?: number }) => {
+      const resolvedCwd = payload.cwd ?? process.cwd();
+      const cfg = loadConfig({ cwd: resolvedCwd });
+      return requestDaemonMethod(cfg, DAEMON_METHODS.TALENTS_LIST_AGENT_MEMORY, {
+        ...payload,
+        cwd: resolvedCwd,
+      });
+    },
+  );
+
+  ipcMain.handle(
     "forge:create-talent-team",
     async (_event, payload: Record<string, unknown> & { cwd?: string }) => {
       const resolvedCwd = payload.cwd ?? process.cwd();
@@ -697,6 +725,23 @@ function registerIpcHandlers(): void {
     await shell.openExternal(target);
     return { ok: true };
   });
+
+  // Session maintenance for the embedded browser panel (renderer/browser-panel.js).
+  // Must match the <webview> partition attribute set there.
+  ipcMain.handle(
+    "forge:browser-clear-data",
+    async (_event, payload: { kind: "cookies" | "cache" }) => {
+      const ses = session.fromPartition("persist:forge-panel-browser");
+      if (payload?.kind === "cache") {
+        await ses.clearCache();
+      } else if (payload?.kind === "cookies") {
+        await ses.clearStorageData({ storages: ["cookies"] });
+      } else {
+        throw new Error(`未知的清理类型: ${String(payload?.kind ?? "")}`);
+      }
+      return { ok: true };
+    },
+  );
 
   ipcMain.handle("forge:reveal-path", async (_event, path: string) => {
     const target = resolve(String(path ?? "").trim());
@@ -1194,9 +1239,13 @@ function registerIpcHandlers(): void {
     },
   );
 
-  ipcMain.handle("forge:pick-attachments", async () => {
-    const result = await dialog.showOpenDialog({
-      properties: ["openFile", "multiSelections"],
+  ipcMain.handle("forge:pick-attachments", async (event) => {
+    const win =
+      BrowserWindow.fromWebContents(event.sender) ??
+      BrowserWindow.getFocusedWindow() ??
+      mainWindow;
+    const opts = {
+      properties: ["openFile", "multiSelections"] as Array<"openFile" | "multiSelections">,
       filters: [
         {
           name: "图片、Office、代码与文本",
@@ -1204,14 +1253,22 @@ function registerIpcHandlers(): void {
         },
         { name: "所有文件", extensions: ["*"] },
       ],
-    });
+    };
+    const result =
+      win && !win.isDestroyed()
+        ? await dialog.showOpenDialog(win, opts)
+        : await dialog.showOpenDialog(opts);
     if (result.canceled || !result.filePaths.length) {
       return { items: [] as RunAttachment[] };
     }
     const items: RunAttachment[] = [];
     for (const p of result.filePaths) {
-      const att = await readAttachmentFromPath(p);
-      if (att) items.push(att);
+      try {
+        const att = await readAttachmentFromPath(p);
+        if (att) items.push(att);
+      } catch (error) {
+        console.warn("[forge] skip attachment", p, error);
+      }
     }
     return { items };
   });
@@ -1219,8 +1276,12 @@ function registerIpcHandlers(): void {
   ipcMain.handle("forge:read-attachment-paths", async (_event, paths: string[]) => {
     const items: RunAttachment[] = [];
     for (const p of Array.isArray(paths) ? paths : []) {
-      const att = await readAttachmentFromPath(String(p));
-      if (att) items.push(att);
+      try {
+        const att = await readAttachmentFromPath(String(p));
+        if (att) items.push(att);
+      } catch (error) {
+        console.warn("[forge] skip attachment", p, error);
+      }
     }
     return { items };
   });
@@ -1367,6 +1428,8 @@ function createWindow(): BrowserWindow {
       // sandbox:true breaks preload/ipc on some Electron builds when loading file:// UI
       sandbox: false,
       nodeIntegration: false,
+      // Needed by the embedded browser panel (<webview> in the right region).
+      webviewTag: true,
     },
   });
   const htmlPath = join(__dirname, "..", "src", "renderer", "index.html");
@@ -1680,6 +1743,16 @@ app.whenReady().then(async () => {
 
   app.on("activate", () => {
     if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  });
+});
+
+// The embedded browser panel uses <webview>. Route window.open / target=_blank
+// from those pages back into the same webview instead of spawning windows.
+app.on("web-contents-created", (_event, contents) => {
+  if (contents.getType() !== "webview") return;
+  contents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) void contents.loadURL(url);
+    return { action: "deny" };
   });
 });
 
