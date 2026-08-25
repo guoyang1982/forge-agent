@@ -60,6 +60,56 @@ describe("Mobile workbench state", () => {
     expect(next.messagesBySession["session-12345678"]).toEqual(messages);
   });
 
+  it("clears the global running session as soon as done arrives", () => {
+    const runningState: MobileWorkbenchState = {
+      ...initialMobileWorkbenchState,
+      activeSessionId: "session-12345678",
+      runningSessionId: "session-12345678",
+      liveText: "Completed answer",
+    };
+
+    const next = mobileWorkbenchReducer(runningState, {
+      type: "run.event",
+      subscriptionId: "sub-terminal-01",
+      seq: 12,
+      event: {
+        kind: "done",
+        sessionId: "session-12345678",
+        finalText: "Completed answer",
+      },
+    });
+
+    expect(next.runningSessionId).toBeNull();
+  });
+
+  it("replaces completed live data when persisted history arrives after done", () => {
+    const sessionId = "session-12345678";
+    const runningState: MobileWorkbenchState = {
+      ...initialMobileWorkbenchState,
+      activeSessionId: sessionId,
+      runningSessionId: sessionId,
+      liveText: "Transient answer",
+      liveEvents: [{ kind: "text", delta: "Transient answer" }],
+    };
+    const completedState = mobileWorkbenchReducer(runningState, {
+      type: "run.event",
+      subscriptionId: "sub-terminal-02",
+      seq: 13,
+      event: { kind: "done", sessionId, finalText: "Persisted answer" },
+    });
+    const messages = [{ key: "0:assistant", role: "assistant" as const, text: "Persisted answer" }];
+
+    const next = mobileWorkbenchReducer(completedState, {
+      type: "session.persisted",
+      sessionId,
+      messages,
+    });
+
+    expect(next.liveText).toBe("");
+    expect(next.liveEvents).toEqual([]);
+    expect(next.messagesBySession[sessionId]).toEqual(messages);
+  });
+
   it("remembers the selected host and preserves it after deselection", () => {
     const populated: MobileWorkbenchState = {
       ...initialMobileWorkbenchState,

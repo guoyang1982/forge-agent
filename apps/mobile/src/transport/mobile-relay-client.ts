@@ -37,6 +37,7 @@ interface PendingRpc {
   reject: (error: Error) => void;
   timer?: ReturnType<typeof setTimeout>;
   subscriptionId?: string;
+  resolveOnRunDone?: boolean;
 }
 
 export type MobileConnectionState = "connecting" | "authenticated" | "closed" | "error";
@@ -136,7 +137,11 @@ export class MobileRelayClient {
   async call(
     method: MobileRpcMethod,
     params: unknown = {},
-    options?: { subscriptionId?: string; onEvent?: (event: RpcEvent) => void },
+    options?: {
+      subscriptionId?: string;
+      onEvent?: (event: RpcEvent) => void;
+      resolveOnRunDone?: boolean;
+    },
   ): Promise<unknown> {
     if (this.closed) throw new Error("Mobile connection is closed");
     const id = opaqueId("request");
@@ -155,6 +160,7 @@ export class MobileRelayClient {
         reject,
         ...(timer ? { timer } : {}),
         subscriptionId: options?.subscriptionId,
+        resolveOnRunDone: options?.resolveOnRunDone,
       });
     });
     try {
@@ -179,7 +185,7 @@ export class MobileRelayClient {
       result: this.call(
         "run.start",
         { ...params, subscriptionId },
-        { subscriptionId, onEvent },
+        { subscriptionId, onEvent, resolveOnRunDone: true },
       ),
     };
   }
@@ -284,7 +290,11 @@ export class MobileRelayClient {
             JSON.parse(new TextDecoder().decode(this.openEncrypted(await inbox.next()))),
           );
           if (frame.type === "rpc.response") this.handleResponse(frame);
-          else if (frame.type === "rpc.event") this.subscriptions.get(frame.subscriptionId)?.(frame);
+          else if (frame.type === "rpc.event") {
+            const doneResult = runDoneResult(frame.event);
+            if (doneResult) this.resolveRunFromDone(frame.subscriptionId, doneResult);
+            this.subscriptions.get(frame.subscriptionId)?.(frame);
+          }
           else if (frame.type === "rpc.ping") {
             this.sendEncrypted({ type: "rpc.pong", timestamp: frame.timestamp });
           }
@@ -308,6 +318,19 @@ export class MobileRelayClient {
     this.pending.delete(frame.id);
     if (frame.ok) pending.resolve(frame.result);
     else pending.reject(new Error(`${frame.error.code}: ${frame.error.message}`));
+  }
+
+  private resolveRunFromDone(
+    subscriptionId: string,
+    result: { sessionId: string; finalText: string },
+  ): void {
+    for (const [id, pending] of this.pending) {
+      if (pending.subscriptionId !== subscriptionId || !pending.resolveOnRunDone) continue;
+      if (pending.timer) clearTimeout(pending.timer);
+      this.pending.delete(id);
+      pending.resolve(result);
+      return;
+    }
   }
 
   private sendEncrypted(value: unknown): void {
@@ -431,6 +454,16 @@ async function eventBytes(data: unknown): Promise<Uint8Array> {
     return new Uint8Array(await data.arrayBuffer());
   }
   throw new Error("Relay frame is not binary");
+}
+
+function runDoneResult(value: unknown): { sessionId: string; finalText: string } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const event = value as Record<string, unknown>;
+  if (event.type !== "done" || typeof event.sessionId !== "string") return null;
+  return {
+    sessionId: event.sessionId,
+    finalText: typeof event.finalText === "string" ? event.finalText : "",
+  };
 }
 
 function encode(value: Uint8Array): string {

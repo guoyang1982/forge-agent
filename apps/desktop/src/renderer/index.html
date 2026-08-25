@@ -12,13 +12,31 @@
   <body>
     <div id="bootstrapBanner" class="bootstrap-banner hidden" role="alert"></div>
     <div id="appShell" class="app-shell">
-      <aside class="left-panel">
+      <button
+        id="leftPanelBackdrop"
+        class="left-panel-backdrop hidden"
+        type="button"
+        aria-label="关闭边栏"
+      ></button>
+      <aside id="leftPanel" class="left-panel">
         <div class="brand">
           <img class="logo" src="./assets/forge-icon.png" alt="" />
           <div class="brand-text">
             <h1>Forge</h1>
             <p>桌面端</p>
           </div>
+          <button
+            id="collapseLeftBtn"
+            class="icon-btn subtle sidebar-collapse-btn"
+            type="button"
+            title="收起边栏 (⌘B)"
+            aria-label="收起边栏"
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+              <rect x="2" y="2.5" width="12" height="11" rx="1.5" />
+              <path d="M6.5 2.5v11" />
+            </svg>
+          </button>
         </div>
 
         <nav class="side-nav">
@@ -122,7 +140,22 @@
 
       <main id="centerPanel" class="center-panel chat-empty-mode">
         <header class="center-top">
-          <h2 id="centerTitle">新对话</h2>
+          <div class="center-top-left">
+            <button
+              id="toggleLeftBtn"
+              class="icon-btn subtle hidden"
+              type="button"
+              title="展开边栏 (⌘B)"
+              aria-label="展开边栏"
+              aria-expanded="false"
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+                <rect x="2" y="2.5" width="12" height="11" rx="1.5" />
+                <path d="M6.5 2.5v11" />
+              </svg>
+            </button>
+            <h2 id="centerTitle">新对话</h2>
+          </div>
           <div class="top-actions">
             <button id="terminalToggleBtn" class="icon-btn subtle" type="button" title="打开终端（当前工作目录）" aria-label="打开终端">&gt;_</button>
             <button id="browserToggleBtn" class="icon-btn subtle" type="button" title="打开浏览器" aria-label="打开浏览器">
@@ -132,7 +165,19 @@
                 <path d="M1.6 8h12.8M2.5 4.8h11M2.5 11.2h11" />
               </svg>
             </button>
-            <button id="toggleRightBtn" class="icon-btn subtle" title="展开/收起代码侧栏">⫶</button>
+            <button
+              id="toggleRightBtn"
+              class="icon-btn subtle"
+              type="button"
+              title="展开/收起环境信息"
+              aria-label="展开/收起环境信息"
+              aria-expanded="false"
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+                <rect x="2" y="2.5" width="12" height="11" rx="1.5" />
+                <path d="M9.5 2.5v11" />
+              </svg>
+            </button>
             <span id="runState" class="pill idle">空闲</span>
           </div>
         </header>
@@ -145,6 +190,7 @@
           <button id="findCloseBtn" class="icon-btn subtle" type="button" title="关闭 (Esc)">✕</button>
         </div>
 
+        <div class="center-body">
         <div class="center-stage">
           <div id="chatEmpty" class="chat-empty">
             <h2 id="chatEmptyTitle">我们应该构建什么？</h2>
@@ -359,6 +405,26 @@
             </div>
           </footer>
         </div>
+
+        <aside id="contextPanel" class="context-panel collapsed" aria-label="会话上下文">
+          <div class="context-card">
+            <section class="context-card-section" aria-labelledby="contextEnvHeading">
+              <div class="context-card-head">
+                <h4 id="contextEnvHeading">环境信息</h4>
+                <button type="button" class="context-card-plus" data-context-action="env-more" title="更多" aria-label="更多">+</button>
+              </div>
+              <div id="contextEnvList" class="context-env-list"></div>
+            </section>
+            <section class="context-card-section" aria-labelledby="contextSourcesHeading">
+              <div class="context-card-head">
+                <h4 id="contextSourcesHeading">来源</h4>
+                <button type="button" class="context-card-plus" data-context-action="sources-more" title="添加来源" aria-label="添加来源">+</button>
+              </div>
+              <div id="contextSourcesList" class="context-sources-list"></div>
+            </section>
+          </div>
+        </aside>
+        </div>
       </main>
 
       <div
@@ -384,6 +450,18 @@
               ☰
             </button>
             <nav id="codePathBreadcrumb" class="path-breadcrumb hidden" aria-label="文件路径"></nav>
+            <button
+              id="collapseCodePanelBtn"
+              class="icon-btn subtle sidebar-collapse-btn"
+              type="button"
+              title="收起右侧栏"
+              aria-label="收起右侧栏"
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+                <rect x="2" y="2.5" width="12" height="11" rx="1.5" />
+                <path d="M9.5 2.5v11" />
+              </svg>
+            </button>
           </div>
           <h3>代码详情</h3>
           <p>点击「修改的文件」或目录树中的文件，查看相对路径、diff 与完整内容。</p>
@@ -424,7 +502,18 @@
             </div>
           </div>
           <div class="tools-head-spacer"></div>
-          <button id="toolsCloseBtn" class="icon-btn subtle tools-head-btn" type="button" title="关闭面板">✕</button>
+          <button
+            id="toolsCloseBtn"
+            class="icon-btn subtle tools-head-btn"
+            type="button"
+            title="收起右侧栏"
+            aria-label="收起右侧栏"
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+              <rect x="2" y="2.5" width="12" height="11" rx="1.5" />
+              <path d="M9.5 2.5v11" />
+            </svg>
+          </button>
         </header>
         <div id="toolsBodies" class="tools-bodies"></div>
       </section>

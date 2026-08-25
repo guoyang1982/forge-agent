@@ -41,4 +41,51 @@ describe("MobileRelayClient long-running calls", () => {
     });
     await expect(run.result).resolves.toEqual({ sessionId: "session_after_30_seconds" });
   });
+
+  it("resolves run.start from done when the final RPC response is missing", async () => {
+    const sent: Uint8Array[] = [];
+    const client = Object.create(MobileRelayClient.prototype) as MobileRelayClient;
+    Object.assign(client, {
+      closed: false,
+      pending: new Map(),
+      subscriptions: new Map(),
+      sealer: { seal: (_kind: string, payload: Uint8Array) => payload },
+      opener: { open: (payload: Uint8Array) => ({ payload }) },
+      socket: { send: (frame: Uint8Array) => sent.push(frame) },
+    });
+    const onEvent = vi.fn();
+    const run = client.startRun(
+      { cwd: "/workspace/project", message: "finish reliably" },
+      onEvent,
+    );
+    const request = JSON.parse(new TextDecoder().decode(sent[0])) as {
+      params: { subscriptionId: string };
+    };
+    const doneFrame = new TextEncoder().encode(JSON.stringify({
+      type: "rpc.event",
+      subscriptionId: request.params.subscriptionId,
+      seq: 8,
+      event: {
+        type: "done",
+        sessionId: "session_done_without_response",
+        finalText: "Finished",
+      },
+    }));
+    const never = new Promise<Uint8Array>(() => undefined);
+    const inbox = {
+      next: vi.fn()
+        .mockResolvedValueOnce(doneFrame)
+        .mockReturnValue(never),
+    };
+    let completion: unknown = "pending";
+    void run.result.then((value) => { completion = value; });
+
+    (client as unknown as { startRpcLoop(input: typeof inbox): void }).startRpcLoop(inbox);
+
+    await vi.waitFor(() => expect(onEvent).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(completion).toEqual({
+      sessionId: "session_done_without_response",
+      finalText: "Finished",
+    }));
+  });
 });

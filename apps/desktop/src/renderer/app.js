@@ -352,13 +352,21 @@ const LS_PROJECTS_KEY = "forgeDesktopProjectsV1";
 const LS_ACTIVE_PROJECT_KEY = "forgeDesktopActiveProjectV1";
 const LS_PROJECT_EXPANDED_KEY = "forgeDesktopExpandedProjectsV1";
 const LS_SESSION_UI_KEY = "forgeDesktopSessionUiV1";
-const LS_PANEL_WIDTHS_KEY = "forgeDesktopPanelWidthsV1";
+const LS_PANEL_WIDTHS_KEY = "forgeDesktopPanelWidthsV5";
 const PANEL_MIN_LEFT = 200;
 const PANEL_MAX_LEFT = 480;
-const PANEL_MIN_RIGHT = 260;
-const PANEL_MAX_RIGHT = 720;
-const PANEL_DEFAULT_LEFT = 272;
-const PANEL_DEFAULT_RIGHT = 380;
+const PANEL_MIN_RIGHT = 280;
+/** Soft ceiling only; live max is window-relative so chat can shrink like Codex. */
+const PANEL_MAX_RIGHT = 2400;
+const PANEL_DEFAULT_LEFT = 320;
+/** Default width for the code/tools right dock. */
+const PANEL_DEFAULT_RIGHT = 420;
+/** Codex-style context card width (independent of the right dock). */
+const CONTEXT_PANEL_WIDTH = 360;
+const PANEL_COLLAPSE_SNAP = 140;
+/** Keep enough chat column for composer chrome when the right pane grows. */
+const PANEL_MIN_CENTER = 280;
+const LEFT_DOCK_MIN_WINDOW = 780;
 
 const state = {
   config: null,
@@ -466,6 +474,12 @@ const state = {
   automationEditorDraft: null,
   automationExpandedId: null,
   rightOpen: false,
+  /** Prefer showing the Codex-style context card in chat (independent of the right dock). */
+  rightContextPinned: true,
+  /** Whether the floating 环境信息/来源 card is visible. */
+  contextOpen: false,
+  leftOpen: true,
+  leftPinned: true,
   projects: [],
   activeProjectId: "",
   gitBranchByProject: new Map(),
@@ -544,9 +558,8 @@ const state = {
   runConclusionRendered: false,
   panelLeftWidth: PANEL_DEFAULT_LEFT,
   panelRightWidth: PANEL_DEFAULT_RIGHT,
-  // Which view occupies the right region: "code" (code/skill/plugin/talent
-  // panel) or "tools" (the tabbed terminal/browser panel). The two are
-  // mutually exclusive in the same slot.
+  // Which view occupies the docked right region: "code" or "tools".
+  // The 环境信息/来源 context card is independent (see contextOpen).
   rightMode: "code",
   workspaceExplorerOpen: false,
   workspaceExplorerExpanded: new Set(["."]),
@@ -5085,6 +5098,7 @@ function recordRunPatch(ev) {
     },
   });
   if (sid) saveRunPatchesForSession(sid);
+  refreshContextPanelIfOpen();
 }
 
 function accumulateRuntimeFileStats(contributions, key, adds, dels) {
@@ -6293,7 +6307,7 @@ async function openModifiedFile(relPath, fallbackPatch = null) {
           patch: { ...fallbackPatch, path },
         }
       : null);
-  openRight(true);
+  openRight(true, "code");
   state.workspaceActiveFile = path;
   expandExplorerToFile(path);
   updatePathBreadcrumb(path);
@@ -7275,6 +7289,25 @@ function clampPanelWidth(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+function isNarrowShell() {
+  return window.innerWidth < LEFT_DOCK_MIN_WINDOW;
+}
+
+function dockedLeftWidth() {
+  return state.leftOpen && !isNarrowShell() ? state.panelLeftWidth : 0;
+}
+
+/** Right pane may grow until the chat column hits PANEL_MIN_CENTER (Codex-like). */
+function maxRightPanelWidth() {
+  const handles = 10;
+  const available = window.innerWidth - dockedLeftWidth() - handles - PANEL_MIN_CENTER;
+  return Math.max(PANEL_MIN_RIGHT, Math.min(PANEL_MAX_RIGHT, available));
+}
+
+function clampRightPanelWidth(value) {
+  return clampPanelWidth(value, PANEL_MIN_RIGHT, maxRightPanelWidth());
+}
+
 function loadPanelWidths() {
   try {
     const raw = JSON.parse(localStorage.getItem(LS_PANEL_WIDTHS_KEY) || "{}");
@@ -7282,10 +7315,20 @@ function loadPanelWidths() {
       state.panelLeftWidth = clampPanelWidth(raw.left, PANEL_MIN_LEFT, PANEL_MAX_LEFT);
     }
     if (typeof raw.right === "number") {
-      state.panelRightWidth = clampPanelWidth(raw.right, PANEL_MIN_RIGHT, PANEL_MAX_RIGHT);
+      state.panelRightWidth = clampRightPanelWidth(raw.right);
+    }
+    if (typeof raw.leftOpen === "boolean") {
+      state.leftPinned = raw.leftOpen;
+      state.leftOpen = raw.leftOpen;
+    }
+    if (typeof raw.rightContextPinned === "boolean") {
+      state.rightContextPinned = raw.rightContextPinned;
     }
   } catch {
     /* ignore */
+  }
+  if (isNarrowShell() && state.leftOpen) {
+    state.leftOpen = false;
   }
 }
 
@@ -7295,17 +7338,147 @@ function savePanelWidths() {
     JSON.stringify({
       left: state.panelLeftWidth,
       right: state.panelRightWidth,
+      leftOpen: state.leftPinned,
+      rightContextPinned: state.rightContextPinned,
     }),
   );
+}
+
+/** Hide the code/tools dock without changing the context-card preference. */
+function hideRightPanelKeepPin() {
+  if (state.rightOpen) {
+    state.rightOpen = false;
+    applyRightMode();
+  }
+  // Leave chat surfaces: hide the card visually but keep the pin for return.
+  if (state.contextOpen) {
+    state.contextOpen = false;
+    applyContextPanel();
+  }
+  applyPanelWidths();
+}
+
+function preferContextRightPanel(options = {}) {
+  const force = Boolean(options.force);
+  if (!force && !state.rightContextPinned) return;
+  // Don't crowd the chat column while the code/tools dock is open.
+  if (state.rightOpen) {
+    if (!force) return;
+    openRight(false);
+  }
+  setContextOpen(true, { persist: Boolean(force) || state.rightContextPinned });
+}
+
+/** Close the code/tools dock; restore the context card if it was pinned. */
+function dismissRightPanel() {
+  if (!state.rightOpen) return;
+  openRight(false);
+}
+
+function syncLeftPanelButtons() {
+  const open = state.leftOpen;
+  const collapse = $("collapseLeftBtn");
+  const reopen = $("toggleLeftBtn");
+  if (collapse) {
+    collapse.classList.toggle("hidden", !open);
+    collapse.title = "收起边栏 (⌘B)";
+    collapse.setAttribute("aria-label", "收起边栏");
+    collapse.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  if (reopen) {
+    // Only show the center reopen control while the left dock is hidden —
+    // otherwise it sits next to collapseLeftBtn and looks like a duplicate.
+    reopen.classList.toggle("hidden", open);
+    reopen.title = "展开边栏 (⌘B)";
+    reopen.setAttribute("aria-label", "展开边栏");
+    reopen.setAttribute("aria-expanded", "false");
+    reopen.classList.remove("active");
+  }
+}
+
+/** Top-bar button toggles only the context card (always visible, like Codex). */
+function syncContextPanelButton() {
+  const btn = $("toggleRightBtn");
+  if (!btn) return;
+  const open = state.contextOpen;
+  btn.classList.remove("hidden");
+  btn.classList.toggle("active", open);
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+  btn.title = open ? "收起环境信息" : "展开环境信息";
+  btn.setAttribute("aria-label", open ? "收起环境信息" : "展开环境信息");
+}
+
+function syncRightPanelButtons() {
+  syncContextPanelButton();
+}
+
+function applyContextPanel() {
+  $("contextPanel")?.classList.toggle("collapsed", !state.contextOpen);
+  syncContextPanelButton();
+  if (state.contextOpen) renderContextPanel();
+}
+
+function setContextOpen(open, { persist = true } = {}) {
+  const next = Boolean(open);
+  // Opening the context card while the dock is up: close the dock first.
+  if (next && state.rightOpen) {
+    state.rightOpen = false;
+    applyRightMode();
+  }
+  state.contextOpen = next;
+  if (persist) state.rightContextPinned = next;
+  applyContextPanel();
+  applyPanelWidths();
+  if (persist) savePanelWidths();
+}
+
+function toggleContextPanel() {
+  setContextOpen(!state.contextOpen);
 }
 
 function applyPanelWidths() {
   const shell = $("appShell");
   if (!shell) return;
-  shell.style.setProperty("--panel-left-width", `${state.panelLeftWidth}px`);
+  if (state.rightOpen) {
+    state.panelRightWidth = clampRightPanelWidth(state.panelRightWidth);
+  }
+  const overlay = state.leftOpen && isNarrowShell();
+  const docked = state.leftOpen && !overlay;
+  const leftPx = docked ? state.panelLeftWidth : 0;
+  shell.style.setProperty("--panel-left-width", `${leftPx}px`);
+  shell.style.setProperty("--sidebar-overlay-width", `${state.panelLeftWidth}px`);
+  shell.style.setProperty("--resize-handle-left-size", docked ? "5px" : "0px");
   const rightPx = state.rightOpen ? state.panelRightWidth : 0;
   shell.style.setProperty("--panel-right-width", `${rightPx}px`);
+  shell.style.setProperty("--context-panel-width", `${CONTEXT_PANEL_WIDTH}px`);
+  shell.style.setProperty("--resize-handle-right-size", state.rightOpen ? "5px" : "0px");
+  shell.classList.toggle("left-collapsed", !state.leftOpen);
+  shell.classList.toggle("left-overlay", overlay);
+  shell.classList.toggle("context-open", state.contextOpen);
+  shell.classList.toggle("right-open", state.rightOpen);
+  $("resizeHandleLeft")?.classList.toggle("hidden", !docked);
   $("resizeHandleRight")?.classList.toggle("hidden", !state.rightOpen);
+  $("leftPanelBackdrop")?.classList.toggle("hidden", !overlay);
+  syncLeftPanelButtons();
+  syncContextPanelButton();
+}
+
+function setLeftOpen(open, { persist = true } = {}) {
+  const next = Boolean(open);
+  const changed = state.leftOpen !== next;
+  if (!changed) {
+    if (persist) state.leftPinned = next;
+    applyPanelWidths();
+    return;
+  }
+  state.leftOpen = next;
+  if (persist) state.leftPinned = next;
+  applyPanelWidths();
+  if (persist) savePanelWidths();
+}
+
+function toggleLeftPanel() {
+  setLeftOpen(!state.leftOpen);
 }
 
 function bindPanelResize() {
@@ -7323,17 +7496,20 @@ function bindPanelResize() {
       const onPointerMove = (ev) => {
         const dx = ev.clientX - startX;
         if (side === "left") {
-          state.panelLeftWidth = clampPanelWidth(
-            startLeft + dx,
-            PANEL_MIN_LEFT,
-            PANEL_MAX_LEFT,
-          );
+          const next = startLeft + dx;
+          if (next < PANEL_COLLAPSE_SNAP) {
+            if (state.leftOpen) setLeftOpen(false);
+            return;
+          }
+          if (!state.leftOpen) setLeftOpen(true);
+          state.panelLeftWidth = clampPanelWidth(next, PANEL_MIN_LEFT, PANEL_MAX_LEFT);
         } else if (state.rightOpen) {
-          state.panelRightWidth = clampPanelWidth(
-            startRight - dx,
-            PANEL_MIN_RIGHT,
-            PANEL_MAX_RIGHT,
-          );
+          const next = startRight - dx;
+          if (next < PANEL_COLLAPSE_SNAP) {
+            openRight(false);
+            return;
+          }
+          state.panelRightWidth = clampRightPanelWidth(next);
         }
         applyPanelWidths();
       };
@@ -7362,11 +7538,7 @@ function bindPanelResize() {
           PANEL_MAX_LEFT,
         );
       } else if (state.rightOpen) {
-        state.panelRightWidth = clampPanelWidth(
-          state.panelRightWidth - delta,
-          PANEL_MIN_RIGHT,
-          PANEL_MAX_RIGHT,
-        );
+        state.panelRightWidth = clampRightPanelWidth(state.panelRightWidth - delta);
       }
       applyPanelWidths();
       savePanelWidths();
@@ -7377,10 +7549,36 @@ function bindPanelResize() {
   bindHandle($("resizeHandleRight"), "right");
 }
 
-/** Show exactly one of the right-region panels (code vs tools), or neither. */
+function bindLeftPanelToggle() {
+  const onToggle = () => toggleLeftPanel();
+  $("toggleLeftBtn")?.addEventListener("click", onToggle);
+  $("collapseLeftBtn")?.addEventListener("click", onToggle);
+  $("leftPanelBackdrop")?.addEventListener("click", () => setLeftOpen(false));
+  document.addEventListener("keydown", (e) => {
+    if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+    const key = String(e.key).toLowerCase();
+    if (key !== "b" && key !== "\\") return;
+    e.preventDefault();
+    toggleLeftPanel();
+  });
+  let wasNarrow = isNarrowShell();
+  window.addEventListener("resize", () => {
+    const narrow = isNarrowShell();
+    if (narrow && !wasNarrow && state.leftOpen) {
+      setLeftOpen(false, { persist: false });
+    } else if (!narrow && wasNarrow && state.leftPinned && !state.leftOpen) {
+      setLeftOpen(true, { persist: false });
+    } else {
+      applyPanelWidths();
+    }
+    wasNarrow = narrow;
+  });
+}
+
+/** Show the docked right region as code or tools (never the context card). */
 function applyRightMode() {
   const showTools = state.rightOpen && state.rightMode === "tools";
-  const showCode = state.rightOpen && state.rightMode === "code";
+  const showCode = state.rightOpen && !showTools;
   $("rightPanel")?.classList.toggle("collapsed", !showCode);
   $("toolsPanel")?.classList.toggle("collapsed", !showTools);
   $("toolsPanel")?.setAttribute("aria-hidden", showTools ? "false" : "true");
@@ -7390,20 +7588,214 @@ function applyRightMode() {
     : null;
   $("terminalToggleBtn")?.classList.toggle("active", activeKind === "terminal");
   $("browserToggleBtn")?.classList.toggle("active", activeKind === "browser");
-  $("toggleRightBtn")?.classList.toggle("active", showCode);
 }
 
 function openRight(open, mode = "code") {
+  const wasOpen = state.rightOpen;
   state.rightOpen = open;
-  if (open) state.rightMode = mode;
+  if (open) {
+    state.rightMode = mode === "tools" ? "tools" : "code";
+    // Hide the 环境信息 card while the docked right sidebar is showing.
+    if (state.contextOpen) {
+      state.contextOpen = false;
+      applyContextPanel();
+    }
+  }
   if (open && state.panelRightWidth < PANEL_MIN_RIGHT) {
     state.panelRightWidth = PANEL_DEFAULT_RIGHT;
   }
   applyRightMode();
   applyPanelWidths();
+  savePanelWidths();
   if (open && state.rightMode === "tools") {
     requestAnimationFrame(() => window.forgeTerminalPanel?.refit?.());
   }
+  // Closing the dock restores the pinned context card.
+  if (wasOpen && !open) {
+    preferContextRightPanel();
+  }
+}
+
+function summarizeRunPatchStats(patchMap = state.runPatches) {
+  let adds = 0;
+  let dels = 0;
+  for (const item of patchMap.values()) {
+    if (Number.isFinite(item?.adds) && Number.isFinite(item?.dels)) {
+      adds += Number(item.adds) || 0;
+      dels += Number(item.dels) || 0;
+      continue;
+    }
+    if (item?.patch?.unifiedDiff) {
+      const stats = diffStatsFromUnifiedDiff(item.patch.unifiedDiff);
+      adds += stats.adds;
+      dels += stats.dels;
+    }
+  }
+  return { adds, dels, fileCount: patchMap.size };
+}
+
+function contextSourceEntries() {
+  const seen = new Set();
+  const out = [];
+  const push = (path, kind, meta = "") => {
+    const norm = normalizeWorkspaceRelPath(getActiveProject()?.cwd, path) || path;
+    if (!norm || seen.has(norm)) return;
+    seen.add(norm);
+    out.push({ path: norm, kind, meta });
+  };
+  for (const [path, item] of state.runPatches.entries()) {
+    const hasRuntime = Number.isFinite(item?.adds) && Number.isFinite(item?.dels);
+    const stats = hasRuntime
+      ? { adds: item.adds, dels: item.dels }
+      : item?.patch?.unifiedDiff
+        ? diffStatsFromUnifiedDiff(item.patch.unifiedDiff)
+        : null;
+    const meta = stats
+      ? `+${stats.adds} -${stats.dels}`
+      : item?.meta || "已修改";
+    push(path, "file", meta);
+  }
+  for (const entry of state.composerAttachments || []) {
+    const name = entry?.attachment?.name || entry?.attachment?.path || "";
+    if (name) push(name, "attachment", "附件");
+  }
+  return out;
+}
+
+function contextIcon(name) {
+  const icons = {
+    change:
+      '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="2"/><path d="M8 5.5v5M5.5 8h5"/></svg>',
+    local:
+      '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2" y="3.5" width="12" height="8" rx="1.5"/><path d="M5.5 13.5h5M8 11.5v2"/></svg>',
+    branch:
+      '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="4.5" cy="4" r="1.6"/><circle cx="4.5" cy="12" r="1.6"/><circle cx="11.5" cy="8" r="1.6"/><path d="M4.5 5.6v4.8M4.5 8h5.4"/></svg>',
+    commit:
+      '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="2.2"/><path d="M8 2.5v3.2M8 10.3v3.2"/></svg>',
+    file:
+      '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M4.5 2.5h5l3 3v8a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1Z"/><path d="M9.5 2.5v3h3"/></svg>',
+    viewAll:
+      '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="4" cy="8" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="12" cy="8" r="1.4"/></svg>',
+    chevron:
+      '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m5 6 3 3 3-3"/></svg>',
+  };
+  return icons[name] || "";
+}
+
+function renderContextPanel() {
+  const env = $("contextEnvList");
+  const sources = $("contextSourcesList");
+  if (!env || !sources) return;
+
+  const active = getActiveProject();
+  const branchInfo = active ? state.gitBranchByProject.get(active.id) : null;
+  const stats = summarizeRunPatchStats();
+  const branchLabel = branchInfo?.isRepo && branchInfo.current
+    ? branchInfo.current
+    : active?.cwd
+      ? "非 Git 仓库"
+      : "—";
+  const localLabel = active?.name || (active?.cwd ? basename(active.cwd) : "未选择项目");
+  const canBranch = Boolean(branchInfo?.isRepo && branchInfo.current && !branchInfo.detached);
+  const changeValue = stats.fileCount
+    ? `<span class="context-stat-add">+${stats.adds.toLocaleString("en-US")}</span><span class="context-stat-del">-${stats.dels.toLocaleString("en-US")}</span>`
+    : `<span class="context-muted">暂无变更</span>`;
+
+  env.innerHTML = `
+    <div class="context-env-row">
+      <span class="context-env-icon">${contextIcon("change")}</span>
+      <span class="context-env-label">变更</span>
+      <span class="context-env-value">${changeValue}</span>
+    </div>
+    <button type="button" class="context-env-btn" data-context-action="reveal-project" ${active?.cwd ? "" : "disabled"}>
+      <span class="context-env-icon">${contextIcon("local")}</span>
+      <span class="context-env-label">本地</span>
+      <span class="context-env-value" title="${escapeHtml(active?.cwd || "")}">${escapeHtml(localLabel)}</span>
+      <span class="context-env-caret">${contextIcon("chevron")}</span>
+    </button>
+    <button type="button" class="context-env-btn" data-context-action="git-branch" ${canBranch ? "" : "disabled"}>
+      <span class="context-env-icon">${contextIcon("branch")}</span>
+      <span class="context-env-value context-env-value-grow" title="${escapeHtml(branchLabel)}">${escapeHtml(branchLabel)}</span>
+      <span class="context-env-caret">${contextIcon("chevron")}</span>
+    </button>
+    <button type="button" class="context-env-btn" data-context-action="git-commit" ${active?.cwd && branchInfo?.isRepo ? "" : "disabled"}>
+      <span class="context-env-icon">${contextIcon("commit")}</span>
+      <span class="context-env-value context-env-value-grow">提交或推送</span>
+    </button>
+  `;
+
+  const entries = contextSourceEntries();
+  if (!entries.length) {
+    sources.innerHTML = `<p class="context-empty">运行或附加文件后，相关来源会显示在这里。</p>`;
+  } else {
+    const shown = entries.slice(0, 8);
+    const rows = shown
+      .map((item) => {
+        const name = basename(item.path);
+        return `<button type="button" class="context-source-btn" data-context-source="${escapeHtml(item.path)}" data-context-kind="${escapeHtml(item.kind)}" title="${escapeHtml(item.path)}">
+          <span class="context-source-icon">${contextIcon("file")}</span>
+          <span class="context-source-name">${escapeHtml(name)}</span>
+        </button>`;
+      })
+      .join("");
+    const viewAll = entries.length > 1
+      ? `<button type="button" class="context-source-btn context-view-all" data-context-action="view-all-sources">
+          <span class="context-source-icon">${contextIcon("viewAll")}</span>
+          <span class="context-source-name">查看全部</span>
+        </button>`
+      : "";
+    sources.innerHTML = rows + viewAll;
+  }
+}
+
+function refreshContextPanelIfOpen() {
+  if (state.contextOpen) renderContextPanel();
+}
+
+function bindContextPanel() {
+  const onEnvAction = (action) => {
+    const active = getActiveProject();
+    if (action === "reveal-project" && active?.cwd) {
+      void requireBridge().revealPath?.(active.cwd);
+      return;
+    }
+    if (action === "git-branch") {
+      $("composerGitBranchTag")?.click();
+      return;
+    }
+    if (action === "git-commit") {
+      openRight(true, "tools");
+      window.forgeTerminalPanel?.ensureStarted?.();
+      notifyUser("已打开终端，可在此提交或推送", "status");
+      return;
+    }
+    if (action === "view-all-sources") {
+      const first = contextSourceEntries().find((e) => e.kind === "file");
+      if (first) void openModifiedFile(first.path);
+      return;
+    }
+    if (action === "env-more" || action === "sources-more") {
+      $("composerAddBtn")?.click();
+    }
+  };
+  $("contextPanel")?.addEventListener("click", (e) => {
+    const actionBtn = e.target.closest("[data-context-action]");
+    if (actionBtn && $("contextPanel").contains(actionBtn)) {
+      e.preventDefault();
+      onEnvAction(actionBtn.getAttribute("data-context-action"));
+      return;
+    }
+    const src = e.target.closest("[data-context-source]");
+    if (!src || !$("contextPanel").contains(src)) return;
+    const path = src.getAttribute("data-context-source");
+    const kind = src.getAttribute("data-context-kind");
+    if (!path) return;
+    if (kind === "attachment") {
+      notifyUser(`附件：${basename(path)}`, "status");
+      return;
+    }
+    void openModifiedFile(path);
+  });
 }
 
 /** True when the event target is inside the right code panel or its chrome. */
@@ -7411,7 +7803,7 @@ function isRightCodePanelChrome(target) {
   if (!(target instanceof Element)) return false;
   return Boolean(
     target.closest(
-      "#rightPanel, #resizeHandleRight, #toggleRightBtn, #toggleWorkspaceExplorerBtn",
+      "#rightPanel, #contextPanel, #resizeHandleRight, #toggleRightBtn, #toggleWorkspaceExplorerBtn",
     ),
   );
 }
@@ -7447,7 +7839,7 @@ function bindRightPanelOutsideClose() {
       if (e.button != null && e.button !== 0) return;
       const t = e.target;
       if (isRightCodePanelChrome(t) || isRightCodePanelOpenTrigger(t)) return;
-      openRight(false);
+      dismissRightPanel();
     },
     true,
   );
@@ -7814,7 +8206,7 @@ function bindTalentTemplateActions(meta) {
 function showTalentTemplateDetail(meta, content) {
   openRight(true);
   if (state.panelRightWidth < 420) {
-    state.panelRightWidth = clampPanelWidth(480, PANEL_MIN_RIGHT, PANEL_MAX_RIGHT);
+    state.panelRightWidth = clampRightPanelWidth(480);
     applyPanelWidths();
     savePanelWidths();
   }
@@ -8004,7 +8396,7 @@ function applyPendingCodeDetailScroll(root) {
 }
 
 function showCodeDetail(detail) {
-  openRight(true);
+  openRight(true, "code");
   setRightPanelMode("code");
   state.activeSkillId = "";
   state.activePluginId = "";
@@ -8307,6 +8699,7 @@ function renderComposerGitBranchSelect() {
   label.textContent = info.current;
   if (disabled && state.gitBranchMenuOpen) closeGitBranchMenu();
   else if (state.gitBranchMenuOpen) renderGitBranchMenu();
+  refreshContextPanelIfOpen();
 }
 
 function closeGitBranchMenu() {
@@ -8586,6 +8979,7 @@ function startNewChat(opts = {}) {
   fileMentionApi?.close?.();
   sessionRuns?.syncComposerRunChrome();
   setNav("chat");
+  preferContextRightPanel({ force: true });
   scheduleAcpPrewarm();
 }
 
@@ -9156,6 +9550,7 @@ function renderComposerAttachments() {
   if (!list.length) {
     bar.classList.add("hidden");
     bar.innerHTML = "";
+    refreshContextPanelIfOpen();
     return;
   }
   bar.classList.remove("hidden");
@@ -9180,6 +9575,7 @@ function renderComposerAttachments() {
       renderComposerAttachments();
     });
   });
+  refreshContextPanelIfOpen();
 }
 
 function composerAttachmentFingerprint(a) {
@@ -11870,7 +12266,7 @@ function setNav(mode) {
   if (mode === "talents") {
     setTeamNavExpanded(true);
     clearTalentPreviewSelection();
-    openRight(false);
+    hideRightPanelKeepPin();
   }
   const isChat = mode === "chat";
   $("centerPanel")?.classList.toggle("chat-empty-mode", isChat && state.chatEmpty);
@@ -11886,6 +12282,8 @@ function setNav(mode) {
   if (mode === "plugins") syncPluginToolbarPanes();
   if (mode === "hooks") syncHooksToolbarPanes();
   if (mode === "talents") syncTalentsToolbarPanes();
+  if (isChat) preferContextRightPanel();
+  else if (mode !== "talents") hideRightPanelKeepPin();
   $("runState").classList.toggle("hidden", !isChat);
   $("centerTitle").textContent =
     mode === "chat"
@@ -14214,11 +14612,13 @@ function renderProjects() {
         state.activeProjectId = p.id;
         state.expandedProjectIds.add(p.id);
         setNav("chat");
+        preferContextRightPanel({ force: true });
         void sessionRuns
           .switchSessionView(p, sid, prevSid, { outgoingSessionId: outgoingSid })
           .then(() => {
             renderProjects();
             renderComposerProjectSelect();
+            preferContextRightPanel({ force: true });
           });
       });
     });
@@ -15672,11 +16072,13 @@ function bindAutomationSessionLinks(root) {
         state.viewingTimelineSessionId || active.sessionId || "";
       const prevSid = active.sessionId;
       setNav("chat");
+      preferContextRightPanel({ force: true });
       void sessionRuns
         ?.switchSessionView(active, sid, prevSid, { outgoingSessionId: outgoingSid })
         .then(() => {
           renderProjects();
           renderComposerProjectSelect();
+          preferContextRightPanel({ force: true });
         });
     });
   });
@@ -17495,6 +17897,7 @@ function openSearchedSession(sessionId, cwd) {
   state.activeProjectId = project.id;
   state.expandedProjectIds.add(project.id);
   setNav("chat");
+  preferContextRightPanel({ force: true });
   void sessionRuns
     ?.switchSessionView(project, sessionId, prevSid, {
       outgoingSessionId: outgoingSid,
@@ -17502,6 +17905,7 @@ function openSearchedSession(sessionId, cwd) {
     .then(() => {
       renderProjects();
       renderComposerProjectSelect();
+      preferContextRightPanel({ force: true });
     });
 }
 
@@ -17591,18 +17995,17 @@ function bindActions() {
   $("navRuntimesBtn")?.addEventListener("click", () => setNav("runtimes"));
 
   $("toggleRightBtn").addEventListener("click", () => {
-    // Clicking the active code panel closes it; otherwise switch the right
-    // region to the code panel (taking it over from the terminal if needed).
-    const closeIt = state.rightOpen && state.rightMode === "code";
-    openRight(!closeIt, "code");
+    toggleContextPanel();
   });
+  $("collapseCodePanelBtn")?.addEventListener("click", () => dismissRightPanel());
+  bindContextPanel();
   $("terminalToggleBtn")?.addEventListener("click", () => {
     const isActive =
       state.rightOpen &&
       state.rightMode === "tools" &&
       window.forgeToolsPanel?.activeKind?.() === "terminal";
     if (isActive) {
-      openRight(false);
+      dismissRightPanel();
       return;
     }
     openRight(true, "tools");
@@ -17614,19 +18017,19 @@ function bindActions() {
       state.rightMode === "tools" &&
       window.forgeToolsPanel?.activeKind?.() === "browser";
     if (isActive) {
-      openRight(false);
+      dismissRightPanel();
       return;
     }
     openRight(true, "tools");
     window.forgeBrowserPanel?.ensureStarted?.();
   });
-  $("toolsCloseBtn")?.addEventListener("click", () => openRight(false));
+  $("toolsCloseBtn")?.addEventListener("click", () => dismissRightPanel());
   // Keep launcher highlights in sync with tab switches, and close the right
   // region when the last tools tab is closed.
   document.addEventListener("forge-tools-changed", () => {
     if (state.rightMode !== "tools") return;
     if (state.rightOpen && !window.forgeToolsPanel?.hasTabs?.()) {
-      openRight(false);
+      dismissRightPanel();
       return;
     }
     applyRightMode();
@@ -17640,7 +18043,7 @@ function bindActions() {
   });
 
   $("toggleWorkspaceExplorerBtn")?.addEventListener("click", () => {
-    if (!state.rightOpen) openRight(true);
+    if (!state.rightOpen) openRight(true, "code");
     const next = !state.workspaceExplorerOpen;
     if (next && state.explorerMode === "workspace") {
       expandExplorerToFile(state.workspaceActiveFile);
@@ -18895,6 +19298,8 @@ async function bootstrap() {
   loadPanelWidths();
   applyPanelWidths();
   bindPanelResize();
+  bindLeftPanelToggle();
+  preferContextRightPanel();
 
   bindTabs();
   bindSettingsModal();
@@ -18955,7 +19360,7 @@ async function bootstrap() {
   scheduleAcpPrewarm();
 
   startNewChat();
-  openRight(false);
+  preferContextRightPanel({ force: true });
 
   void reloadConfigAndSessions().catch((e) => {
     showBootstrapBanner(`后台加载配置/会话失败: ${String(e)}`);
