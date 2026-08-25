@@ -37,7 +37,7 @@
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.6.0",
+    "@electron/rebuild": "^4.2.0",
     "@types/node": "^22.13.10",
     "electron": "^39.8.5",
     "electron-builder": "^25.1.8",
