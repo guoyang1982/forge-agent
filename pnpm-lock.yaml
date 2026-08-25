@@ -311,6 +311,9 @@ importers:
       expo-image-picker:
         specifier: ~57.0.7
         version: 57.0.7(expo@57.0.9)
+      expo-modules-core:
+        specifier: ~57.0.8
+        version: 57.0.8(react-native@0.86.2(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3))(react@19.2.3)
       expo-secure-store:
         specifier: ~57.0.1
         version: 57.0.1(expo@57.0.9)

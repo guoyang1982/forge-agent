@@ -1417,8 +1417,8 @@ function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1520,
     height: 960,
-    minWidth: 1160,
-    minHeight: 760,
+    minWidth: 480,
+    minHeight: 520,
     title: "Forge 桌面端",
     icon: appIconPath,
     backgroundColor: "#121212",

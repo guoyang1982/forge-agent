@@ -140,7 +140,7 @@ function applyRunEvent(
       next.pendingPermission = null;
     }
   } else if (action.event.kind === "done") {
-    next.runningSessionId = action.event.sessionId;
+    next.runningSessionId = null;
     if (action.event.finalText && !next.liveText) next.liveText = action.event.finalText.slice(-100_000);
   }
   return next;
@@ -152,13 +152,17 @@ function applyPersistedSession(
   messages: MessageItem[],
 ): MobileWorkbenchState {
   const isRunning = state.runningSessionId === sessionId;
+  const isCompletedLiveRun = state.liveEvents.some(
+    (event) => event.kind === "done" && event.sessionId === sessionId,
+  );
+  const replacesLiveTurn = isRunning || isCompletedLiveRun;
   return {
     ...state,
     messagesBySession: { ...state.messagesBySession, [sessionId]: messages },
     runningSessionId: isRunning ? null : state.runningSessionId,
-    liveEvents: isRunning ? [] : state.liveEvents,
-    liveText: isRunning ? "" : state.liveText,
-    pendingPermission: isRunning ? null : state.pendingPermission,
+    liveEvents: replacesLiveTurn ? [] : state.liveEvents,
+    liveText: replacesLiveTurn ? "" : state.liveText,
+    pendingPermission: replacesLiveTurn ? null : state.pendingPermission,
     unreadSessionIds: state.activeSessionId === sessionId
       ? state.unreadSessionIds.filter((id) => id !== sessionId)
       : uniqueIds([...state.unreadSessionIds, sessionId]),

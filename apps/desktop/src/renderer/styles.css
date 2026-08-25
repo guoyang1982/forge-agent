@@ -20,7 +20,9 @@
   --radius-md: 12px;
   --radius-sm: 8px;
   --shadow-card: 0 8px 32px rgba(0, 0, 0, 0.45);
-  --sidebar-width: 272px;
+  --sidebar-width: 320px;
+  --chat-column-max: 720px;
+  --chat-column-gutter: 40px;
   --text-nav: 15px;
   --text-project: 15px;
   --text-session: 14px;
@@ -92,13 +94,20 @@ body {
 .app-shell {
   --panel-left-width: var(--sidebar-width);
   --panel-right-width: 0px;
+  --context-panel-width: 360px;
+  --resize-handle-left-size: 5px;
+  --resize-handle-right-size: 5px;
+  --sidebar-overlay-width: var(--sidebar-width);
+  position: relative;
   height: 100vh;
+  min-width: 0;
+  min-height: 0;
   display: grid;
   grid-template-columns:
     var(--panel-left-width)
-    var(--resize-handle-size, 5px)
-    minmax(240px, 1fr)
-    var(--resize-handle-size, 5px)
+    var(--resize-handle-left-size)
+    minmax(0, 1fr)
+    var(--resize-handle-right-size)
     var(--panel-right-width);
   gap: 0;
 }
@@ -171,11 +180,65 @@ body.is-resizing .resize-handle {
   overflow: auto;
 }
 
+.app-shell.left-collapsed .left-panel {
+  padding: 0;
+  overflow: hidden;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.app-shell.left-overlay .left-panel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 40;
+  width: var(--sidebar-overlay-width);
+  max-width: min(var(--sidebar-overlay-width), 86vw);
+  padding: 16px 12px 14px;
+  overflow: auto;
+  pointer-events: auto;
+  visibility: visible;
+  box-shadow: 16px 0 40px rgba(0, 0, 0, 0.42);
+}
+
+.left-panel-backdrop {
+  display: none;
+  position: absolute;
+  inset: 0;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  z-index: 35;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: rgba(0, 0, 0, 0.38);
+  cursor: pointer;
+}
+
+.app-shell.left-overlay .left-panel-backdrop {
+  display: block;
+}
+
+.app-shell.left-overlay .left-panel-backdrop.hidden {
+  display: none;
+}
+
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 4px 8px 14px;
+}
+
+.brand-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-collapse-btn {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .logo {
@@ -2079,8 +2142,16 @@ body.is-resizing .resize-handle {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 24px 8px;
+  padding: 14px var(--chat-column-gutter) 8px;
   flex-shrink: 0;
+  gap: 8px;
+}
+
+.center-top-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .center-top h2 {
@@ -2088,20 +2159,66 @@ body.is-resizing .resize-handle {
   font-weight: 500;
   color: var(--sub);
   letter-spacing: 0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-empty-mode .center-top {
+  padding: 10px 16px 0;
+}
+
+.chat-empty-mode .center-top h2 {
   opacity: 0;
   pointer-events: none;
-  height: 0;
-  padding: 0;
-  overflow: hidden;
+}
+
+/* Keep layout toggles usable on the empty chat screen (Codex-style). */
+.chat-empty-mode .center-top-left #toggleLeftBtn:not(.hidden),
+.chat-empty-mode .top-actions #toggleRightBtn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.chat-empty-mode .top-actions #terminalToggleBtn,
+.chat-empty-mode .top-actions #browserToggleBtn,
+.chat-empty-mode .top-actions #runState {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .top-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .center-top {
+    padding: 10px 12px 6px;
+  }
+
+  .composer {
+    padding: 8px 10px 12px;
+  }
+
+  .chat-empty-mode .center-stage {
+    padding: 24px 12px 12px;
+    gap: 20px;
+  }
+
+  .chat-empty h2 {
+    font-size: 22px;
+  }
+
+  .tag-project-label {
+    max-width: 72px;
+  }
+
+  .inline-select {
+    max-width: 108px;
+  }
 }
 
 .pill {
@@ -2121,9 +2238,19 @@ body.is-resizing .resize-handle {
 
 .center-stage {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+}
+
+.center-body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
   overflow: hidden;
 }
 
@@ -2155,21 +2282,35 @@ body.is-resizing .resize-handle {
   overflow: visible;
 }
 
+/* With the context card open, keep the empty prompt in the remaining column. */
+.app-shell.context-open .center-panel.chat-empty-mode .center-stage {
+  align-items: stretch;
+}
+
+.app-shell.context-open .center-panel.chat-empty-mode .chat-empty,
+.app-shell.context-open .center-panel.chat-empty-mode .composer {
+  width: min(var(--chat-column-max), 100%);
+  margin-left: auto;
+  margin-right: auto;
+}
+
 .chat-empty-mode .chat-empty {
   flex: 0 0 auto;
-  width: min(720px, 100%);
+  width: min(var(--chat-column-max), 100%);
 }
 
 .chat-empty-mode .composer {
   flex: 0 0 auto;
-  width: min(720px, 100%);
-  max-width: 720px;
+  width: min(var(--chat-column-max), 100%);
+  max-width: var(--chat-column-max);
   padding: 0;
   margin: 12px 0 0;
+  justify-content: center;
 }
 
 .chat-empty-mode .composer-wrap {
   width: 100%;
+  max-width: none;
 }
 
 .chat-empty-mode #messageInput {
@@ -2184,7 +2325,7 @@ body.is-resizing .resize-handle {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 14px 24px 18px;
+  padding: 14px var(--chat-column-gutter) 18px;
 }
 
 .timeline > .event,
@@ -2195,9 +2336,61 @@ body.is-resizing .resize-handle {
 .timeline > .plan-card,
 .timeline > .dispatch-timeline-card,
 .timeline > .reflection-card {
-  width: min(100%, 980px);
+  width: min(100%, var(--chat-column-max));
+  max-width: var(--chat-column-max);
+  margin-left: 0;
+  margin-right: auto;
+  box-sizing: border-box;
+}
+
+/* Codex: with the context card closed (and no code/tools dock), center the reading column. */
+.app-shell:not(.context-open):not(.right-open) .timeline > .event,
+.app-shell:not(.context-open):not(.right-open) .timeline > .run-activity,
+.app-shell:not(.context-open):not(.right-open) .timeline > .run-activity-stream,
+.app-shell:not(.context-open):not(.right-open) .timeline > details.step-tool-group,
+.app-shell:not(.context-open):not(.right-open) .timeline > .codex-commentary,
+.app-shell:not(.context-open):not(.right-open) .timeline > .plan-card,
+.app-shell:not(.context-open):not(.right-open) .timeline > .dispatch-timeline-card,
+.app-shell:not(.context-open):not(.right-open) .timeline > .reflection-card {
   margin-left: auto;
   margin-right: auto;
+}
+
+.app-shell:not(.context-open):not(.right-open) .composer {
+  justify-content: center;
+}
+
+.app-shell:not(.context-open):not(.right-open) .composer-wrap {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* With context card or code/tools dock open, keep the column flush to the left gutter. */
+.app-shell.context-open .timeline > .event,
+.app-shell.context-open .timeline > .run-activity,
+.app-shell.context-open .timeline > .run-activity-stream,
+.app-shell.context-open .timeline > details.step-tool-group,
+.app-shell.context-open .timeline > .codex-commentary,
+.app-shell.context-open .timeline > .plan-card,
+.app-shell.context-open .timeline > .dispatch-timeline-card,
+.app-shell.context-open .timeline > .reflection-card,
+.app-shell.context-open .composer-wrap,
+.app-shell.right-open .timeline > .event,
+.app-shell.right-open .timeline > .run-activity,
+.app-shell.right-open .timeline > .run-activity-stream,
+.app-shell.right-open .timeline > details.step-tool-group,
+.app-shell.right-open .timeline > .codex-commentary,
+.app-shell.right-open .timeline > .plan-card,
+.app-shell.right-open .timeline > .dispatch-timeline-card,
+.app-shell.right-open .timeline > .reflection-card,
+.app-shell.right-open .composer-wrap {
+  margin-left: 0;
+  margin-right: auto;
+}
+
+.app-shell.context-open .composer,
+.app-shell.right-open .composer {
+  justify-content: flex-start;
 }
 
 .hidden {
@@ -2208,9 +2401,9 @@ body.is-resizing .resize-handle {
 .composer {
   flex-shrink: 0;
   width: 100%;
-  padding: 8px 16px 14px;
+  padding: 8px var(--chat-column-gutter) 14px;
   display: flex;
-  justify-content: stretch;
+  justify-content: flex-start;
   box-sizing: border-box;
 }
 
@@ -2220,8 +2413,8 @@ body.is-resizing .resize-handle {
 
 .composer-wrap {
   position: relative;
-  width: 100%;
-  max-width: none;
+  width: min(100%, var(--chat-column-max));
+  max-width: var(--chat-column-max);
   overflow: visible;
 }
 
@@ -2684,10 +2877,10 @@ body.is-resizing .resize-handle {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: 1;
+  flex: 1 1 140px;
   min-width: 0;
-  flex-wrap: nowrap;
-  overflow: visible;
+  flex-wrap: wrap;
+  overflow: hidden;
 }
 
 .inline-select {
@@ -4555,6 +4748,191 @@ body.is-resizing .resize-handle {
   visibility: hidden;
 }
 
+/* ── Session context card (independent of code/tools right dock) ── */
+.context-panel {
+  flex: 0 0 var(--context-panel-width);
+  width: var(--context-panel-width);
+  max-width: 42vw;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 8px 14px 16px 4px;
+  overflow: auto;
+  background: transparent;
+  align-self: stretch;
+  z-index: 2;
+}
+
+.context-panel.collapsed {
+  display: none;
+}
+
+.context-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  background: #1c1c1e;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+.context-card-section {
+  padding: 12px 10px 10px;
+}
+
+.context-card-section + .context-card-section {
+  border-top: 1px solid var(--line);
+}
+
+.context-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  padding: 0 6px;
+}
+
+.context-card-head h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.context-card-plus {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sub);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.context-card-plus:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.context-env-list,
+.context-sources-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.context-env-row,
+.context-env-btn,
+.context-source-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.context-env-row {
+  cursor: default;
+}
+
+.context-env-btn:hover,
+.context-source-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.context-env-btn:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.context-env-btn:disabled:hover {
+  background: transparent;
+}
+
+.context-env-icon,
+.context-source-icon {
+  flex: 0 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--sub);
+}
+
+.context-env-label {
+  flex: 0 0 auto;
+  color: var(--text);
+}
+
+.context-env-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.context-env-value-grow {
+  flex: 1;
+}
+
+.context-env-caret {
+  flex: 0 0 14px;
+  display: inline-flex;
+  color: var(--sub-dim);
+}
+
+.context-stat-add {
+  color: #3dd68c;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-stat-del {
+  color: #f07178;
+  font-variant-numeric: tabular-nums;
+  margin-left: 6px;
+}
+
+.context-muted {
+  color: var(--sub-dim);
+}
+
+.context-source-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-view-all .context-source-name {
+  color: var(--sub);
+}
+
+.context-empty {
+  margin: 0;
+  padding: 8px;
+  font-size: 12px;
+  color: var(--sub-dim);
+  line-height: 1.45;
+}
+
 .right-panel-head {
   flex-shrink: 0;
 }
@@ -4565,6 +4943,10 @@ body.is-resizing .resize-handle {
   gap: 8px;
   margin-bottom: 8px;
   min-height: 28px;
+}
+
+.right-head-toolbar .sidebar-collapse-btn {
+  margin-left: auto;
 }
 
 .explorer-toggle.active {
@@ -8685,7 +9067,10 @@ textarea {
   letter-spacing: -0.5px;
 }
 
-#terminalToggleBtn.active {
+#terminalToggleBtn.active,
+#browserToggleBtn.active,
+#toggleRightBtn.active,
+#toggleLeftBtn.active {
   color: var(--accent);
   background: var(--accent-soft);
 }

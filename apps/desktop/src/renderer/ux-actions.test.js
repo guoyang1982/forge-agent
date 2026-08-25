@@ -1073,11 +1073,12 @@ describe("right code panel outside close", () => {
     expect(bind).toContain('state.rightMode !== "code"');
     expect(bind).toContain("isRightCodePanelChrome");
     expect(bind).toContain("isRightCodePanelOpenTrigger");
-    expect(bind).toContain("openRight(false)");
+    expect(bind).toContain("dismissRightPanel()");
     expect(bind).toContain("pointerdown");
     const chrome =
       source.match(/function isRightCodePanelChrome[\s\S]*?\n}\n/)?.[0] ?? "";
     expect(chrome).toContain("#rightPanel");
+    expect(chrome).toContain("#contextPanel");
     expect(chrome).toContain("#toggleRightBtn");
     const triggers =
       source.match(/function isRightCodePanelOpenTrigger[\s\S]*?\n}\n/)?.[0] ?? "";
@@ -1274,5 +1275,93 @@ describe("flat run-activity streaming", () => {
     expect(collapse).toContain("chars >= 800");
     const css = readFileSync(join(here, "styles.css"), "utf-8");
     expect(css).toContain(".run-activity-stream");
+  });
+});
+
+describe("collapsible left sidebar and compact window", () => {
+  it("lets the window shrink like Codex and hides the left sidebar", () => {
+    const source = appSource();
+    const html = readFileSync(join(here, "index.html"), "utf-8");
+    const css = readFileSync(join(here, "styles.css"), "utf-8");
+    const main = readFileSync(join(here, "../main.ts"), "utf-8");
+
+    expect(main).toMatch(/minWidth:\s*480/);
+    expect(main).toMatch(/minHeight:\s*520/);
+    expect(main).not.toMatch(/minWidth:\s*1160/);
+
+    expect(html).toContain('id="toggleLeftBtn"');
+    expect(html).toContain('id="collapseLeftBtn"');
+    expect(html).toContain('id="leftPanelBackdrop"');
+    expect(html).toContain('id="collapseCodePanelBtn"');
+    expect(html).toContain('id="contextPanel"');
+    expect(html).toContain("环境信息");
+    expect(html).toContain("来源");
+    expect(html).toContain("context-card");
+    expect(html).toContain("center-body");
+    expect(html).not.toContain('id="collapseContextPanelBtn"');
+    expect(source).toContain("function preferContextRightPanel");
+    expect(source).toContain("function dismissRightPanel");
+    expect(source).toContain("function setContextOpen");
+    expect(source).toContain("function toggleContextPanel");
+    expect(source).toContain("function applyContextPanel");
+    expect(source).toContain("rightContextPinned");
+    expect(source).toContain("contextOpen");
+    expect(source).toContain("preferContextRightPanel()");
+    expect(source).toContain('rightMode: "code"');
+    expect(source).toContain("preferContextRightPanel({ force: true })");
+    expect(source).not.toContain("if (isNarrowShell()) return;\n  setContextOpen(true");
+    expect(css).toContain(".chat-empty-mode .top-actions #toggleRightBtn");
+    expect(html).toContain("center-top-left");
+    // Codex-style: one left collapse in the sidebar, one reopen in center when hidden.
+    expect(html).toMatch(/id="toggleLeftBtn"[\s\S]*?class="icon-btn subtle hidden"/);
+    // Right pane uses the panel icon (not ✕) to collapse.
+    expect(html).toContain('id="toolsCloseBtn"');
+    expect(html).toContain("M9.5 2.5v11");
+
+    expect(source).toContain("function setLeftOpen");
+    expect(source).toContain("function toggleLeftPanel");
+    expect(source).toContain("function bindLeftPanelToggle");
+    expect(source).toContain("function syncContextPanelButton");
+    expect(source).toContain("function renderContextPanel");
+    expect(source).toContain("function bindContextPanel");
+    expect(source).toContain("toggleContextPanel()");
+    expect(source).toContain("setContextOpen(true");
+    expect(source).not.toContain('openRight(true, "context")');
+    expect(source).toContain("bindLeftPanelToggle()");
+    expect(source).toContain("LEFT_DOCK_MIN_WINDOW");
+    expect(source).toContain("PANEL_COLLAPSE_SNAP");
+    expect(source).toContain("PANEL_MIN_CENTER");
+    expect(source).toContain("function maxRightPanelWidth");
+    expect(source).toContain("function clampRightPanelWidth");
+    expect(source).toContain('key !== "b"');
+    expect(source).toContain("leftOpen: state.leftPinned");
+    expect(source).toContain('reopen.classList.toggle("hidden", open)');
+
+    expect(css).toContain(".app-shell.left-collapsed");
+    expect(css).toContain(".app-shell.left-overlay");
+    expect(css).toContain(".context-panel");
+    expect(css).toContain(".center-body");
+    expect(css).toContain("minmax(0, 1fr)");
+    expect(css).toContain("--chat-column-max");
+    expect(css).toContain("--sidebar-width: 320px");
+    expect(css).toContain("--chat-column-gutter: 40px");
+    expect(css).toContain("width: min(100%, var(--chat-column-max))");
+    expect(css).toContain(".app-shell:not(.context-open):not(.right-open)");
+    expect(css).toContain(".app-shell.context-open");
+    expect(css).toContain(".app-shell.right-open");
+    expect(source).toContain('shell.classList.toggle("context-open", state.contextOpen)');
+    expect(source).toContain('shell.classList.toggle("right-open", state.rightOpen)');
+    expect(css).toMatch(/\.composer-wrap\s*\{[^}]*max-width:\s*var\(--chat-column-max\)/s);
+    expect(source).toContain("CONTEXT_PANEL_WIDTH");
+    expect(source).toContain("PANEL_DEFAULT_RIGHT = 420");
+    expect(source).toContain("CONTEXT_PANEL_WIDTH = 360");
+    expect(source).toContain("forgeDesktopPanelWidthsV5");
+    expect(source).toContain("function openRight");
+    expect(source).toContain("Hide the 环境信息 card while the docked right sidebar is showing");
+    expect(source).toContain("Closing the dock restores the pinned context card");
+    expect(source).toContain("if (isChat) preferContextRightPanel()");
+    expect(source).toContain("preferContextRightPanel({ force: true })");
+    expect(css).toContain(".composer-footer-left");
+    expect(css).toMatch(/flex-wrap:\s*wrap/);
   });
 });
