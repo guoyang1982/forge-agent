@@ -1361,6 +1361,14 @@ describe("collapsible left sidebar and compact window", () => {
     expect(source).toContain("Closing the dock restores the pinned context card");
     expect(source).toContain("if (isChat) preferContextRightPanel()");
     expect(source).toContain("preferContextRightPanel({ force: true })");
+    expect(source).toContain('if (state.activeNav !== "chat") return;');
+    expect(source).toContain('const isChat = state.activeNav === "chat"');
+    expect(source).toContain('btn.classList.toggle("hidden", !isChat)');
+    expect(source).toContain('launcher.classList.toggle("hidden", !isChat)');
+    expect(source).toContain("terminalToggleBtn");
+    expect(source).toContain("browserToggleBtn");
+    expect(source).toContain("syncContextPanelButton()");
+    expect(source).toContain("never reopen it on resource pages");
     expect(css).toContain(".composer-footer-left");
     expect(css).toMatch(/flex-wrap:\s*wrap/);
   });

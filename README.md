@@ -193,6 +193,7 @@ forge review --cwd /path/to/project
 | 文档 | 内容 |
 |------|------|
 | [快速开始](docs/getting-started.md) | 安装、模型配置、首次对话与验证 |
+| [产品与工程路线图](docs/roadmap.md) | 后续能力优先级、收益、依赖、完成标准与长期演进方向 |
 | [桌面端指南](docs/desktop-guide.md) | 下载、项目、Runtime、变更审查与回滚 |
 | [人才中心与团队派活](docs/talent-center.md) | 浏览人才市场、租用专家、绑定能力与多人协作 |
 | [移动端与消息渠道](docs/mobile-access.md) | Channel Gateway、渠道接入、项目绑定、运行条件与安全边界 |

@@ -25,4 +25,8 @@ mcp.json
 # Local electron-builder output. Release artifacts are published outside Git.
 release/
 # Local docs (designs, plans, architecture diagrams) — keep on disk, do not publish.
+# The product roadmap is the one public, long-lived exception.
 docs/
+!docs/
+docs/*
+!docs/roadmap.md
