@@ -7359,6 +7359,9 @@ function hideRightPanelKeepPin() {
 }
 
 function preferContextRightPanel(options = {}) {
+  // Environment-info card is chat-only; never reopen it on resource pages
+  // (e.g. closing the terminal dock on 渠道 must not resurrect 环境信息).
+  if (state.activeNav !== "chat") return;
   const force = Boolean(options.force);
   if (!force && !state.rightContextPinned) return;
   // Don't crowd the chat column while the code/tools dock is open.
@@ -7396,16 +7399,26 @@ function syncLeftPanelButtons() {
   }
 }
 
-/** Top-bar button toggles only the context card (always visible, like Codex). */
+/** Top-bar context / terminal / browser controls — chat surfaces only. */
 function syncContextPanelButton() {
+  const isChat = state.activeNav === "chat";
   const btn = $("toggleRightBtn");
-  if (!btn) return;
-  const open = state.contextOpen;
-  btn.classList.remove("hidden");
-  btn.classList.toggle("active", open);
-  btn.setAttribute("aria-expanded", open ? "true" : "false");
-  btn.title = open ? "收起环境信息" : "展开环境信息";
-  btn.setAttribute("aria-label", open ? "收起环境信息" : "展开环境信息");
+  if (btn) {
+    const open = isChat && state.contextOpen;
+    btn.classList.toggle("hidden", !isChat);
+    btn.classList.toggle("active", open);
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    if (isChat) {
+      btn.title = open ? "收起环境信息" : "展开环境信息";
+      btn.setAttribute("aria-label", open ? "收起环境信息" : "展开环境信息");
+    }
+  }
+  for (const id of ["terminalToggleBtn", "browserToggleBtn"]) {
+    const launcher = $(id);
+    if (!launcher) continue;
+    launcher.classList.toggle("hidden", !isChat);
+    if (!isChat) launcher.classList.remove("active");
+  }
 }
 
 function syncRightPanelButtons() {
@@ -7420,6 +7433,8 @@ function applyContextPanel() {
 
 function setContextOpen(open, { persist = true } = {}) {
   const next = Boolean(open);
+  // Context card is chat-only; ignore open requests on resource pages.
+  if (next && state.activeNav !== "chat") return;
   // Opening the context card while the dock is up: close the dock first.
   if (next && state.rightOpen) {
     state.rightOpen = false;
@@ -12284,6 +12299,9 @@ function setNav(mode) {
   if (mode === "talents") syncTalentsToolbarPanes();
   if (isChat) preferContextRightPanel();
   else if (mode !== "talents") hideRightPanelKeepPin();
+  // Context-card toggle is chat-only; keep visibility in sync when leaving chat
+  // even if the panel was already closed (hideRightPanelKeepPin is a no-op then).
+  syncContextPanelButton();
   $("runState").classList.toggle("hidden", !isChat);
   $("centerTitle").textContent =
     mode === "chat"
@@ -17995,11 +18013,13 @@ function bindActions() {
   $("navRuntimesBtn")?.addEventListener("click", () => setNav("runtimes"));
 
   $("toggleRightBtn").addEventListener("click", () => {
+    if (state.activeNav !== "chat") return;
     toggleContextPanel();
   });
   $("collapseCodePanelBtn")?.addEventListener("click", () => dismissRightPanel());
   bindContextPanel();
   $("terminalToggleBtn")?.addEventListener("click", () => {
+    if (state.activeNav !== "chat") return;
     const isActive =
       state.rightOpen &&
       state.rightMode === "tools" &&
@@ -18012,6 +18032,7 @@ function bindActions() {
     window.forgeTerminalPanel?.ensureStarted?.();
   });
   $("browserToggleBtn")?.addEventListener("click", () => {
+    if (state.activeNav !== "chat") return;
     const isActive =
       state.rightOpen &&
       state.rightMode === "tools" &&
