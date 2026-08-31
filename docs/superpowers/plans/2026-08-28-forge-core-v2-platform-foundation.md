@@ -644,14 +644,19 @@ git commit -m "feat(daemon): add modular host lifecycle"
 - Create: `apps/daemon/src/modules/assets-module.ts`
 - Create: `apps/daemon/src/modules/automation-module.ts`
 - Create: `apps/daemon/src/modules/channel-module.ts`
+- Create: `apps/daemon/src/modules/context.ts`
+- Create: `apps/daemon/src/modules/index.ts`
 - Create: `apps/daemon/src/modules/modules.test.ts`
+- Modify: `apps/daemon/src/host/router.ts`
+- Modify: `apps/daemon/src/host/router.test.ts`
+- Modify: `apps/daemon/src/host/daemon-host.ts`
 - Modify: `apps/daemon/src/main.ts`
 
 **Interfaces:**
 - Consumes: 现有 `handle*` service functions 和 `TypedRouter`。
 - Produces: `createDaemonModules(context): DaemonModule[]`；`main.ts` 不再路由业务方法。
 
-- [ ] **Step 1: 写方法覆盖与 main 边界失败测试**
+- [x] **Step 1: 写方法覆盖与 main 边界失败测试**
 
 ```ts
 it("registers every declared non-company method exactly once", () => {
@@ -666,13 +671,13 @@ it("keeps main as composition root", () => {
 });
 ```
 
-- [ ] **Step 2: 运行模块测试确认 main 仍包含路由链**
+- [x] **Step 2: 运行模块测试确认 main 仍包含路由链**
 
 Run: `pnpm exec vitest run apps/daemon/src/modules/modules.test.ts`
 
 Expected: FAIL on the `if (method ===` assertion.
 
-- [ ] **Step 3: 迁移方法注册但保持 handler 语义**
+- [x] **Step 3: 迁移方法注册但保持 handler 语义**
 
 ```ts
 export const runtimeModule: DaemonModule = {
@@ -688,16 +693,16 @@ export const runtimeModule: DaemonModule = {
 
 Compatibility method names remain internal and are removed in the client migration plan. `main.ts` only loads config, opens `ForgeStore`, builds context/modules, starts host, writes PID and registers process signals.
 
-- [ ] **Step 4: 运行 Daemon 全测、构建与 ping 冒烟**
+- [x] **Step 4: 运行 Daemon 全测、构建与 ping 冒烟**
 
 Run: `pnpm --filter @forge/daemon test && pnpm --filter @forge/daemon build && pnpm test:ping`
 
 Expected: PASS; existing functional handlers behave unchanged.
 
-- [ ] **Step 5: 提交模块化 Daemon**
+- [x] **Step 5: 提交模块化 Daemon**
 
 ```bash
-git add apps/daemon/src/main.ts apps/daemon/src/modules
+git add apps/daemon/src/main.ts apps/daemon/src/modules apps/daemon/src/host
 git commit -m "refactor(daemon): register services as modules"
 ```
 

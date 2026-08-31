@@ -63,6 +63,21 @@ describe("TypedRouter", () => {
     expect(router.methods()).toEqual(["system.ping", "system.capabilities"]);
   });
 
+  it("temporarily dispatches legacy method names during the v2 migration", async () => {
+    const router = new TypedRouter();
+    const context = requestContext();
+    router.registerLegacy("run", async (params, receivedContext) => {
+      expect(params).toEqual({ message: "hello" });
+      expect(receivedContext).toBe(context);
+      return { sessionId: "session-1" };
+    });
+
+    await expect(
+      router.handleLegacy("run", { message: "hello" }, context),
+    ).resolves.toEqual({ sessionId: "session-1" });
+    expect(router.methods()).toContain("run");
+  });
+
   it("returns METHOD_NOT_FOUND without exposing implementation details", async () => {
     const error = await new TypedRouter()
       .handle("missing" as never, {}, requestContext())

@@ -2,7 +2,6 @@ import type {
   CapabilityManifest,
   ModuleHealthStatus,
   ModuleHealthSummary,
-  RpcMethod,
   SystemStatusResult,
 } from "@forge/protocol";
 import { RPC_PROTOCOL_VERSION } from "@forge/protocol";
@@ -104,7 +103,7 @@ export class DaemonHost<Context extends DaemonContext = DaemonContext> {
     emitLegacyAgentEvent: RpcContext["emitLegacyAgentEvent"],
     request: RpcRequestContext,
   ): Promise<unknown> {
-    return this.router.handle(method as RpcMethod, params as never, {
+    return this.router.handleLegacy(method, params, {
       requestId: request.requestId,
       correlationId: request.correlationId,
       emitLegacyAgentEvent,

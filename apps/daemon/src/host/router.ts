@@ -21,7 +21,7 @@ export class RpcFaultError extends Error {
 }
 
 export class TypedRouter {
-  private readonly handlers = new Map<RpcMethod, RegisteredHandler>();
+  private readonly handlers = new Map<string, RegisteredHandler>();
 
   register<M extends RpcMethod>(
     method: M,
@@ -36,11 +36,42 @@ export class TypedRouter {
     this.handlers.set(method, handler as RegisteredHandler);
   }
 
+  /** Temporary bridge for v1 method names while clients migrate to v2 contracts. */
+  registerLegacy(
+    method: string,
+    handler: RegisteredHandler,
+  ): void {
+    if (this.handlers.has(method)) {
+      throw new Error(`RPC method already registered: ${method}`);
+    }
+    this.handlers.set(method, handler);
+  }
+
   async handle<M extends RpcMethod>(
     method: M,
     params: RpcParams<M>,
     context: RpcContext,
   ): Promise<RpcResult<M>> {
+    return (await this.dispatch(method, params, context)) as RpcResult<M>;
+  }
+
+  handleLegacy(
+    method: string,
+    params: unknown,
+    context: RpcContext,
+  ): Promise<unknown> {
+    return this.dispatch(method, params, context);
+  }
+
+  methods(): string[] {
+    return [...this.handlers.keys()];
+  }
+
+  private async dispatch(
+    method: string,
+    params: unknown,
+    context: RpcContext,
+  ): Promise<unknown> {
     const handler = this.handlers.get(method);
     if (!handler) {
       throw new RpcFaultError(
@@ -51,15 +82,12 @@ export class TypedRouter {
     }
 
     try {
-      return (await handler(params, context)) as RpcResult<M>;
+      return await handler(params, context);
     } catch (error) {
       throw normalizeRpcError(error, context.correlationId);
     }
   }
 
-  methods(): RpcMethod[] {
-    return [...this.handlers.keys()];
-  }
 }
 
 function normalizeRpcError(error: unknown, correlationId: string): RpcFaultError {
