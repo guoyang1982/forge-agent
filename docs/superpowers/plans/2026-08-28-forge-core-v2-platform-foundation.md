@@ -130,7 +130,7 @@ export class ForgeStore {
 - Consumes: Forge 数据目录路径和备份输出目录。
 - Produces: `backupForgeData(input): Promise<BackupManifest>`、`verifyBackup(manifestPath): Promise<void>`。
 
-- [ ] **Step 1: 写失败测试，覆盖显式路径、manifest 和恢复校验**
+- [x] **Step 1: 写失败测试，覆盖显式路径、manifest 和恢复校验**
 
 ```ts
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -157,13 +157,13 @@ it("rejects filesystem root and home-like broad targets", async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试并确认因模块不存在而失败**
+- [x] **Step 2: 运行测试并确认因模块不存在而失败**
 
-Run: `pnpm exec vitest run scripts/core-v2/backup-data.test.ts`
+Run: `pnpm core:v2:test`
 
 Expected: FAIL with `Cannot find module './backup-data.js'`.
 
-- [ ] **Step 3: 实现安全备份、checksum、manifest 与基线输出**
+- [x] **Step 3: 实现安全备份、checksum、manifest 与基线输出**
 
 ```ts
 export interface BackupManifest {
@@ -195,13 +195,13 @@ Add scripts:
 }
 ```
 
-- [ ] **Step 4: 运行定向测试并在临时数据夹具上完成恢复校验**
+- [x] **Step 4: 运行定向测试并在临时数据夹具上完成恢复校验**
 
-Run: `pnpm exec vitest run scripts/core-v2/backup-data.test.ts`
+Run: `pnpm core:v2:test`
 
 Expected: PASS; manifest checksum mismatch test must fail closed.
 
-- [ ] **Step 5: 提交基线工具**
+- [x] **Step 5: 提交基线工具**
 
 ```bash
 git add package.json scripts/core-v2/backup-data.ts scripts/core-v2/backup-data.test.ts scripts/core-v2/capture-baseline.ts
