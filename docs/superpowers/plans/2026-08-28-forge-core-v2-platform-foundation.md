@@ -375,7 +375,7 @@ git commit -m "feat(client): add typed cancellable rpc requests"
 - Consumes: `dbPath`、`migrationsDir`、`owner`。
 - Produces: `ForgeStore.open()`、`MigrationRunner.applyPending()`、`BackupManifest`。
 
-- [ ] **Step 1: 写新库、旧库和 checksum 失败测试**
+- [x] **Step 1: 写新库、旧库和 checksum 失败测试**
 
 ```ts
 it("records every applied migration exactly once", () => {
@@ -395,13 +395,13 @@ it("fails closed when an applied migration checksum changes", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认包尚不存在**
+- [x] **Step 2: 运行测试确认实现尚不存在**
 
 Run: `pnpm --filter @forge/store test`
 
-Expected: FAIL because workspace package `@forge/store` is absent.
+Expected: FAIL because `ForgeStore` implementation is absent.
 
-- [ ] **Step 3: 实现 Store、migration bootstrap 和事务执行**
+- [x] **Step 3: 实现 Store、migration bootstrap 和事务执行**
 
 ```ts
 export interface ForgeStoreOptions {
@@ -424,13 +424,13 @@ export class ForgeStore {
 
 `MigrationRunner` must bootstrap `schema_migrations(version, checksum, applied_at, duration_ms)` before reading SQL files and must wrap each migration plus journal insert in one transaction.
 
-- [ ] **Step 4: 运行 Store 测试和构建**
+- [x] **Step 4: 运行 Store 测试和构建**
 
 Run: `pnpm --filter @forge/store test && pnpm --filter @forge/store build`
 
 Expected: PASS for fresh, adopted legacy, duplicate, checksum and rollback fixtures.
 
-- [ ] **Step 5: 提交 Reliable Store**
+- [x] **Step 5: 提交 Reliable Store**
 
 ```bash
 git add packages/store

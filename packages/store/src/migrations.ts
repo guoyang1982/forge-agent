@@ -1,0 +1,103 @@
+import type Database from "better-sqlite3";
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+export interface MigrationRunnerOptions {
+  migrationsDir: string;
+  owner: "daemon" | "test";
+}
+
+interface AppliedMigration {
+  version: string;
+  checksum: string;
+}
+
+interface MigrationFile {
+  version: string;
+  checksum: string;
+  sql: string;
+}
+
+const BOOTSTRAP_SQL = `
+  CREATE TABLE IF NOT EXISTS schema_migrations (
+    version TEXT PRIMARY KEY,
+    checksum TEXT NOT NULL,
+    applied_at TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL
+  )
+`;
+
+export class MigrationRunner {
+  constructor(
+    private readonly db: Database.Database,
+    private readonly options: MigrationRunnerOptions,
+  ) {}
+
+  applyPending(): void {
+    assertMigrationOwner(this.options.owner);
+    this.db.exec(BOOTSTRAP_SQL);
+    for (const migration of readMigrations(this.options.migrationsDir)) {
+      this.applyMigration(migration);
+    }
+  }
+
+  private applyMigration(migration: MigrationFile): void {
+    const apply = this.db.transaction(() => {
+      const applied = this.db
+        .prepare(
+          "SELECT version, checksum FROM schema_migrations WHERE version = ?",
+        )
+        .get(migration.version) as AppliedMigration | undefined;
+      if (applied) {
+        if (applied.checksum !== migration.checksum) {
+          throw new Error(
+            `migration checksum mismatch for ${migration.version}`,
+          );
+        }
+        return;
+      }
+
+      const startedAt = performance.now();
+      if (migration.sql.trim()) this.db.exec(migration.sql);
+      const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
+      this.db
+        .prepare(
+          `INSERT INTO schema_migrations
+            (version, checksum, applied_at, duration_ms)
+           VALUES (?, ?, ?, ?)`,
+        )
+        .run(
+          migration.version,
+          migration.checksum,
+          new Date().toISOString(),
+          durationMs,
+        );
+    });
+    apply.immediate();
+  }
+}
+
+function readMigrations(migrationsDir: string): MigrationFile[] {
+  if (!existsSync(migrationsDir)) {
+    throw new Error(`migrations directory not found: ${migrationsDir}`);
+  }
+  return readdirSync(migrationsDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".sql"))
+    .map((entry) => entry.name)
+    .sort()
+    .map((version) => {
+      const source = readFileSync(join(migrationsDir, version));
+      return {
+        version,
+        checksum: createHash("sha256").update(source).digest("hex"),
+        sql: source.toString("utf8"),
+      };
+    });
+}
+
+function assertMigrationOwner(owner: string): asserts owner is "daemon" | "test" {
+  if (owner !== "daemon" && owner !== "test") {
+    throw new Error(`invalid migration owner: ${owner}`);
+  }
+}
