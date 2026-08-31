@@ -298,7 +298,7 @@ git commit -m "feat(protocol): add typed rpc v2 contracts"
 - Consumes: `RpcMethod`、`RpcParams<M>`、`RpcResult<M>`、`RpcFault`。
 - Produces: `DaemonClient.request<M>()`、`DaemonRpcError`、`RequestOptions`。
 
-- [ ] **Step 1: 写类型与行为失败测试**
+- [x] **Step 1: 写类型与行为失败测试**
 
 ```ts
 it("rejects a timed out request and removes it from pending", async () => {
@@ -315,13 +315,13 @@ it("sends cancel when AbortSignal fires", async () => {
 });
 ```
 
-- [ ] **Step 2: 运行现有和新增客户端测试确认失败**
+- [x] **Step 2: 运行现有和新增客户端测试确认失败**
 
 Run: `pnpm --filter @forge/daemon-client test`
 
 Expected: FAIL because the third `RequestOptions` argument and `DaemonRpcError` do not exist.
 
-- [ ] **Step 3: 实现泛型 request 与安全错误转换**
+- [x] **Step 3: 实现泛型 request 与安全错误转换**
 
 ```ts
 export interface RequestOptions {
@@ -348,13 +348,13 @@ export class DaemonRpcError extends Error {
 
 Ensure abort/timeout deletes pending entries and ignores late responses by requestId.
 
-- [ ] **Step 4: 运行客户端与 bus 回归**
+- [x] **Step 4: 运行客户端与 bus 回归**
 
 Run: `pnpm --filter @forge/daemon-client test && pnpm --filter @forge/bus test`
 
 Expected: PASS; existing connect/close/error cases remain green.
 
-- [ ] **Step 5: 提交类型化客户端**
+- [x] **Step 5: 提交类型化客户端**
 
 ```bash
 git add packages/daemon-client
