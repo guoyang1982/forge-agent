@@ -13,10 +13,16 @@ import { AGENT_EVENT_METHOD, isRpcFault, rpcFault } from "@forge/protocol";
 
 export { connectDaemon, type DaemonClient } from "@forge/daemon-client";
 
+export interface RpcRequestContext {
+  requestId: string;
+  correlationId: string;
+}
+
 export type RpcHandler = (
   method: string,
   params: unknown,
   emit: (event: AgentEvent) => void,
+  context: RpcRequestContext,
 ) => Promise<unknown>;
 
 type RequestWithCorrelation = JsonRpcRequest & {
@@ -101,7 +107,11 @@ export class DaemonServer {
     };
 
     try {
-      const result = await this.handler(req.method, req.params, emit);
+      const correlationId = requestCorrelationId(req);
+      const result = await this.handler(req.method, req.params, emit, {
+        requestId: correlationId,
+        correlationId,
+      });
       respond({ jsonrpc: "2.0", id: requestId, result });
     } catch (error) {
       const fault = faultForResponse(error, requestCorrelationId(req));

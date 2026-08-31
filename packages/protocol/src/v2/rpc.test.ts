@@ -4,8 +4,10 @@ import {
   isRpcFault,
   isRpcRequestEnvelope,
   rpcFault,
+  V2_RPC_METHODS,
   type CapabilityManifest,
   type RpcResult,
+  type SystemStatusResult,
 } from "./rpc.js";
 
 describe("v2 RPC request envelopes", () => {
@@ -45,6 +47,21 @@ describe("v2 RPC request envelopes", () => {
       version: string;
       build: string;
     }>();
+  });
+
+  it("accepts system.status as a typed v2 request", () => {
+    expect(V2_RPC_METHODS).toContain("system.status");
+    expect(
+      isRpcRequestEnvelope({
+        jsonrpc: "2.0",
+        id: "status-1",
+        protocolVersion: 2,
+        requestId: "request-status-1",
+        method: "system.status",
+        params: {},
+      }),
+    ).toBe(true);
+    expectTypeOf<RpcResult<"system.status">>().toEqualTypeOf<SystemStatusResult>();
   });
 });
 

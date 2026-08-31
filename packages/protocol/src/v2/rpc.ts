@@ -2,7 +2,11 @@ import type { JsonRpcId } from "../index.js";
 
 export const RPC_PROTOCOL_VERSION = 2 as const;
 
-export const V2_RPC_METHODS = ["system.capabilities", "system.ping"] as const;
+export const V2_RPC_METHODS = [
+  "system.capabilities",
+  "system.ping",
+  "system.status",
+] as const;
 
 export interface CapabilityManifest {
   protocolVersion: typeof RPC_PROTOCOL_VERSION;
@@ -10,6 +14,19 @@ export interface CapabilityManifest {
   methods: string[];
   eventTypes: string[];
   features: Record<string, { version: number; enabled: boolean }>;
+}
+
+export type ModuleHealthStatus = "healthy" | "degraded" | "stopped";
+
+export interface ModuleHealthSummary {
+  id: string;
+  status: ModuleHealthStatus;
+}
+
+export interface SystemStatusResult {
+  ok: boolean;
+  migrationVersion: string | null;
+  modules: ModuleHealthSummary[];
 }
 
 export interface RpcContractMap {
@@ -20,6 +37,10 @@ export interface RpcContractMap {
   "system.ping": {
     params: Record<string, never>;
     result: { ok: true; version: string; build: string };
+  };
+  "system.status": {
+    params: Record<string, never>;
+    result: SystemStatusResult;
   };
 }
 

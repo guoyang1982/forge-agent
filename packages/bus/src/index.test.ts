@@ -13,6 +13,30 @@ afterEach(() => {
 });
 
 describe("DaemonServer event isolation", () => {
+  it("passes v2 request correlation to the request handler", async () => {
+    let receivedContext: unknown;
+    const socketPath = await startServerWithHandler(
+      async (_method, _params, _emit, context) => {
+        receivedContext = context;
+        return { ok: true };
+      },
+    );
+
+    await requestRaw(socketPath, {
+      jsonrpc: "2.0",
+      id: "jsonrpc-8",
+      protocolVersion: 2,
+      requestId: "request-8",
+      method: "system.ping",
+      params: {},
+    });
+
+    expect(receivedContext).toEqual({
+      requestId: "request-8",
+      correlationId: "request-8",
+    });
+  });
+
   it("does not expose one socket's events to another socket", async () => {
     const { socketPath } = await startTestServer();
     const clientA = await connectDaemon(socketPath);

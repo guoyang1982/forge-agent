@@ -576,8 +576,13 @@ git commit -m "feat(daemon): add typed modular rpc router"
 ### Task 7: 实现 DaemonHost 生命周期和健康状态
 
 **Files:**
+- Modify: `packages/protocol/src/v2/rpc.ts`
+- Modify: `packages/protocol/src/v2/rpc.test.ts`
+- Modify: `packages/bus/src/index.ts`
+- Modify: `packages/bus/src/index.test.ts`
 - Create: `apps/daemon/src/host/daemon-host.ts`
 - Create: `apps/daemon/src/host/daemon-host.test.ts`
+- Modify: `apps/daemon/src/host/types.ts`
 - Create: `apps/daemon/src/modules/system-module.ts`
 - Modify: `apps/daemon/src/services/status-service.ts`
 
@@ -585,7 +590,7 @@ git commit -m "feat(daemon): add typed modular rpc router"
 - Consumes: `DaemonModule[]`、`DaemonContext`、`TypedRouter`、`DaemonServer`。
 - Produces: `DaemonHost.start()`、`DaemonHost.stop()`、`CapabilityManifest`。
 
-- [ ] **Step 1: 写启动顺序、失败回滚和逆序停止测试**
+- [x] **Step 1: 写启动顺序、失败回滚和逆序停止测试**
 
 ```ts
 it("starts modules in registration order and stops in reverse", async () => {
@@ -599,13 +604,13 @@ it("starts modules in registration order and stops in reverse", async () => {
 });
 ```
 
-- [ ] **Step 2: 运行 Host 测试确认实现不存在**
+- [x] **Step 2: 运行 Host 测试确认实现不存在**
 
-Run: `pnpm exec vitest run apps/daemon/src/host/daemon-host.test.ts`
+Run: `pnpm --filter @forge/daemon test -- src/host/daemon-host.test.ts`
 
 Expected: FAIL because `DaemonHost` is absent.
 
-- [ ] **Step 3: 实现生命周期、能力聚合和健康检查**
+- [x] **Step 3: 实现生命周期、能力聚合和健康检查**
 
 ```ts
 export class DaemonHost {
@@ -618,13 +623,13 @@ export class DaemonHost {
 
 System module registers `system.ping`、`system.capabilities`、`system.status`; status reports migration version and module health without sensitive paths.
 
-- [ ] **Step 4: 运行 Host 与 status 测试**
+- [x] **Step 4: 运行 Host 与 status 测试**
 
-Run: `pnpm exec vitest run apps/daemon/src/host/daemon-host.test.ts apps/daemon/src/runtime.test.ts`
+Run: `pnpm --filter @forge/daemon test -- src/host/daemon-host.test.ts src/runtime.test.ts`
 
 Expected: PASS; module start failure closes already-started modules.
 
-- [ ] **Step 5: 提交 DaemonHost**
+- [x] **Step 5: 提交 DaemonHost**
 
 ```bash
 git add apps/daemon/src/host apps/daemon/src/modules/system-module.ts apps/daemon/src/services/status-service.ts
