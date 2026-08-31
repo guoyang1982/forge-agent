@@ -221,7 +221,7 @@ git commit -m "chore: add core v2 backup and baseline tools"
 - Consumes: 现有 `JsonRpcId` 和方法常量。
 - Produces: `RpcContractMap`、`RpcMethod`、`RpcParams`、`RpcResult`、`RpcFault`、`CapabilityManifest`。
 
-- [ ] **Step 1: 写协议守卫失败测试**
+- [x] **Step 1: 写协议守卫失败测试**
 
 ```ts
 import { expect, it } from "vitest";
@@ -240,13 +240,13 @@ it("normalizes retryable structured faults", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认缺少 v2 exports**
+- [x] **Step 2: 运行测试确认缺少 v2 exports**
 
-Run: `pnpm exec vitest run packages/protocol/src/v2/rpc.test.ts`
+Run: `pnpm --filter @forge/protocol test`
 
 Expected: FAIL because `rpc.ts` is absent.
 
-- [ ] **Step 3: 实现精确契约类型和运行时守卫**
+- [x] **Step 3: 实现精确契约类型和运行时守卫**
 
 ```ts
 export type RpcFaultCode =
@@ -274,13 +274,13 @@ export interface CapabilityManifest {
 
 Move existing method DTOs behind `RpcContractMap` entries without changing their wire shapes in this task.
 
-- [ ] **Step 4: 运行协议测试和类型构建**
+- [x] **Step 4: 运行协议测试和类型构建**
 
 Run: `pnpm --filter @forge/protocol test && pnpm --filter @forge/protocol build`
 
 Expected: PASS and emitted declarations expose `RpcResult<"system.ping">`.
 
-- [ ] **Step 5: 提交协议 v2**
+- [x] **Step 5: 提交协议 v2**
 
 ```bash
 git add packages/protocol

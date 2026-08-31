@@ -701,7 +701,11 @@ importers:
         specifier: ^3.0.9
         version: 3.2.4(@types/debug@4.1.13)(@types/node@26.1.2)(lightningcss@1.32.0)(terser@5.49.0)(tsx@4.22.3)(yaml@2.9.0)
 
-  packages/protocol: {}
+  packages/protocol:
+    devDependencies:
+      vitest:
+        specifier: ^3.0.9
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@26.1.2)(lightningcss@1.32.0)(terser@5.49.0)(tsx@4.22.3)(yaml@2.9.0)
 
   packages/run-orchestrator:
     devDependencies:

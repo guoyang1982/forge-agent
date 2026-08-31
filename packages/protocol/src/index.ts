@@ -37,6 +37,7 @@ export * from "./automation.js";
 export * from "./channel.js";
 export * from "./mobile.js";
 export * from "./browser.js";
+export * from "./v2/index.js";
 
 export type JsonRpcId = number | string;
 
