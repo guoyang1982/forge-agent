@@ -2,9 +2,37 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import Database from "better-sqlite3";
+import { ForgeStore } from "@forge/store";
 import { SessionStore } from "./index.js";
 
+function openMigratedSessionStore(
+  dbPath: string,
+  migrationsDir: string,
+): SessionStore {
+  const owner = ForgeStore.open({ dbPath, migrationsDir, owner: "test" });
+  return new SessionStore(owner.db);
+}
+
 describe("SessionStore", () => {
+  it("uses the supplied database without applying migrations", () => {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
+    `);
+
+    const store = new SessionStore(db);
+    const id = store.createSession("/tmp/work");
+    expect(store.getSessionCwd(id)).toBe("/tmp/work");
+    expect(
+      db.prepare(
+        "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+      ).get(),
+    ).toEqual({ count: 0 });
+    store.close();
+  });
+
   it("lists sessions with message counts and compacts history", () => {
     const root = mkdtempSync(join(tmpdir(), "forge-session-"));
     const migrations = join(root, "migrations");
@@ -17,7 +45,7 @@ CREATE TABLE workspace_checkpoints (id INTEGER PRIMARY KEY AUTOINCREMENT, sessio
 CREATE TABLE session_dispatch_plans (session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, turn_index));
 CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER, event_type TEXT NOT NULL, item_id TEXT, payload TEXT NOT NULL, emitted_at_ms INTEGER NOT NULL);`,
     );
-    const store = new SessionStore(join(root, "data.db"), migrations);
+    const store = openMigratedSessionStore(join(root, "data.db"), migrations);
     const id = store.createSession("/tmp/project");
 
     for (let i = 0; i < 5; i++) {
@@ -51,7 +79,7 @@ CREATE TABLE workspace_checkpoints (id INTEGER PRIMARY KEY AUTOINCREMENT, sessio
 CREATE TABLE session_dispatch_plans (session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, turn_index));
 CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER, event_type TEXT NOT NULL, item_id TEXT, payload TEXT NOT NULL, emitted_at_ms INTEGER NOT NULL);`,
     );
-    return new SessionStore(join(root, "data.db"), migrations);
+    return openMigratedSessionStore(join(root, "data.db"), migrations);
   }
 
   it("anchors checkpoints to the upcoming user turn", () => {
@@ -131,7 +159,7 @@ CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT
       join(migrations, "007_session_events.sql"),
       `CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER, event_type TEXT NOT NULL, item_id TEXT, payload TEXT NOT NULL, emitted_at_ms INTEGER NOT NULL);`,
     );
-    return new SessionStore(join(root, "data.db"), migrations);
+    return openMigratedSessionStore(join(root, "data.db"), migrations);
   }
 
   it("upserts and lists dispatch plans by turn index", () => {
@@ -184,7 +212,7 @@ CREATE TABLE workspace_checkpoints (id INTEGER PRIMARY KEY AUTOINCREMENT, sessio
 CREATE TABLE session_dispatch_plans (session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, turn_index));
 CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER, event_type TEXT NOT NULL, item_id TEXT, payload TEXT NOT NULL, emitted_at_ms INTEGER NOT NULL);`,
     );
-    const store = new SessionStore(join(root, "data.db"), migrations);
+    const store = openMigratedSessionStore(join(root, "data.db"), migrations);
     const id = store.createSession("/tmp/p");
     store.appendMessage(id, { role: "user", content: "u0" });
     store.appendEvent(id, 0, { type: "status", phase: "model", message: "first" }, 10);
@@ -211,7 +239,7 @@ CREATE TABLE workspace_checkpoints (id INTEGER PRIMARY KEY AUTOINCREMENT, sessio
 CREATE TABLE session_dispatch_plans (session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, turn_index));
 CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER, event_type TEXT NOT NULL, item_id TEXT, payload TEXT NOT NULL, emitted_at_ms INTEGER NOT NULL);`,
     );
-    const store = new SessionStore(join(root, "data.db"), migrations);
+    const store = openMigratedSessionStore(join(root, "data.db"), migrations);
     const id = store.createSession("/tmp/p");
     store.appendEvent(id, 0, { type: "session_start", sessionId: id, preview: "old" }, 1);
     store.appendEvent(id, 0, { type: "status", phase: "model", message: "old-work" }, 2);
@@ -253,7 +281,7 @@ CREATE TABLE workspace_checkpoints (id INTEGER PRIMARY KEY AUTOINCREMENT, sessio
 CREATE TABLE session_dispatch_plans (session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, turn_index));
 CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER, event_type TEXT NOT NULL, item_id TEXT, payload TEXT NOT NULL, emitted_at_ms INTEGER NOT NULL);`,
     );
-    const store = new SessionStore(join(root, "data.db"), migrations);
+    const store = openMigratedSessionStore(join(root, "data.db"), migrations);
     const id = store.createSession("/tmp/p");
     store.appendMessage(id, { role: "user", content: "a" });
     store.appendMessage(id, { role: "assistant", content: "b" });

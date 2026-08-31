@@ -440,17 +440,27 @@ git commit -m "feat(store): add journaled sqlite migrations"
 ### Task 5: 让 SessionStore 使用共享 ForgeStore
 
 **Files:**
+- Modify: `packages/store/src/index.ts`
+- Modify: `packages/store/src/migrations.test.ts`
 - Modify: `packages/session/package.json`
 - Modify: `packages/session/src/index.ts`
 - Modify: `packages/session/src/index.test.ts`
+- Modify: `packages/session-manager/package.json`
+- Modify: `packages/session-manager/src/index.ts`
+- Modify: `packages/session-manager/src/index.test.ts`
+- Modify: `apps/daemon/package.json`
 - Modify: `apps/daemon/src/main.ts`
+- Modify: `apps/channel-gateway/package.json`
 - Modify: `apps/channel-gateway/src/gateway.ts`
+- Modify: `apps/channel-gateway/src/gateway.test.ts`
+- Modify: `apps/cli/src/repl.ts`
+- Modify: `pnpm-lock.yaml`
 
 **Interfaces:**
 - Consumes: `ForgeStore.db`。
 - Produces: `new SessionStore(db)`；移除 SessionStore 内部 migration ownership。
 
-- [ ] **Step 1: 写共享连接与非 Owner 失败测试**
+- [x] **Step 1: 写共享连接与非 Owner 失败测试**
 
 ```ts
 it("uses the supplied database without applying migrations", () => {
@@ -466,13 +476,13 @@ it("rejects migration ownership outside daemon or tests", () => {
 });
 ```
 
-- [ ] **Step 2: 运行 Session 和 Gateway 测试确认构造签名不匹配**
+- [x] **Step 2: 运行 Session 和 Gateway 测试确认构造签名不匹配**
 
 Run: `pnpm --filter @forge/session test && pnpm --filter @forge/channel-gateway test`
 
 Expected: FAIL until callers provide the shared database.
 
-- [ ] **Step 3: 修改 SessionStore 构造器和进程所有权**
+- [x] **Step 3: 修改 SessionStore 构造器和进程所有权**
 
 ```ts
 export class SessionStore {
@@ -483,13 +493,13 @@ export class SessionStore {
 
 Daemon opens `ForgeStore` once and injects its `db`; Channel Gateway temporarily opens SQLite without migration privileges through a read/write non-migrating connection factory, which is deleted in the client migration plan.
 
-- [ ] **Step 4: 运行 Session、Daemon、Gateway 回归**
+- [x] **Step 4: 运行 Session、Daemon、Gateway 回归**
 
 Run: `pnpm --filter @forge/session test && pnpm --filter @forge/daemon test && pnpm --filter @forge/channel-gateway test`
 
 Expected: PASS; existing Session CRUD and channel behavior unchanged.
 
-- [ ] **Step 5: 提交统一 Store ownership**
+- [x] **Step 5: 提交统一 Store ownership**
 
 ```bash
 git add packages/session apps/daemon/src/main.ts apps/channel-gateway/src/gateway.ts

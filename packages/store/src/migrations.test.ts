@@ -8,7 +8,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ForgeStore, type ForgeStoreOptions } from "./index.js";
+import {
+  ForgeStore,
+  openNonMigratingDatabase,
+  type ForgeStoreOptions,
+} from "./index.js";
 
 const fixtureRoots: string[] = [];
 
@@ -19,6 +23,13 @@ afterEach(() => {
 });
 
 describe("ForgeStore migrations", () => {
+  it("rejects migration ownership outside daemon or tests", () => {
+    const fixture = migrationFixture({});
+    expect(() =>
+      ForgeStore.open({ ...fixture.options, owner: "channel" as never }),
+    ).toThrow(/migration owner/i);
+  });
+
   it("records every migration once and does not repeat its effects", () => {
     const fixture = migrationFixture({
       "001_init.sql": `
@@ -120,6 +131,24 @@ describe("ForgeStore migrations", () => {
           .prepare("SELECT version FROM schema_migrations ORDER BY version")
           .all(),
       ).toEqual([{ version: "001_init.sql" }]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("non-migrating database connections", () => {
+  it("opens a read-write database without creating migration state", () => {
+    const fixture = migrationFixture({
+      "001_init.sql": "CREATE TABLE must_not_exist (id INTEGER PRIMARY KEY);",
+    });
+    const db = openNonMigratingDatabase(fixture.options.dbPath);
+    try {
+      expect(
+        db.prepare(
+          "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        ).get(),
+      ).toEqual({ count: 0 });
     } finally {
       db.close();
     }

@@ -16,6 +16,7 @@ import { DAEMON_METHODS, FORGE_DAEMON_BUILD } from "@forge/protocol";
 import { DaemonServer } from "@forge/bus";
 import { loadConfig, saveConfig } from "@forge/config";
 import { SessionStore } from "@forge/session";
+import { ForgeStore } from "@forge/store";
 import { AutomationStore } from "@forge/automation";
 import { ChannelStore } from "@forge/channel";
 import { clearMcpClientPool } from "@forge/tool-mcp";
@@ -145,9 +146,10 @@ const MONOREPO_ROOT = existsSync(join(developmentRoot, "migrations"))
 const migrationsDir = join(MONOREPO_ROOT, "migrations");
 const bootConfig = loadConfig();
 const dbPath = join(bootConfig.daemon.dataDir, "data.db");
-const sessions = new SessionStore(dbPath, migrationsDir);
-const automationStore = new AutomationStore(sessions.getDb());
-const channelStore = new ChannelStore(sessions.getDb());
+const forgeStore = ForgeStore.open({ dbPath, migrationsDir, owner: "daemon" });
+const sessions = new SessionStore(forgeStore.db);
+const automationStore = new AutomationStore(forgeStore.db);
+const channelStore = new ChannelStore(forgeStore.db);
 const pidFile = join(bootConfig.daemon.dataDir, "daemon.pid");
 const channelGatewayPidFile = join(bootConfig.daemon.dataDir, "channel-gateway.pid");
 
@@ -777,7 +779,7 @@ async function main(): Promise<void> {
     console.log(
       `[forge] another daemon already serves ${bootConfig.daemon.socketPath} — exiting`,
     );
-    sessions.close();
+    forgeStore.close();
     process.exit(0);
   }
   await getRuntime();
@@ -812,7 +814,7 @@ async function main(): Promise<void> {
       })
       .finally(async () => {
         void releaseAllAcpSessions().catch(() => {});
-        sessions.close();
+        forgeStore.close();
         await runtime?.browser.dispose();
         runtime?.memory.close();
         try {

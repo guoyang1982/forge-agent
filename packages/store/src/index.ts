@@ -19,6 +19,24 @@ export interface ForgeStoreOptions extends MigrationRunnerOptions {
   busyTimeoutMs?: number;
 }
 
+export function openNonMigratingDatabase(
+  dbPathInput: string,
+  busyTimeoutMs = 5000,
+): Database.Database {
+  const dbPath = resolveRequiredPath(dbPathInput, "database path");
+  assertBusyTimeout(busyTimeoutMs);
+  mkdirSync(dirname(dbPath), { recursive: true });
+  const db = new Database(dbPath);
+  try {
+    db.pragma("journal_mode = WAL");
+    db.pragma(`busy_timeout = ${busyTimeoutMs}`);
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
 export class ForgeStore {
   private constructor(
     readonly db: Database.Database,
@@ -32,15 +50,8 @@ export class ForgeStore {
       "migrations directory",
     );
     const busyTimeoutMs = options.busyTimeoutMs ?? 5000;
-    if (!Number.isInteger(busyTimeoutMs) || busyTimeoutMs < 0) {
-      throw new Error("busyTimeoutMs must be a non-negative integer");
-    }
-
-    mkdirSync(dirname(dbPath), { recursive: true });
-    const db = new Database(dbPath);
+    const db = openNonMigratingDatabase(dbPath, busyTimeoutMs);
     try {
-      db.pragma("journal_mode = WAL");
-      db.pragma(`busy_timeout = ${busyTimeoutMs}`);
       new MigrationRunner(db, {
         migrationsDir,
         owner: options.owner,
@@ -64,4 +75,10 @@ export class ForgeStore {
 function resolveRequiredPath(input: string, label: string): string {
   if (!input.trim()) throw new Error(`${label} is required`);
   return resolve(input);
+}
+
+function assertBusyTimeout(value: number): void {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error("busyTimeoutMs must be a non-negative integer");
+  }
 }
