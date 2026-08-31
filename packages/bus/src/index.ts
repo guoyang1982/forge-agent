@@ -7,8 +7,9 @@ import type {
   JsonRpcNotification,
   JsonRpcRequest,
   JsonRpcResponse,
+  RpcFault,
 } from "@forge/protocol";
-import { AGENT_EVENT_METHOD } from "@forge/protocol";
+import { AGENT_EVENT_METHOD, isRpcFault, rpcFault } from "@forge/protocol";
 
 export { connectDaemon, type DaemonClient } from "@forge/daemon-client";
 
@@ -17,6 +18,10 @@ export type RpcHandler = (
   params: unknown,
   emit: (event: AgentEvent) => void,
 ) => Promise<unknown>;
+
+type RequestWithCorrelation = JsonRpcRequest & {
+  requestId?: unknown;
+};
 
 function serializeAgentEvent(requestId: JsonRpcId, event: AgentEvent): string {
   const params: AgentEventNotificationParams = { requestId, event };
@@ -73,7 +78,7 @@ export class DaemonServer {
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          const req = JSON.parse(line) as JsonRpcRequest;
+          const req = JSON.parse(line) as RequestWithCorrelation;
           if (req.id === undefined) continue;
           void this.handleRequest(socket, req);
         } catch {
@@ -99,13 +104,44 @@ export class DaemonServer {
       const result = await this.handler(req.method, req.params, emit);
       respond({ jsonrpc: "2.0", id: requestId, result });
     } catch (error) {
+      const fault = faultForResponse(error, requestCorrelationId(req));
       respond({
         jsonrpc: "2.0",
         id: requestId,
-        error: { code: -32000, message: String(error) },
+        error: {
+          code: -32000,
+          message: fault.message,
+          data: { fault },
+        },
       });
     }
   }
+}
+
+function faultForResponse(error: unknown, correlationId: string): RpcFault {
+  const explicitFault = extractRpcFault(error);
+  if (explicitFault) {
+    return explicitFault.correlationId
+      ? explicitFault
+      : { ...explicitFault, correlationId };
+  }
+  return rpcFault("INTERNAL_ERROR", "Internal RPC error", { correlationId });
+}
+
+function extractRpcFault(error: unknown): RpcFault | undefined {
+  if (isRpcFault(error)) return error;
+  if (!isRecord(error)) return undefined;
+  return isRpcFault(error.fault) ? error.fault : undefined;
+}
+
+function requestCorrelationId(req: RequestWithCorrelation): string {
+  return typeof req.requestId === "string" && req.requestId.length > 0
+    ? req.requestId
+    : String(req.id);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function unlinkSyncSafe(p: string): void {

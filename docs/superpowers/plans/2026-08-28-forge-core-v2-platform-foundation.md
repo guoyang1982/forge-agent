@@ -519,7 +519,7 @@ git commit -m "refactor(store): make daemon own database migrations"
 - Consumes: `RpcContractMap`、`RpcFault`。
 - Produces: `TypedRouter.register<M>()`、`TypedRouter.handle()`、`DaemonModule`。
 
-- [ ] **Step 1: 写重复注册、未知方法和错误映射测试**
+- [x] **Step 1: 写重复注册、未知方法和错误映射测试**
 
 ```ts
 it("rejects duplicate method registration", () => {
@@ -535,13 +535,13 @@ it("returns METHOD_NOT_FOUND without leaking a stack", async () => {
 });
 ```
 
-- [ ] **Step 2: 运行 Daemon Host 测试确认文件不存在**
+- [x] **Step 2: 运行 Daemon Host 测试确认文件不存在**
 
-Run: `pnpm exec vitest run apps/daemon/src/host/router.test.ts`
+Run: `pnpm --filter @forge/daemon test -- src/host/router.test.ts`
 
 Expected: FAIL because `TypedRouter` is absent.
 
-- [ ] **Step 3: 实现类型化注册和 bus 结构化响应**
+- [x] **Step 3: 实现类型化注册和 bus 结构化响应**
 
 ```ts
 export class TypedRouter {
@@ -560,13 +560,13 @@ export class TypedRouter {
 
 `DaemonServer` must serialize `RpcFault` in `error.data.fault`, keep requestId/correlationId, and never return `String(error)` for unknown exceptions.
 
-- [ ] **Step 4: 运行 router、bus 和 client 契约测试**
+- [x] **Step 4: 运行 router、bus 和 client 契约测试**
 
-Run: `pnpm exec vitest run apps/daemon/src/host/router.test.ts && pnpm --filter @forge/bus test && pnpm --filter @forge/daemon-client test`
+Run: `pnpm --filter @forge/daemon test -- src/host/router.test.ts && pnpm --filter @forge/bus test && pnpm --filter @forge/daemon-client test`
 
 Expected: PASS with the same fault shape at server and client.
 
-- [ ] **Step 5: 提交类型化路由**
+- [x] **Step 5: 提交类型化路由**
 
 ```bash
 git add apps/daemon/src/host packages/bus
