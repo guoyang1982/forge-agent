@@ -564,6 +564,24 @@ export class ExecutionStore {
     })();
   }
 
+  getActiveWait(
+    runId: string,
+    stepId: string,
+  ): { id: string; runId: string; stepId: string } | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, run_id AS runId, step_id AS stepId
+         FROM core_step_waits
+         WHERE run_id = ? AND step_id = ? AND state = 'waiting'
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+      .get(runId, stepId) as
+      | { id: string; runId: string; stepId: string }
+      | undefined;
+    return row ?? null;
+  }
+
   cancelRun(runId: string, reason: string, now: string): void {
     this.db.transaction(() => {
       const run = this.getRun(runId);
