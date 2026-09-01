@@ -435,9 +435,18 @@ importers:
 
   packages/automation:
     dependencies:
+      '@forge/execution':
+        specifier: workspace:*
+        version: link:../execution
       '@forge/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@forge/store':
+        specifier: workspace:*
+        version: link:../store
+      '@forge/workflows':
+        specifier: workspace:*
+        version: link:../workflows
       better-sqlite3:
         specifier: ^13.0.2
         version: 13.0.2

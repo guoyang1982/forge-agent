@@ -115,6 +115,7 @@ async function shutdownRuntime(): Promise<void> {
 let schedulerHost!: AutomationSchedulerHost;
 schedulerHost = new AutomationSchedulerHost({
   store: automationStore,
+  db: forgeStore.db,
   executeAutomation: (id, trigger) =>
     executeAutomation(id, trigger, {
       store: automationStore,

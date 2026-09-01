@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import type {
   AgentEvent,
   AutomationDraft,
-  AutomationRunContext,
   AutomationRecord,
   AutomationRunRecord,
   AutomationRunTrigger,
@@ -27,12 +26,14 @@ import { LlmClient } from "@forge/llm";
 import type { SessionStore } from "@forge/session";
 import {
   AutomationStore,
+  automationLegacyRunInput,
   buildAutomationDraftParsePrompt,
   computeNextRun,
   listTemplates,
   parseAutomationDraftFromJson,
   parseAutomationDraftHeuristic,
   validateCronExpr,
+  workflowCorrelationId,
   type UpdateAutomationPatch,
 } from "@forge/automation";
 import type { AutomationSchedulerHost } from "./automation-scheduler-host.js";
@@ -80,22 +81,6 @@ function assertValidCron(cron: string): void {
   if (!validateCronExpr(cron)) {
     throw new Error(`invalid cron expression: ${cron}`);
   }
-}
-
-function automationRunContext(auto: AutomationRecord): AutomationRunContext {
-  return {
-    name: auto.name,
-    schedule:
-      auto.trigger.type === "cron"
-        ? { cron: auto.trigger.cron, timezone: auto.trigger.timezone }
-        : undefined,
-    notification:
-      auto.notify?.enabled &&
-      auto.notify.channelKind &&
-      auto.notify.channelKind !== "mobile"
-        ? { channelKind: auto.notify.channelKind }
-        : undefined,
-  };
 }
 
 function draftPatchToStorePatch(
@@ -391,12 +376,8 @@ export async function executeAutomation(
   try {
     const result = await handleRun(
       {
-        cwd: auto.cwd,
-        message: auto.prompt,
-        sessionId,
-        autoApply: false,
-        hookSource: "startup",
-        automationRun: automationRunContext(auto),
+        ...automationLegacyRunInput(auto, sessionId),
+        clientRunId: workflowCorrelationId(auto),
       },
       emit,
       deps.runDeps,

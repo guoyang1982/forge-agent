@@ -28,3 +28,14 @@ export {
   parseAutomationDraftFromJson,
   parseAutomationDraftHeuristic,
 } from "./parse-draft.js";
+export {
+  EMPTY_OBJECT_SCHEMA,
+  TriggerScheduleClaimStore,
+  automationLegacyRunInput,
+  automationToWorkflow,
+  buildAutomationRunContext,
+  legacyAutomationStep,
+  processScheduledAutomationCatchUp,
+  workflowCorrelationId,
+  type ScheduledRunClaimStore,
+} from "./v2-adapter.js";
