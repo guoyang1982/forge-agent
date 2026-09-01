@@ -13,11 +13,7 @@ import { ChannelStore } from "@forge/channel";
 import {
   DurableExecutor,
   ExecutionRecovery,
-  ExecutionStore,
-  LegacyForgeStepExecutor,
-  StepExecutorRegistry,
 } from "@forge/execution";
-import { EventStore } from "@forge/event-store";
 import { AgentProfileStore } from "@forge/agent-profile";
 import { ArtifactService, ValidationService, ValidatorRegistry } from "@forge/evidence";
 import { ApprovalService } from "@forge/policy";
@@ -40,7 +36,7 @@ import { ChannelGatewayHost } from "./services/channel-gateway-host.js";
 import { releaseAllAcpSessions } from "./services/runtime-service.js";
 import { runSessionEndHooksOnShutdown } from "./services/session-end-service.js";
 import { executeLegacyForgeRun } from "./services/run-service.js";
-import { createProductionEventSink } from "./services/core-event-sink.js";
+import { createProductionExecutionComposition } from "./services/production-execution-composition.js";
 
 const SERVER_VERSION = "0.2.0";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -139,16 +135,24 @@ const executionClock = {
   now: () => new Date().toISOString(),
   nowMs: () => Date.now(),
 };
-const eventStore = new EventStore(forgeStore.db);
 let host!: DaemonHost<ForgeDaemonContext>;
-let executionStore!: ExecutionStore;
-const productionEventSink = createProductionEventSink({
-  events: eventStore,
-  getCorrelationId: (runId) => executionStore.getRun(runId)?.correlationId,
+const productionExecution = createProductionExecutionComposition({
+  db: forgeStore.db,
+  clock: executionClock,
   broadcast: (event) => host.broadcastCoreEvent(event),
-  now: executionClock.now,
+  run: (request, emit, signal) =>
+    executeLegacyForgeRun(
+      request,
+      emit,
+      { sessions, getRuntime, cancelService },
+    ).then((result) => {
+      if (signal.aborted) {
+        throw new Error("run cancelled");
+      }
+      return result;
+    }),
 });
-executionStore = new ExecutionStore(forgeStore.db, productionEventSink.appendInTransaction);
+const { eventStore, executionStore, executor, executionRecovery } = productionExecution;
 const workspaceGroups = new WorkspaceGroupService(forgeStore.db);
 const approvals = new ApprovalService(forgeStore.db);
 const budgetLedger = new BudgetLedgerService(forgeStore.db);
@@ -158,29 +162,6 @@ const artifacts = new ArtifactService(
   join(bootConfig.daemon.dataDir, "evidence"),
 );
 const validations = new ValidationService(forgeStore.db, new ValidatorRegistry());
-const stepExecutors = new StepExecutorRegistry();
-stepExecutors.register(
-  new LegacyForgeStepExecutor({
-    emitLegacyAgentEvent: productionEventSink.emitLegacyAgentEvent,
-    run: (request, emit, signal) =>
-      executeLegacyForgeRun(
-        request,
-        emit,
-        { sessions, getRuntime, cancelService },
-      ).then((result) => {
-        if (signal.aborted) {
-          throw new Error("run cancelled");
-        }
-        return result;
-      }),
-  }),
-);
-const executor = new DurableExecutor(executionStore, stepExecutors, executionClock);
-const executionRecovery = new ExecutionRecovery(
-  executionStore,
-  stepExecutors,
-  executionClock,
-);
 const wakeExecutor = () => {
   void executor.tick().catch((error) => {
     console.error(`[forge:execution] tick failed: ${String(error)}`);

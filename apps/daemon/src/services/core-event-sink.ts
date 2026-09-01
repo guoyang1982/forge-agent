@@ -9,7 +9,7 @@ import type { AgentEvent, EventEnvelope } from "@forge/protocol";
 export interface ProductionEventSinkOptions {
   events: EventStore;
   getCorrelationId(runId: string): string | undefined;
-  broadcast(event: EventEnvelope): void;
+  broadcast(event: EventEnvelope): { failed: number } | void;
   now?(): string;
 }
 
@@ -19,6 +19,7 @@ export interface ProductionEventSinkOptions {
  */
 export class ProductionEventSink {
   private readonly now: () => string;
+  private pendingTransactionEvents: EventEnvelope[] = [];
 
   constructor(private readonly options: ProductionEventSinkOptions) {
     this.now = options.now ?? (() => new Date().toISOString());
@@ -26,8 +27,28 @@ export class ProductionEventSink {
 
   readonly appendInTransaction: EventAppendFn = (db, event) => {
     const stored = EventStore.appendInTransaction(db, event);
-    this.options.broadcast(stored);
+    this.pendingTransactionEvents.push(stored);
     return stored;
+  };
+
+  readonly flush = (): void => {
+    const events = this.pendingTransactionEvents;
+    this.pendingTransactionEvents = [];
+    const errors: unknown[] = [];
+    for (const event of events) {
+      try {
+        this.broadcastStoredEvent(event);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "CoreEvent broadcast failed after commit");
+    }
+  };
+
+  readonly discard = (): void => {
+    this.pendingTransactionEvents = [];
   };
 
   readonly emitLegacyAgentEvent = (
@@ -52,8 +73,15 @@ export class ProductionEventSink {
         ...bridgeLegacyAgentEvent(event, { ...links, correlationId }),
       },
     });
-    this.options.broadcast(stored);
+    this.broadcastStoredEvent(stored);
   };
+
+  private broadcastStoredEvent(event: EventEnvelope): void {
+    const result = this.options.broadcast(event);
+    if (result && result.failed > 0) {
+      throw new Error(`CoreEvent broadcast failed for ${result.failed} socket(s)`);
+    }
+  }
 }
 
 export function createProductionEventSink(

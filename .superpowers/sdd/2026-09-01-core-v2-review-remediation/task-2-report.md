@@ -62,3 +62,31 @@ Implementation commit: `926560a829aded6cbdfa0f99d680fce0f375399a` (`fix(core): w
 ## Concerns
 
 None. Live clients connected after an event is emitted recover it through the existing durable replay path.
+
+## Review fix round 1
+
+### Root causes addressed
+
+1. `ProductionEventSink.appendInTransaction()` broadcast before the surrounding `ExecutionStore` transaction committed.
+2. The previous daemon event test bypassed `DaemonHost`, `DaemonServer`, and `DaemonClient`, and used an unsafe context cast.
+3. `DaemonServer.broadcastCoreEvent()` ignored `socket.write` outcomes and had no observable failure channel.
+
+### RED evidence
+
+- `pnpm --filter @forge/daemon test -- src/production-events.e2e.test.ts` failed the rollback regression: durable state retained only `run.created` and `step.started`, while live broadcasts also contained rolled-back `step.succeeded` and `run.succeeded`.
+- `pnpm --filter @forge/bus test -- src/index.test.ts` failed with `server.onCoreEventBroadcastFailure is not a function` after adding the real socket-write-failure regression.
+
+### GREEN changes and evidence
+
+- `ExecutionStore` now invokes an optional transaction observer only after a successful SQLite commit. The sink queues transactional envelopes, flushes only from `onCommitted`, and discards on rollback. The forced later-failure test proves no rolled-back terminal events are broadcast.
+- `createProductionExecutionComposition()` is the production seam used by `main.ts`. The daemon e2e now starts a real `DaemonHost`, connects a real `DaemonClient` over a Unix socket, and verifies stored/replayed envelopes exactly match live fan-out without unsafe casts.
+- Bus fan-out returns an observable delivery result and exposes `onCoreEventBroadcastFailure()`. Tests verify both a connected client receives the real CoreEvent and a destroyed peer causes a listener-visible write failure.
+
+Passing commands/results:
+
+- `pnpm --filter @forge/protocol run build && pnpm --filter @forge/execution run build && pnpm --filter @forge/bus run build && pnpm --filter @forge/daemon-client run build && pnpm --filter @forge/daemon run build`: all passed.
+- `pnpm --filter @forge/execution test`: 58/58 passed.
+- `pnpm --filter @forge/bus test`: 8/8 passed.
+- `pnpm --filter @forge/daemon-client test`: 11/11 passed, including durable Workbench final-result coverage.
+- `pnpm --filter @forge/daemon test -- src/production-events.e2e.test.ts src/host/daemon-host.test.ts src/modules/execution-module.test.ts src/modules/event-module.test.ts`: 19/19 passed.
+- `git diff --check`: passed.

@@ -12,6 +12,11 @@ import type {
 
 export type EventAppendFn = typeof EventStore.appendInTransaction;
 
+export interface EventTransactionObserver {
+  onCommitted(): void;
+  onRolledBack(): void;
+}
+
 export interface ClaimedAttempt {
   id: string;
   runId: string;
@@ -66,12 +71,13 @@ export class ExecutionStore {
   constructor(
     private readonly db: Database.Database,
     private readonly appendEvent: EventAppendFn = EventStore.appendInTransaction,
+    private readonly eventTransactionObserver?: EventTransactionObserver,
   ) {}
 
   createRun(spec: RunSpec, now: string): StoredRun {
     assertAcyclic(spec);
 
-    const create = this.db.transaction(() => {
+    this.runInTransaction(() => {
       this.db
         .prepare(
           `INSERT INTO core_runs (
@@ -131,8 +137,7 @@ export class ExecutionStore {
       }
 
       this.emitRunEvent(spec, "run.created", now);
-    });
-    create.immediate();
+    }, true);
 
     return this.getRun(spec.id)!;
   }
@@ -142,7 +147,7 @@ export class ExecutionStore {
     workerId: string,
     now: string,
   ): ClaimedAttempt | null {
-    return this.db.transaction(() => {
+    return this.runInTransaction(() => {
       const step = this.db
         .prepare(
           `SELECT id, run_id AS runId
@@ -210,11 +215,11 @@ export class ExecutionStore {
         attemptNumber,
         workerId,
       };
-    })();
+    });
   }
 
   finishAttempt(attemptId: string, input: FinishAttemptInput, now: string): void {
-    this.db.transaction(() => {
+    this.runInTransaction(() => {
       const attempt = this.db
         .prepare(
           `SELECT id, run_id AS runId, step_id AS stepId, state
@@ -276,7 +281,7 @@ export class ExecutionStore {
       }
 
       this.refreshRunState(attempt.runId, now);
-    })();
+    });
   }
 
   getRun(runId: string): StoredRun | null {
@@ -402,7 +407,7 @@ export class ExecutionStore {
     },
     now: string,
   ): void {
-    this.db.transaction(() => {
+    this.runInTransaction(() => {
       const attempt = this.db
         .prepare(
           `SELECT id, run_id AS runId, step_id AS stepId
@@ -462,7 +467,7 @@ export class ExecutionStore {
       }
 
       this.refreshRunState(attempt.runId, now);
-    })();
+    });
   }
 
   resumeDueWaits(now: string, limit: number): number {
@@ -489,7 +494,7 @@ export class ExecutionStore {
       if (payload.nextAttemptAt && payload.nextAttemptAt > now) {
         continue;
       }
-      this.db.transaction(() => {
+      this.runInTransaction(() => {
         const changed = this.db
           .prepare(
             `UPDATE core_step_waits
@@ -518,14 +523,14 @@ export class ExecutionStore {
             stepId: wait.stepId,
           }, { waitId: wait.id });
         }
-      })();
+      });
       resumed += 1;
     }
     return resumed;
   }
 
   resumeWait(waitId: string, payload: unknown, now: string): void {
-    this.db.transaction(() => {
+    this.runInTransaction(() => {
       const wait = this.db
         .prepare(
           `SELECT id, run_id AS runId, step_id AS stepId, state
@@ -561,7 +566,7 @@ export class ExecutionStore {
           stepId: wait.stepId,
         }, { waitId, payload });
       }
-    })();
+    });
   }
 
   getActiveWait(
@@ -583,7 +588,7 @@ export class ExecutionStore {
   }
 
   cancelRun(runId: string, reason: string, now: string): void {
-    this.db.transaction(() => {
+    this.runInTransaction(() => {
       const run = this.getRun(runId);
       if (!run || isTerminalRunState(run.state)) {
         return;
@@ -606,7 +611,7 @@ export class ExecutionStore {
         .run(now, runId);
 
       this.updateRunState(runId, "cancelled", now);
-    })();
+    });
   }
 
   enterStepWait(
@@ -616,7 +621,7 @@ export class ExecutionStore {
     now: string,
   ): string {
     let waitId = "";
-    this.db.transaction(() => {
+    this.runInTransaction(() => {
       const attempt = this.db
         .prepare(
           `SELECT id, run_id AS runId, step_id AS stepId
@@ -676,12 +681,12 @@ export class ExecutionStore {
       }
 
       this.refreshRunState(attempt.runId, now);
-    })();
+    });
     return waitId;
   }
 
   abandonAttemptForManualReview(attemptId: string, now: string): void {
-    this.db.transaction(() => {
+    this.runInTransaction(() => {
       const attempt = this.db
         .prepare(
           `SELECT id, run_id AS runId, step_id AS stepId
@@ -740,11 +745,11 @@ export class ExecutionStore {
       }
 
       this.refreshRunState(attempt.runId, now);
-    })();
+    });
   }
 
   abandonAttemptAndRetryStep(attemptId: string, now: string): void {
-    this.db.transaction(() => {
+    this.runInTransaction(() => {
       const attempt = this.db
         .prepare(
           `SELECT id, run_id AS runId, step_id AS stepId
@@ -786,7 +791,7 @@ export class ExecutionStore {
       }
 
       this.refreshRunState(attempt.runId, now);
-    })();
+    });
   }
 
   loadRecoverableRuns(): StoredRun[] {
@@ -820,6 +825,22 @@ export class ExecutionStore {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     }));
+  }
+
+  private runInTransaction<T>(operation: () => T, immediate = false): T {
+    const transaction = this.db.transaction(operation);
+    let committed = false;
+    try {
+      const result = immediate ? transaction.immediate() : transaction();
+      committed = true;
+      this.eventTransactionObserver?.onCommitted();
+      return result;
+    } catch (error) {
+      if (!committed) {
+        this.eventTransactionObserver?.onRolledBack();
+      }
+      throw error;
+    }
   }
 
   private promoteDependentSteps(

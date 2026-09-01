@@ -2,9 +2,23 @@ import type { RunSpec } from "@forge/protocol";
 import { rpcFault } from "@forge/protocol";
 import type { DaemonModule } from "../host/types.js";
 import { RpcFaultError, TypedRouter } from "../host/router.js";
-import type { ForgeDaemonContext } from "./context.js";
+import type { DaemonContext } from "../host/types.js";
+import type {
+  DurableExecutor,
+  ExecutionClock,
+  ExecutionRecovery,
+  ExecutionStore,
+} from "@forge/execution";
 
-export function createExecutionModule(): DaemonModule<ForgeDaemonContext> {
+export interface ExecutionModuleContext extends DaemonContext {
+  executionStore: ExecutionStore;
+  executionClock: ExecutionClock;
+  executor: DurableExecutor;
+  executionRecovery: ExecutionRecovery;
+  wakeExecutor(): void;
+}
+
+export function createExecutionModule<Context extends ExecutionModuleContext>(): DaemonModule<Context> {
   return {
     id: "execution",
     feature: { version: 1, enabled: true },
@@ -30,7 +44,7 @@ export function createExecutionModule(): DaemonModule<ForgeDaemonContext> {
 
 async function handleRunCreate(
   spec: RunSpec,
-  context: ForgeDaemonContext,
+  context: ExecutionModuleContext,
   correlationId: string,
 ) {
   validateRunSpec(spec, correlationId);
@@ -41,7 +55,7 @@ async function handleRunCreate(
 
 async function handleRunGet(
   runId: string,
-  context: ForgeDaemonContext,
+  context: ExecutionModuleContext,
   correlationId: string,
 ) {
   if (!runId) {
@@ -68,7 +82,7 @@ async function handleRunGet(
 
 async function handleRunCancel(
   params: { runId: string; reason?: string },
-  context: ForgeDaemonContext,
+  context: ExecutionModuleContext,
   correlationId: string,
 ) {
   if (!params.runId) {
@@ -84,7 +98,7 @@ async function handleRunCancel(
 
 async function handleRunResume(
   params: { waitId: string; payload: unknown },
-  context: ForgeDaemonContext,
+  context: ExecutionModuleContext,
   correlationId: string,
 ) {
   if (!params.waitId) {
@@ -182,7 +196,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Test helper: register handlers without module lifecycle. */
 export function registerExecutionHandlers(
   router: TypedRouter,
-  context: ForgeDaemonContext,
+  context: ExecutionModuleContext,
 ): void {
   createExecutionModule().register(router, context);
 }

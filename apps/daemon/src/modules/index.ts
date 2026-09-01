@@ -15,8 +15,8 @@ export function createDaemonModules(
   _context: ForgeDaemonContext,
 ): Array<DaemonModule<ForgeDaemonContext>> {
   return [
-    createExecutionModule(),
-    createEventModule(),
+    createExecutionModule<ForgeDaemonContext>(),
+    createEventModule<ForgeDaemonContext>(),
     createWorkspaceModule(),
     createGovernanceModule(),
     createEvidenceModule(),

@@ -25,6 +25,17 @@ export interface RpcRequestContext {
   correlationId: string;
 }
 
+export interface CoreEventBroadcastFailure {
+  event: EventEnvelope;
+  error: Error;
+}
+
+export interface CoreEventBroadcastResult {
+  attempted: number;
+  delivered: number;
+  failed: number;
+}
+
 export type RpcHandler = (
   method: string,
   params: unknown,
@@ -58,6 +69,9 @@ export function serializeCoreEvent(event: EventEnvelope): string {
 export class DaemonServer {
   private server: Server | null = null;
   private readonly sockets = new Set<Socket>();
+  private readonly broadcastFailureListeners = new Set<
+    (failure: CoreEventBroadcastFailure) => void
+  >();
 
   constructor(
     private socketPath: string,
@@ -86,10 +100,40 @@ export class DaemonServer {
     unlinkSyncSafe(this.socketPath);
   }
 
-  broadcastCoreEvent(event: EventEnvelope): void {
+  onCoreEventBroadcastFailure(
+    listener: (failure: CoreEventBroadcastFailure) => void,
+  ): () => void {
+    this.broadcastFailureListeners.add(listener);
+    return () => this.broadcastFailureListeners.delete(listener);
+  }
+
+  broadcastCoreEvent(event: EventEnvelope): CoreEventBroadcastResult {
     const payload = serializeCoreEvent(event);
+    const result: CoreEventBroadcastResult = { attempted: 0, delivered: 0, failed: 0 };
     for (const socket of this.sockets) {
-      if (!socket.destroyed) socket.write(payload);
+      result.attempted += 1;
+      if (socket.destroyed) {
+        result.failed += 1;
+        this.reportBroadcastFailure(event, new Error("CoreEvent socket is destroyed"));
+        continue;
+      }
+      try {
+        socket.write(payload, (error) => {
+          if (!error) return;
+          this.reportBroadcastFailure(event, toError(error));
+        });
+        result.delivered += 1;
+      } catch (error) {
+        result.failed += 1;
+        this.reportBroadcastFailure(event, toError(error));
+      }
+    }
+    return result;
+  }
+
+  private reportBroadcastFailure(event: EventEnvelope, error: Error): void {
+    for (const listener of this.broadcastFailureListeners) {
+      listener({ event, error });
     }
   }
 
@@ -149,6 +193,10 @@ export class DaemonServer {
       });
     }
   }
+}
+
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
 }
 
 function faultForResponse(error: unknown, correlationId: string): RpcFault {
