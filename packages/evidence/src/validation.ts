@@ -44,6 +44,49 @@ export class ValidationService {
     return { accepted, results };
   }
 
+  listByRun(runId: string): Array<{
+    id: string;
+    runId: string;
+    deliveryId: string;
+    validatorId: string;
+    layer: ValidationResult["layer"];
+    status: ValidationResult["status"];
+    severity: ValidationResult["severity"];
+    summary: string;
+    createdAt: string;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT id, run_id, delivery_id, validator_id, layer, status, severity,
+                summary, created_at
+         FROM core_validations
+         WHERE run_id = ?
+         ORDER BY created_at ASC`,
+      )
+      .all(runId) as Array<{
+      id: string;
+      run_id: string;
+      delivery_id: string;
+      validator_id: string;
+      layer: ValidationResult["layer"];
+      status: ValidationResult["status"];
+      severity: ValidationResult["severity"];
+      summary: string;
+      created_at: string;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      runId: row.run_id,
+      deliveryId: row.delivery_id,
+      validatorId: row.validator_id,
+      layer: row.layer,
+      status: row.status,
+      severity: row.severity,
+      summary: row.summary,
+      createdAt: row.created_at,
+    }));
+  }
+
   private persistResult(
     input: ValidationInput,
     validatorId: string,

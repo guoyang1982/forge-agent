@@ -18,6 +18,11 @@ import {
   StepExecutorRegistry,
 } from "@forge/execution";
 import { EventStore } from "@forge/event-store";
+import { AgentProfileStore } from "@forge/agent-profile";
+import { ArtifactService, ValidationService, ValidatorRegistry } from "@forge/evidence";
+import { ApprovalService } from "@forge/policy";
+import { BudgetLedgerService } from "@forge/usage-ledger";
+import { WorkspaceGroupService } from "@forge/workspace";
 import { clearMcpClientPool } from "@forge/tool-mcp";
 import {
   clearProjectPluginCache,
@@ -134,6 +139,15 @@ const executionClock = {
 };
 const eventStore = new EventStore(forgeStore.db);
 const executionStore = new ExecutionStore(forgeStore.db);
+const workspaceGroups = new WorkspaceGroupService(forgeStore.db);
+const approvals = new ApprovalService(forgeStore.db);
+const budgetLedger = new BudgetLedgerService(forgeStore.db);
+const agentProfiles = new AgentProfileStore(forgeStore.db);
+const artifacts = new ArtifactService(
+  forgeStore.db,
+  join(bootConfig.daemon.dataDir, "evidence"),
+);
+const validations = new ValidationService(forgeStore.db, new ValidatorRegistry());
 const stepExecutors = new StepExecutorRegistry();
 stepExecutors.register(
   new LegacyForgeStepExecutor({
@@ -178,6 +192,12 @@ const context: ForgeDaemonContext = {
   channelGatewayHost,
   executionStore,
   eventStore,
+  workspaceGroups,
+  approvals,
+  budgetLedger,
+  agentProfiles,
+  artifacts,
+  validations,
   executor,
   executionRecovery,
   executionClock,
