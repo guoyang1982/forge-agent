@@ -58,6 +58,9 @@ describe("Core v1 database upgrade", () => {
         "013_core_usage_budget.sql",
         "014_core_evidence.sql",
         "015_core_agent_profiles.sql",
+        "016_core_assets_workflows.sql",
+        "017_core_knowledge_memory.sql",
+        "018_core_connectors.sql",
       ]);
     } finally {
       store?.close();
