@@ -4,14 +4,25 @@ import type {
   StepExecutorRegistry,
   StepOutcome,
 } from "./executor-types.js";
-import type { ClaimedAttempt, ExecutionStore } from "./store.js";
+import type { GovernedStepExecutor } from "./governed-executor.js";
+import type { GovernedStepExecutionInput } from "./governed-types.js";
+import { mapGovernedOutcome } from "./governed-types.js";
+import type { ClaimedAttempt, ExecutionStore, StoredRun, StoredStep } from "./store.js";
 
 export interface DurableExecutorOptions {
   workerId?: string;
+  governedExecutor?: GovernedStepExecutor;
+  buildGovernedInput?: (
+    claimed: ClaimedAttempt,
+    step: StoredStep,
+    run: StoredRun,
+  ) => GovernedStepExecutionInput | null;
 }
 
 export class DurableExecutor {
   private readonly workerId: string;
+  private readonly governedExecutor?: GovernedStepExecutor;
+  private readonly buildGovernedInput?: DurableExecutorOptions["buildGovernedInput"];
 
   constructor(
     private readonly store: ExecutionStore,
@@ -20,6 +31,8 @@ export class DurableExecutor {
     options: DurableExecutorOptions = {},
   ) {
     this.workerId = options.workerId ?? "durable-executor";
+    this.governedExecutor = options.governedExecutor;
+    this.buildGovernedInput = options.buildGovernedInput;
   }
 
   async tick(limit = 10): Promise<number> {
@@ -93,7 +106,19 @@ export class DurableExecutor {
     const timeout = setTimeout(() => controller.abort(), step.timeoutMs);
     let outcome: StepOutcome;
     try {
-      outcome = await executor.execute(input, controller.signal);
+      const run = this.store.getRun(claimed.runId);
+      const governedInput =
+        this.governedExecutor && run && this.buildGovernedInput
+          ? this.buildGovernedInput(claimed, step, run)
+          : null;
+
+      if (this.governedExecutor && governedInput) {
+        outcome = mapGovernedOutcome(
+          await this.governedExecutor.execute(governedInput, controller.signal),
+        );
+      } else {
+        outcome = await executor.execute(input, controller.signal);
+      }
     } catch (error) {
       outcome = {
         state: "failed",
@@ -124,6 +149,10 @@ export class DurableExecutor {
     }
 
     if (outcome.state === "waiting") {
+      const currentStep = this.store.getStep(claimed.runId, claimed.stepId);
+      if (currentStep?.state === "waiting") {
+        return;
+      }
       this.store.finishAttempt(
         claimed.id,
         { state: "failed", error: { code: "EXTERNAL_WAIT", waitRef: outcome.waitRef } },

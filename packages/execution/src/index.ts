@@ -33,6 +33,23 @@ export {
 } from "./executor-types.js";
 export type { DurableExecutorOptions } from "./executor.js";
 export { DurableExecutor } from "./executor.js";
+export type {
+  ApprovalRequestInput,
+  BudgetReserveInput,
+  GovernedExecutionPorts,
+  PolicyAuthorizeInput,
+  ProfileResolveInput,
+  WorkspaceAcquireInput,
+} from "./governed-executor.js";
+export { GovernedStepExecutor } from "./governed-executor.js";
+export type {
+  GovernedStepExecutionInput,
+  GovernedStepOutcome,
+  ResourceRef,
+  RiskLevel,
+  StepWaitReason,
+} from "./governed-types.js";
+export { mapGovernedOutcome } from "./governed-types.js";
 export { ExecutionRecovery } from "./recovery.js";
 export {
   bridgeLegacyAgentEvent,

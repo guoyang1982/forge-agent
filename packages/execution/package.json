@@ -21,9 +21,14 @@
     "vitest": "^3.0.9"
   },
   "dependencies": {
+    "@forge/agent-profile": "workspace:*",
+    "@forge/evidence": "workspace:*",
     "@forge/event-store": "workspace:*",
+    "@forge/policy": "workspace:*",
     "@forge/protocol": "workspace:*",
     "@forge/store": "workspace:*",
+    "@forge/usage-ledger": "workspace:*",
+    "@forge/workspace": "workspace:*",
     "better-sqlite3": "^13.0.2"
   }
 }
