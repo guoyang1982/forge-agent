@@ -6,7 +6,11 @@ import type {
   SystemStatusResult,
 } from "@forge/protocol";
 import { RPC_PROTOCOL_VERSION } from "@forge/protocol";
-import { DaemonServer, type RpcRequestContext } from "@forge/bus";
+import {
+  DaemonServer,
+  type CoreEventBroadcastResult,
+  type RpcRequestContext,
+} from "@forge/bus";
 import { createSystemModule } from "../modules/system-module.js";
 import { handleSystemStatus } from "../services/status-service.js";
 import { TypedRouter } from "./router.js";
@@ -69,8 +73,12 @@ export class DaemonHost<Context extends DaemonContext = DaemonContext> {
     }
   }
 
-  broadcastCoreEvent(event: EventEnvelope): void {
-    this.server?.broadcastCoreEvent(event);
+  broadcastCoreEvent(event: EventEnvelope): CoreEventBroadcastResult {
+    return this.server?.broadcastCoreEvent(event) ?? {
+      attempted: 0,
+      delivered: 0,
+      failed: 0,
+    };
   }
 
   capabilities(): CapabilityManifest {

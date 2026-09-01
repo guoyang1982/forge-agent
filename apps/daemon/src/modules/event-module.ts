@@ -2,11 +2,18 @@ import type { SubscriptionFilter } from "@forge/protocol";
 import { rpcFault } from "@forge/protocol";
 import type { DaemonModule } from "../host/types.js";
 import { RpcFaultError, TypedRouter } from "../host/router.js";
-import type { ForgeDaemonContext } from "./context.js";
+import type { DaemonContext } from "../host/types.js";
+import type { ExecutionClock } from "@forge/execution";
+import type { EventStore } from "@forge/event-store";
+
+export interface EventModuleContext extends DaemonContext {
+  eventStore: EventStore;
+  executionClock: ExecutionClock;
+}
 
 const MAX_EVENT_READ_LIMIT = 500;
 
-export function createEventModule(): DaemonModule<ForgeDaemonContext> {
+export function createEventModule<Context extends EventModuleContext>(): DaemonModule<Context> {
   return {
     id: "events",
     feature: { version: 1, enabled: true },
@@ -23,7 +30,7 @@ export function createEventModule(): DaemonModule<ForgeDaemonContext> {
 
 async function handleEventsRead(
   params: { cursor: number; limit: number; filter: SubscriptionFilter },
-  context: ForgeDaemonContext,
+  context: EventModuleContext,
   correlationId: string,
 ) {
   validateReadParams(params, correlationId);
@@ -37,7 +44,7 @@ async function handleEventsRead(
 
 async function handleCursorAck(
   params: { consumerId: string; sequence: number },
-  context: ForgeDaemonContext,
+  context: EventModuleContext,
   correlationId: string,
 ) {
   if (!params.consumerId) {
@@ -82,7 +89,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Test helper: register handlers without module lifecycle. */
 export function registerEventHandlers(
   router: TypedRouter,
-  context: ForgeDaemonContext,
+  context: EventModuleContext,
 ): void {
   createEventModule().register(router, context);
 }
