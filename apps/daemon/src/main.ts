@@ -140,6 +140,11 @@ const productionExecution = createProductionExecutionComposition({
   db: forgeStore.db,
   clock: executionClock,
   broadcast: (event) => host.broadcastCoreEvent(event),
+  onDeliveryFailure: ({ event, error }) => {
+    console.error(
+      `[forge:events] CoreEvent delivery failed eventId=${event.eventId} runId=${event.runId}: ${error.message}`,
+    );
+  },
   run: (request, emit, signal) =>
     executeLegacyForgeRun(
       request,
@@ -200,6 +205,7 @@ const context: ForgeDaemonContext = {
 };
 
 host = new DaemonHost(createDaemonModules(context), context);
+productionExecution.observeDeliveryFailures(host);
 
 function writePid(): void {
   writeFileSync(pidFile, String(process.pid));

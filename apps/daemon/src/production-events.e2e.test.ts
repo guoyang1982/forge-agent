@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { connect as netConnect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -147,6 +148,37 @@ describe("production v2 events", () => {
     expect(events.readAfter({ sequence: 0, filter: {}, limit: 20 })).toEqual(committed);
     expect(broadcasted).toEqual(committed);
   });
+
+  it("keeps run.create successful when post-commit delivery fails", async () => {
+    const failures: EventEnvelope[] = [];
+    const fx = await productionDaemonFixture({
+      autoExecute: false,
+      onDeliveryFailure: (failure) => {
+        failures.push(failure.event);
+      },
+    });
+    const peer = netConnect(fx.socketPath);
+    await new Promise<void>((resolve, reject) => {
+      peer.once("connect", resolve);
+      peer.once("error", reject);
+    });
+    try {
+      peer.destroy();
+      await expect(fx.client.request("run.create", fx.spec)).resolves.toEqual({
+        runId: "run-pong",
+        state: "running",
+      });
+      expect(fx.executionStore.getRun("run-pong")?.state).toBe("running");
+      expect(fx.wakeCount()).toBe(1);
+      await waitFor(() => failures.length === 1);
+      expect(failures).toHaveLength(1);
+      expect(failures).toMatchObject([{ type: "run.created", runId: "run-pong" }]);
+    } finally {
+      peer.destroy();
+      fx.client.close();
+      await fx.host.stop();
+    }
+  });
 });
 
 interface ProductionDaemonTestContext
@@ -154,7 +186,12 @@ interface ProductionDaemonTestContext
     ExecutionModuleContext,
     EventModuleContext {}
 
-async function productionDaemonFixture() {
+async function productionDaemonFixture(
+  options: {
+    autoExecute?: boolean;
+    onDeliveryFailure?: (failure: { event: EventEnvelope; error: Error }) => void;
+  } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "forge-production-events-"));
   fixtureRoots.push(root);
   const forgeStore = ForgeStore.open({
@@ -163,6 +200,7 @@ async function productionDaemonFixture() {
     owner: "test",
   });
   const clock = { now: () => "2026-01-01T00:00:00.000Z", nowMs: () => 0 };
+  let wakeCount = 0;
   let host: DaemonHost<ProductionDaemonTestContext> | undefined;
   const productionExecution = createProductionExecutionComposition({
     db: forgeStore.db,
@@ -171,6 +209,7 @@ async function productionDaemonFixture() {
       if (!host) throw new Error("host is not ready for CoreEvent broadcast");
       host.broadcastCoreEvent(event);
     },
+    onDeliveryFailure: options.onDeliveryFailure,
     run: async (_request, emit) => {
       emit({ type: "status", phase: "model", message: "replying" });
       emit({ type: "text_delta", sessionId: "session-pong", delta: "pong" });
@@ -190,7 +229,10 @@ async function productionDaemonFixture() {
     executor: productionExecution.executor,
     executionRecovery: productionExecution.executionRecovery,
     wakeExecutor: () => {
-      void productionExecution.executor.tick();
+      wakeCount += 1;
+      if (options.autoExecute ?? true) {
+        void productionExecution.executor.tick();
+      }
     },
   };
   host = new DaemonHost(
@@ -200,14 +242,17 @@ async function productionDaemonFixture() {
     ],
     context,
   );
+  productionExecution.observeDeliveryFailures(host);
   await host.start();
   const client = await connectDaemon(context.socketPath);
 
   return {
     host,
     client,
+    socketPath: context.socketPath,
     events: productionExecution.eventStore,
     executionStore: productionExecution.executionStore,
+    wakeCount: () => wakeCount,
     spec: pongRunSpec(),
   };
 }

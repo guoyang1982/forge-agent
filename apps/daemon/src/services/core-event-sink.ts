@@ -9,7 +9,8 @@ import type { AgentEvent, EventEnvelope } from "@forge/protocol";
 export interface ProductionEventSinkOptions {
   events: EventStore;
   getCorrelationId(runId: string): string | undefined;
-  broadcast(event: EventEnvelope): { failed: number } | void;
+  broadcast(event: EventEnvelope): void;
+  reportDeliveryFailure?(event: EventEnvelope, error: Error): void;
   now?(): string;
 }
 
@@ -34,16 +35,8 @@ export class ProductionEventSink {
   readonly flush = (): void => {
     const events = this.pendingTransactionEvents;
     this.pendingTransactionEvents = [];
-    const errors: unknown[] = [];
     for (const event of events) {
-      try {
-        this.broadcastStoredEvent(event);
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-    if (errors.length > 0) {
-      throw new AggregateError(errors, "CoreEvent broadcast failed after commit");
+      this.broadcastStoredEvent(event);
     }
   };
 
@@ -77,9 +70,14 @@ export class ProductionEventSink {
   };
 
   private broadcastStoredEvent(event: EventEnvelope): void {
-    const result = this.options.broadcast(event);
-    if (result && result.failed > 0) {
-      throw new Error(`CoreEvent broadcast failed for ${result.failed} socket(s)`);
+    try {
+      this.options.broadcast(event);
+    } catch (error) {
+      try {
+        this.options.reportDeliveryFailure?.(event, toError(error));
+      } catch {
+        // A diagnostic consumer must not fail a store operation that already committed.
+      }
     }
   }
 }
@@ -88,4 +86,8 @@ export function createProductionEventSink(
   options: ProductionEventSinkOptions,
 ): ProductionEventSink {
   return new ProductionEventSink(options);
+}
+
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
 }

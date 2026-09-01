@@ -90,3 +90,26 @@ Passing commands/results:
 - `pnpm --filter @forge/daemon-client test`: 11/11 passed, including durable Workbench final-result coverage.
 - `pnpm --filter @forge/daemon test -- src/production-events.e2e.test.ts src/host/daemon-host.test.ts src/modules/execution-module.test.ts src/modules/event-module.test.ts`: 19/19 passed.
 - `git diff --check`: passed.
+
+## Review fix round 2
+
+### Root causes addressed
+
+1. Async CoreEvent socket-write failures were observable only from `DaemonServer`; production composition had no channel to receive or report them.
+2. `ExecutionStore` invokes its commit observer after SQLite commits. The sink could throw from that observer when a synchronous broadcast reported failure, turning durable `run.create` success into an RPC failure before the executor wake.
+
+### RED evidence
+
+- `pnpm --filter @forge/daemon test -- src/production-events.e2e.test.ts` failed the new post-commit regression with `TypeError: fx.host.onCoreEventBroadcastFailure is not a function`, proving that the real Host/production composition could not observe the bus delivery failure.
+
+### GREEN changes and evidence
+
+- `DaemonHost` now relays `DaemonServer` CoreEvent delivery failures through `onCoreEventBroadcastFailure()`. The production composition subscribes to that channel, and `main.ts` registers a production diagnostic reporter. Both callback-reported async write failures and exceptional broadcaster calls use this independent delivery-failure path.
+- `ProductionEventSink.flush()` no longer propagates delivery exceptions into the already-committed store operation. The event remains durable; the execution module returns `run.create` success and wakes the executor while delivery failure is reported independently.
+- The real Host/Server/Client production e2e creates a doomed Unix-socket peer and proves the failure reaches the composition reporter exactly once while `run.create` succeeds, the run is durable, and `wakeExecutor` was called once.
+
+Passing commands/results:
+
+- `pnpm --filter @forge/daemon run build && pnpm --filter @forge/execution test -- src/store.test.ts && pnpm --filter @forge/daemon-client test && pnpm --filter @forge/daemon test -- src/production-events.e2e.test.ts && pnpm --filter @forge/bus test -- src/index.test.ts`: passed; daemon build succeeded; execution 8/8, daemon-client 11/11, production daemon 4/4, and bus 8/8 tests passed.
+- `pnpm --filter @forge/daemon run build && pnpm --filter @forge/daemon test -- src/production-events.e2e.test.ts && pnpm --filter @forge/bus test -- src/index.test.ts && git diff --check`: passed; daemon build succeeded; production daemon 4/4 and bus 8/8 tests passed with no whitespace errors.
+- `git diff --check`: passed.
