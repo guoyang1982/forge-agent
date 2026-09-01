@@ -28,6 +28,7 @@ export const V2_RPC_METHODS = [
 ] as const;
 
 export const V2_EXECUTION_EVENT_TYPES = [
+  "agent.event",
   "run.created",
   "run.succeeded",
   "run.failed",

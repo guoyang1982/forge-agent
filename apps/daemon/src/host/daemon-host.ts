@@ -1,5 +1,6 @@
 import type {
   CapabilityManifest,
+  EventEnvelope,
   ModuleHealthStatus,
   ModuleHealthSummary,
   SystemStatusResult,
@@ -66,6 +67,10 @@ export class DaemonHost<Context extends DaemonContext = DaemonContext> {
     if (errors.length > 0) {
       throw new AggregateError(errors, "Daemon module shutdown failed");
     }
+  }
+
+  broadcastCoreEvent(event: EventEnvelope): void {
+    this.server?.broadcastCoreEvent(event);
   }
 
   capabilities(): CapabilityManifest {
