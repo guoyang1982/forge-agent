@@ -95,6 +95,10 @@ export interface RunServiceDeps {
   sessions: SessionStore;
   getRuntime: () => Promise<ForgeRuntime>;
   cancelService: CancelService;
+  executeDurableAutomation?: (
+    request: RunRequest,
+    emit: (event: AgentEvent) => void,
+  ) => Promise<RunResult>;
 }
 
 /** Bridge used by the durable execution legacy adapter. */

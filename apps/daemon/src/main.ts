@@ -2,6 +2,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { connect } from "node:net";
 import type { ReloadRuntimeResult } from "@forge/protocol";
 import { DAEMON_METHODS, FORGE_DAEMON_BUILD, V2_EXECUTION_EVENT_TYPES } from "@forge/protocol";
@@ -13,6 +14,7 @@ import { ChannelStore } from "@forge/channel";
 import {
   DurableExecutor,
   ExecutionRecovery,
+  runRequestToRunSpec,
 } from "@forge/execution";
 import { AgentProfileStore } from "@forge/agent-profile";
 import { ArtifactService, ValidationService, ValidatorRegistry } from "@forge/evidence";
@@ -118,7 +120,7 @@ schedulerHost = new AutomationSchedulerHost({
       store: automationStore,
       sessions,
       scheduler: schedulerHost,
-      runDeps: { sessions, getRuntime, cancelService },
+      runDeps: { sessions, getRuntime, cancelService, executeDurableAutomation },
       channelStore,
       cfg: loadConfig(),
     }),
@@ -175,6 +177,22 @@ const productionExecution = createProductionExecutionComposition({
   },
 });
 const { eventStore, executionStore, executor, executionRecovery } = productionExecution;
+async function executeDurableAutomation(
+  request: Parameters<typeof executeLegacyForgeRun>[0],
+  _emit: Parameters<typeof executeLegacyForgeRun>[1],
+) {
+  const spec = runRequestToRunSpec(request, {
+    runId: randomUUID,
+    correlationId: randomUUID,
+  });
+  executionStore.createRun(spec, executionClock.now());
+  await executor.tick();
+  const run = executionStore.getRun(spec.id);
+  if (!run || run.state !== "succeeded") {
+    throw new Error(`durable automation run failed: ${run?.state ?? "missing"}`);
+  }
+  return { sessionId: request.sessionId ?? "", finalText: "" };
+}
 const wakeExecutor = () => {
   void executor.tick().catch((error) => {
     console.error(`[forge:execution] tick failed: ${String(error)}`);
@@ -207,6 +225,7 @@ const context: ForgeDaemonContext = {
   executionRecovery,
   executionClock,
   wakeExecutor,
+  executeDurableAutomation,
   getRuntime,
   reloadRuntime,
   shutdownRuntime,
