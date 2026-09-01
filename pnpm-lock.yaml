@@ -560,6 +560,25 @@ importers:
         specifier: ^3.0.9
         version: 3.2.4(@types/debug@4.1.13)(@types/node@26.1.2)(lightningcss@1.32.0)(terser@5.49.0)(tsx@4.22.3)(yaml@2.9.0)
 
+  packages/evals:
+    dependencies:
+      '@forge/execution':
+        specifier: workspace:*
+        version: link:../execution
+      '@forge/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.10
+        version: 22.19.19
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.9
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@22.19.19)(lightningcss@1.32.0)(terser@5.49.0)(tsx@4.22.3)(yaml@2.9.0)
+
   packages/event-store:
     dependencies:
       '@forge/protocol':
@@ -1861,7 +1880,7 @@ packages:
 
   '@expo/bunyan@4.0.1':
     resolution: {integrity: sha512-+Lla7nYSiHZirgK+U/uYzsLv/X+HaJienbD5AKX1UQZHYfWaP+9uuQluRB4GrEVWF0GZ7vEVp/jzaOT9k/SQlg==, tarball: http://jfrog.cloud.qiyi.domain/artifactory/api/npm/npm/@expo/bunyan/-/bunyan-4.0.1.tgz}
-    engines: {node: '>=0.10.0'}
+    engines: {'0': node >=0.10.0}
 
   '@expo/cli@57.0.11':
     resolution: {integrity: sha512-ENXCwRyL8Q9qbabUmm0L6w9kXTmdGotW7eDEEWmUDXLPux+nEzNDqw0MzWQ5K3ZsXS51QmUJZg5yETB+6SnNRg==, tarball: http://jfrog.cloud.qiyi.domain/artifactory/api/npm/npm/@expo/cli/-/cli-57.0.11.tgz}
