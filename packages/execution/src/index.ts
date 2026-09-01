@@ -19,3 +19,11 @@ export {
   transitionRun,
   transitionStep,
 } from "./state-machine.js";
+export type {
+  ClaimedAttempt,
+  FinishAttemptInput,
+  StoredAttempt,
+  StoredRun,
+  StoredStep,
+} from "./store.js";
+export { ExecutionStore } from "./store.js";
