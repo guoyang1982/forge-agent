@@ -86,6 +86,13 @@ export class DaemonServer {
     unlinkSyncSafe(this.socketPath);
   }
 
+  broadcastCoreEvent(event: EventEnvelope): void {
+    const payload = serializeCoreEvent(event);
+    for (const socket of this.sockets) {
+      if (!socket.destroyed) socket.write(payload);
+    }
+  }
+
   private handleConnection(socket: Socket): void {
     let buffer = "";
     this.sockets.add(socket);

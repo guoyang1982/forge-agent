@@ -40,6 +40,7 @@ import { ChannelGatewayHost } from "./services/channel-gateway-host.js";
 import { releaseAllAcpSessions } from "./services/runtime-service.js";
 import { runSessionEndHooksOnShutdown } from "./services/session-end-service.js";
 import { executeLegacyForgeRun } from "./services/run-service.js";
+import { createProductionEventSink } from "./services/core-event-sink.js";
 
 const SERVER_VERSION = "0.2.0";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -139,7 +140,15 @@ const executionClock = {
   nowMs: () => Date.now(),
 };
 const eventStore = new EventStore(forgeStore.db);
-const executionStore = new ExecutionStore(forgeStore.db);
+let host!: DaemonHost<ForgeDaemonContext>;
+let executionStore!: ExecutionStore;
+const productionEventSink = createProductionEventSink({
+  events: eventStore,
+  getCorrelationId: (runId) => executionStore.getRun(runId)?.correlationId,
+  broadcast: (event) => host.broadcastCoreEvent(event),
+  now: executionClock.now,
+});
+executionStore = new ExecutionStore(forgeStore.db, productionEventSink.appendInTransaction);
 const workspaceGroups = new WorkspaceGroupService(forgeStore.db);
 const approvals = new ApprovalService(forgeStore.db);
 const budgetLedger = new BudgetLedgerService(forgeStore.db);
@@ -152,6 +161,7 @@ const validations = new ValidationService(forgeStore.db, new ValidatorRegistry()
 const stepExecutors = new StepExecutorRegistry();
 stepExecutors.register(
   new LegacyForgeStepExecutor({
+    emitLegacyAgentEvent: productionEventSink.emitLegacyAgentEvent,
     run: (request, emit, signal) =>
       executeLegacyForgeRun(
         request,
@@ -208,7 +218,7 @@ const context: ForgeDaemonContext = {
   shutdownRuntime,
 };
 
-const host = new DaemonHost(createDaemonModules(context), context);
+host = new DaemonHost(createDaemonModules(context), context);
 
 function writePid(): void {
   writeFileSync(pidFile, String(process.pid));

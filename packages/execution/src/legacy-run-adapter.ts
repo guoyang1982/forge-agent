@@ -21,7 +21,10 @@ export interface LegacyForgeRunFn {
 
 export interface LegacyForgeStepExecutorOptions {
   run: LegacyForgeRunFn;
-  emitLegacyAgentEvent?: (event: AgentEvent) => void;
+  emitLegacyAgentEvent?: (
+    event: AgentEvent,
+    links: { runId: string; stepId: string; attemptId: string },
+  ) => void;
 }
 
 export function runRequestToRunSpec(
@@ -125,7 +128,11 @@ export class LegacyForgeStepExecutor implements StepExecutor {
 
     const request = parseLegacyRunRequest(input.input);
     const emit = (event: AgentEvent) => {
-      this.options.emitLegacyAgentEvent?.(event);
+      this.options.emitLegacyAgentEvent?.(event, {
+        runId: input.runId,
+        stepId: input.stepId,
+        attemptId: input.attemptId,
+      });
     };
 
     try {

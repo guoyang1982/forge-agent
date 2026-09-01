@@ -44,6 +44,33 @@ describe("legacy run adapter", () => {
     await adapter.execute(stepInput(), new AbortController().signal);
     expect(emitLegacyAgentEvent).toHaveBeenCalledWith(
       expect.objectContaining({ type: "status", message: "working" }),
+      expect.objectContaining({
+        runId: "run-1",
+        stepId: "step-1",
+        attemptId: "attempt-1",
+      }),
+    );
+  });
+
+  it("supplies durable execution links to the production event bridge", async () => {
+    const emitLegacyAgentEvent = vi.fn();
+    const adapter = new LegacyForgeStepExecutor({
+      emitLegacyAgentEvent,
+      run: vi.fn<LegacyForgeRunFn>().mockImplementation(async (_req, emit) => {
+        emit({ type: "text_delta", sessionId: "session-2", delta: "pong" });
+        return { sessionId: "session-2", finalText: "pong" };
+      }),
+    });
+
+    await adapter.execute(stepInput(), new AbortController().signal);
+
+    expect(emitLegacyAgentEvent).toHaveBeenCalledWith(
+      { type: "text_delta", sessionId: "session-2", delta: "pong" },
+      {
+        runId: "run-1",
+        stepId: "step-1",
+        attemptId: "attempt-1",
+      },
     );
   });
 

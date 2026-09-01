@@ -104,21 +104,12 @@ export async function waitForWorkbenchRun(
   onEvent?: (event: AgentEvent) => void,
 ): Promise<{ state: RunState; sessionId: string; finalText: string }> {
   const api = createWorkbenchDaemonApi(client);
-  let sessionId = "";
-  let finalText = "";
   let terminalState: RunState | null = null;
 
   const subscription = await api.subscribeRun(runId, (event) => {
     const legacy = agentEventFromEnvelope(event);
     if (legacy) {
       onEvent?.(legacy);
-      if ("sessionId" in legacy && typeof legacy.sessionId === "string") {
-        sessionId = legacy.sessionId;
-      }
-      if (legacy.type === "done") {
-        sessionId = legacy.sessionId;
-        finalText = legacy.finalText ?? "";
-      }
     }
     if (event.type === "run.succeeded") {
       terminalState = "succeeded";
@@ -138,13 +129,48 @@ export async function waitForWorkbenchRun(
       }
       await sleep(50);
     }
+    const durableResult = await readDurableRunResult(client, runId);
     return {
       state: terminalState ?? "failed",
-      sessionId,
-      finalText,
+      sessionId: durableResult.sessionId,
+      finalText: durableResult.finalText,
     };
   } finally {
     await subscription.close();
+  }
+}
+
+async function readDurableRunResult(
+  client: DaemonClient,
+  runId: string,
+): Promise<{ sessionId: string; finalText: string }> {
+  const limit = 500;
+  let cursor = 0;
+  let sessionId = "";
+  let finalText = "";
+
+  while (true) {
+    const page = await client.request("events.read", {
+      cursor,
+      limit,
+      filter: { runId },
+    });
+    for (const event of page.events) {
+      const legacy = agentEventFromEnvelope(event);
+      if (!legacy) continue;
+      if ("sessionId" in legacy && typeof legacy.sessionId === "string") {
+        sessionId = legacy.sessionId;
+      }
+      if (legacy.type === "done") {
+        sessionId = legacy.sessionId;
+        finalText = legacy.finalText ?? "";
+      }
+    }
+    const lastSequence = page.events.at(-1)?.sequence ?? cursor;
+    if (page.events.length < limit || lastSequence <= cursor) {
+      return { sessionId, finalText };
+    }
+    cursor = lastSequence;
   }
 }
 
