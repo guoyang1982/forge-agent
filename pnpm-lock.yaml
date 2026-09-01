@@ -581,6 +581,9 @@ importers:
 
   packages/execution:
     dependencies:
+      '@forge/event-store':
+        specifier: workspace:*
+        version: link:../event-store
       '@forge/store':
         specifier: workspace:*
         version: link:../store

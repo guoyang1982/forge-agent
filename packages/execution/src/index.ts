@@ -21,6 +21,7 @@ export {
 } from "./state-machine.js";
 export type {
   ClaimedAttempt,
+  EventAppendFn,
   FinishAttemptInput,
   StoredAttempt,
   StoredRun,
