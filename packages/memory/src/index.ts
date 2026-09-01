@@ -261,3 +261,5 @@ export function registerMemoryTools(
     return JSON.stringify({ ok: true, id: row.id, message: "Memory saved" });
   });
 }
+
+export * from "./knowledge.js";
