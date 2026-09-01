@@ -33,6 +33,15 @@ export {
   type AcquireLeaseInput,
   type WorkspaceLease,
 } from "./leases.js";
+export {
+  captureCompositeCheckpoint,
+  verifyCompositeCheckpoint,
+  type CaptureCompositeCheckpointInput,
+  type CompositeCheckpoint,
+  type CompositeCheckpointEntry,
+  type CompositeCheckpointMismatch,
+  type VerifyCompositeCheckpointResult,
+} from "./composite-checkpoint.js";
 
 const IGNORE_DIRS = new Set([
   "node_modules",
