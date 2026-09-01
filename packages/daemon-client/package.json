@@ -15,6 +15,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@forge/execution": "workspace:*",
     "@forge/protocol": "workspace:*"
   },
   "devDependencies": {

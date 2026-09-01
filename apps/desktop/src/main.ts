@@ -22,6 +22,12 @@ import {
   type ForgeConfig,
   type RunAttachment,
 } from "@forge/protocol";
+import {
+  createWorkbenchDaemonApi,
+  simpleRunSpec,
+  supportsDaemonV2,
+  waitForWorkbenchRun,
+} from "./daemon-v2.js";
 import { loadConfig, saveConfig, saveModelSelection } from "@forge/config";
 import { WorkspaceGuard, gitBranchInfo, gitSwitchBranch } from "@forge/workspace";
 import {
@@ -1314,6 +1320,27 @@ function registerIpcHandlers(): void {
       },
     ) => {
       const cfg = loadConfig({ cwd: payload.cwd });
+      await ensureDaemon(cfg);
+      const client = await connectDaemon(cfg.daemon.socketPath);
+      try {
+        if (await supportsDaemonV2(client)) {
+          const api = createWorkbenchDaemonApi(client);
+          const created = await api.createRun(simpleRunSpec(payload));
+          activeV2RunId = created.runId;
+          const result = await waitForWorkbenchRun(
+            client,
+            created.runId,
+            sendAgentEvent,
+          );
+          activeV2RunId = null;
+          return {
+            sessionId: result.sessionId,
+            finalText: result.finalText,
+          };
+        }
+      } finally {
+        client.close();
+      }
       return requestDaemonMethodWithEvents(cfg, DAEMON_METHODS.RUN, {
         cwd: payload.cwd,
         message: payload.message,
@@ -1392,6 +1419,18 @@ function registerIpcHandlers(): void {
     "forge:cancel-run",
     async (_event, payload?: { sessionId?: string }) => {
       const cfg = loadConfig();
+      if (activeV2RunId) {
+        const client = await connectDaemon(cfg.daemon.socketPath);
+        try {
+          if (await supportsDaemonV2(client)) {
+            await createWorkbenchDaemonApi(client).cancelRun(activeV2RunId);
+            activeV2RunId = null;
+            return { ok: true, canceled: true };
+          }
+        } finally {
+          client.close();
+        }
+      }
       return requestDaemonMethod(cfg, DAEMON_METHODS.CANCEL_RUN, payload ?? {});
     },
   );
@@ -1616,6 +1655,7 @@ type ForgeDaemonClient = Awaited<ReturnType<typeof connectDaemon>>;
 
 let daemonEventClient: ForgeDaemonClient | null = null;
 let daemonEventSubscribeInFlight: Promise<void> | null = null;
+let activeV2RunId: string | null = null;
 
 async function ensureDaemonEventSubscriber(cfg?: ForgeConfig): Promise<void> {
   if (daemonEventClient) return;

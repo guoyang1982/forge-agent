@@ -1,4 +1,5 @@
 import { connectDaemon } from "@forge/bus";
+import { supportsDaemonV2 } from "@forge/daemon-client";
 import { DAEMON_METHODS } from "@forge/protocol";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
@@ -18,6 +19,19 @@ export async function ensureDaemon(socketPath: string): Promise<void> {
     });
     child.unref();
     await sleep(1200);
+  }
+}
+
+export async function daemonSupportsV2(socketPath: string): Promise<boolean> {
+  try {
+    const client = await connectDaemon(socketPath);
+    try {
+      return await supportsDaemonV2(client);
+    } finally {
+      client.close();
+    }
+  } catch {
+    return false;
   }
 }
 

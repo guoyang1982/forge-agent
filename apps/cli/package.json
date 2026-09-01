@@ -14,6 +14,7 @@
   "dependencies": {
     "@forge/bus": "workspace:*",
     "@forge/config": "workspace:*",
+    "@forge/daemon-client": "workspace:*",
     "@forge/marketplace": "workspace:*",
     "@forge/platform": "workspace:*",
     "@forge/plugin-registry": "workspace:*",

@@ -38,6 +38,17 @@ export {
   createEventSubscription,
   matchesEventFilter,
 } from "./subscription.js";
+export {
+  REQUIRED_EXECUTION_FEATURE,
+  agentEventFromEnvelope,
+  createWorkbenchDaemonApi,
+  isTerminalRunState,
+  simpleRunSpec,
+  supportsDaemonV2,
+  waitForWorkbenchRun,
+  type SimpleRunInput,
+  type WorkbenchDaemonApi,
+} from "./workbench-api.js";
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
