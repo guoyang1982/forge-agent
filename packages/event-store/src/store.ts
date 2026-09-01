@@ -46,7 +46,7 @@ export class EventStore {
         .run(
           envelope.eventId,
           envelope.type,
-          JSON.stringify(envelope),
+          "{}",
           envelope.occurredAt,
           envelope.runId ?? null,
           envelope.stepId ?? null,
@@ -56,6 +56,10 @@ export class EventStore {
 
       const sequence = Number(result.lastInsertRowid);
       const persisted = { ...envelope, sequence };
+
+      db.prepare(
+        `UPDATE core_events SET envelope_json = ? WHERE sequence = ?`,
+      ).run(JSON.stringify(persisted), sequence);
 
       db.prepare(
         `INSERT INTO core_outbox (
