@@ -51,6 +51,16 @@ export interface CoreV2BaselineReport {
   };
   schemas: {
     migrations: BaselineFileRecord[];
+    migrationRange: {
+      first: string | null;
+      latest: string | null;
+      count: number;
+    };
+    foundationEvidence: {
+      legacyFixture: BaselineFileRecord | null;
+      upgradeGate: BaselineFileRecord | null;
+      restoreTool: BaselineFileRecord | null;
+    };
   };
 }
 
@@ -158,6 +168,46 @@ async function readMigrationSummary(repositoryRoot: string): Promise<BaselineFil
   return migrations;
 }
 
+async function readBaselineFileRecord(
+  repositoryRoot: string,
+  relativePath: string,
+): Promise<BaselineFileRecord | null> {
+  const path = join(repositoryRoot, ...relativePath.split("/"));
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  if (!info.isFile() || info.isSymbolicLink()) {
+    throw new Error(`baseline evidence must be a real file: ${relativePath}`);
+  }
+  const contents = await readFile(path);
+  return {
+    relativePath,
+    bytes: contents.byteLength,
+    sha256: createHash("sha256").update(contents).digest("hex"),
+  };
+}
+
+async function readFoundationEvidence(repositoryRoot: string): Promise<
+  CoreV2BaselineReport["schemas"]["foundationEvidence"]
+> {
+  const [legacyFixture, upgradeGate, restoreTool] = await Promise.all([
+    readBaselineFileRecord(
+      repositoryRoot,
+      "apps/daemon/test-fixtures/core-v1-data.ts",
+    ),
+    readBaselineFileRecord(
+      repositoryRoot,
+      "packages/store/src/legacy-upgrade.test.ts",
+    ),
+    readBaselineFileRecord(repositoryRoot, "scripts/core-v2/backup-data.ts"),
+  ]);
+  return { legacyFixture, upgradeGate, restoreTool };
+}
+
 async function assertOutputDoesNotExist(outputPath: string): Promise<void> {
   try {
     await access(outputPath);
@@ -182,7 +232,15 @@ export async function captureCoreV2Baseline(
   }
 
   const repositoryRoot = await realpath(requestedRepositoryRoot);
-  const [commit, branchOutput, statusOutput, pnpmOutput, workspace, migrations] =
+  const [
+    commit,
+    branchOutput,
+    statusOutput,
+    pnpmOutput,
+    workspace,
+    migrations,
+    foundationEvidence,
+  ] =
     await Promise.all([
       gitOutput(repositoryRoot, ["rev-parse", "HEAD"]),
       gitOutput(repositoryRoot, ["branch", "--show-current"]),
@@ -192,6 +250,7 @@ export async function captureCoreV2Baseline(
       ),
       readWorkspaceSummary(repositoryRoot),
       readMigrationSummary(repositoryRoot),
+      readFoundationEvidence(repositoryRoot),
     ]);
 
   const report: CoreV2BaselineReport = {
@@ -210,7 +269,15 @@ export async function captureCoreV2Baseline(
       arch: process.arch,
     },
     workspace,
-    schemas: { migrations },
+    schemas: {
+      migrations,
+      migrationRange: {
+        first: migrations[0]?.relativePath.split("/").at(-1) ?? null,
+        latest: migrations.at(-1)?.relativePath.split("/").at(-1) ?? null,
+        count: migrations.length,
+      },
+      foundationEvidence,
+    },
   };
 
   await assertOutputDoesNotExist(outputPath);

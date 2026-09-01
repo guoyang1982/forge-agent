@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import {
+  access,
   copyFile,
   lstat,
   mkdir,
@@ -15,6 +16,7 @@ import {
 import { homedir } from "node:os";
 import {
   dirname,
+  basename,
   isAbsolute,
   join,
   parse,
@@ -42,6 +44,18 @@ export interface BackupManifest {
 export interface BackupForgeDataInput {
   dataDir: string;
   outputDir: string;
+}
+
+export interface RestoreForgeDataInput {
+  manifestPath: string;
+  restoreDir: string;
+}
+
+export interface RestoreManifest {
+  restoredAt: string;
+  sourceManifestPath: string;
+  restoreDir: string;
+  files: BackupManifestFile[];
 }
 
 const DATABASE_FILES = new Set(["data.db", "data.db-shm", "data.db-wal"]);
@@ -291,6 +305,103 @@ export async function verifyBackup(manifestPathInput: string): Promise<void> {
   }
 }
 
+export async function restoreForgeDataBackup(
+  input: RestoreForgeDataInput,
+): Promise<RestoreManifest> {
+  if (!isAbsolute(input.manifestPath)) {
+    throw new Error("manifest path must be an absolute path");
+  }
+  const manifestPath = resolve(input.manifestPath);
+  const requestedRestoreDir = assertExplicitSafeDirectory(
+    input.restoreDir,
+    "restore directory",
+  );
+  await assertPathDoesNotExist(requestedRestoreDir, "restore directory");
+  await verifyBackup(manifestPath);
+
+  const manifest = parseManifest(JSON.parse(await readFile(manifestPath, "utf8")));
+  const backupDir = dirname(manifestPath);
+  assertRestoreDoesNotOverlap(
+    requestedRestoreDir,
+    resolve(manifest.sourceDir),
+    backupDir,
+  );
+
+  await mkdir(dirname(requestedRestoreDir), { recursive: true });
+  const restoreParent = await realpath(dirname(requestedRestoreDir));
+  const restoreDir = join(restoreParent, basename(requestedRestoreDir));
+  assertExplicitSafeDirectory(restoreDir, "restore directory");
+  assertRestoreDoesNotOverlap(restoreDir, resolve(manifest.sourceDir), backupDir);
+
+  const stagingDir = join(
+    restoreParent,
+    `.incomplete-forge-restore-${randomUUID()}`,
+  );
+  let published = false;
+  await mkdir(stagingDir);
+  try {
+    for (const file of manifest.files) {
+      const sourcePath = resolveManifestFile(backupDir, file.relativePath);
+      const destinationPath = resolveManifestFile(stagingDir, file.relativePath);
+      await mkdir(dirname(destinationPath), { recursive: true });
+      await copyFile(sourcePath, destinationPath);
+      const destinationInfo = await stat(destinationPath);
+      if (destinationInfo.size !== file.bytes) {
+        throw new Error(`restored size mismatch for ${file.relativePath}`);
+      }
+      if ((await sha256File(destinationPath)) !== file.sha256) {
+        throw new Error(`restored checksum mismatch for ${file.relativePath}`);
+      }
+    }
+
+    const report: RestoreManifest = {
+      restoredAt: new Date().toISOString(),
+      sourceManifestPath: manifestPath,
+      restoreDir,
+      files: manifest.files,
+    };
+    await writeFile(
+      join(stagingDir, "restore-report.json"),
+      `${JSON.stringify(report, null, 2)}\n`,
+      { encoding: "utf8", flag: "wx" },
+    );
+    await rename(stagingDir, restoreDir);
+    published = true;
+    return report;
+  } finally {
+    if (!published) {
+      await rm(stagingDir, { recursive: true, force: true });
+    }
+  }
+}
+
+async function assertPathDoesNotExist(path: string, label: string): Promise<void> {
+  try {
+    await access(path);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error(`${label} already exists: ${path}`);
+}
+
+function assertRestoreDoesNotOverlap(
+  restoreDir: string,
+  sourceDir: string,
+  backupDir: string,
+): void {
+  if (
+    restoreDir === sourceDir ||
+    restoreDir === backupDir ||
+    isWithin(restoreDir, sourceDir) ||
+    isWithin(sourceDir, restoreDir) ||
+    isWithin(restoreDir, backupDir) ||
+    isWithin(backupDir, restoreDir)
+  ) {
+    throw new Error("restore directory must not overlap source or backup directories");
+  }
+}
+
 function readRequiredOption(args: string[], name: string): string {
   const index = args.indexOf(name);
   const value = index >= 0 ? args[index + 1] : undefined;
@@ -301,6 +412,14 @@ function readRequiredOption(args: string[], name: string): string {
 }
 
 export async function runBackupCli(args: string[]): Promise<void> {
+  if (args.includes("--restore-manifest")) {
+    const report = await restoreForgeDataBackup({
+      manifestPath: readRequiredOption(args, "--restore-manifest"),
+      restoreDir: readRequiredOption(args, "--restore-dir"),
+    });
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
   const manifest = await backupForgeData({
     dataDir: readRequiredOption(args, "--data-dir"),
     outputDir: readRequiredOption(args, "--output-dir"),

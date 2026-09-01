@@ -59,6 +59,9 @@ export class MigrationRunner {
       }
 
       const startedAt = performance.now();
+      if (migration.version === "001_init.sql") {
+        adoptLegacyMemoryProjectId(this.db);
+      }
       if (migration.sql.trim()) this.db.exec(migration.sql);
       const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
       this.db
@@ -75,6 +78,28 @@ export class MigrationRunner {
         );
     });
     apply.immediate();
+  }
+}
+
+function adoptLegacyMemoryProjectId(db: Database.Database): void {
+  const memoryTable = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memories'",
+    )
+    .get() as { name: string } | undefined;
+  if (!memoryTable) return;
+
+  const columns = db.prepare("PRAGMA table_info(memories)").all() as Array<{
+    name: string;
+  }>;
+  const names = new Set(columns.map((column) => column.name));
+  if (!names.has("project_id")) {
+    db.exec("ALTER TABLE memories ADD COLUMN project_id TEXT");
+  }
+  if (names.has("session_scope")) {
+    db.exec(
+      "UPDATE memories SET project_id = session_scope WHERE project_id IS NULL",
+    );
   }
 }
 

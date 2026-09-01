@@ -711,14 +711,20 @@ git commit -m "refactor(daemon): register services as modules"
 **Files:**
 - Create: `packages/store/src/legacy-upgrade.test.ts`
 - Create: `apps/daemon/test-fixtures/core-v1-data.ts`
+- Modify: `packages/store/src/migrations.ts`
+- Modify: `packages/store/tsconfig.json`
+- Modify: `scripts/core-v2/backup-data.ts`
+- Modify: `scripts/core-v2/backup-data.test.ts`
 - Modify: `scripts/core-v2/capture-baseline.ts`
+- Modify: `scripts/core-v2/capture-baseline.test.ts`
+- Modify: `package.json`
 - Modify: `README.md`
 
 **Interfaces:**
 - Consumes: v1 fixture、ForgeStore、DaemonHost。
 - Produces: 可重复的 v1→v2 foundation 升级报告。
 
-- [ ] **Step 1: 写旧数据升级和恢复失败测试**
+- [x] **Step 1: 写旧数据升级和恢复失败测试**
 
 ```ts
 it("adopts migrations 001-008 and preserves legacy rows", async () => {
@@ -735,17 +741,17 @@ it("restores the backup and opens it again", async () => {
 });
 ```
 
-- [ ] **Step 2: 运行升级测试确认 legacy adoption 尚未覆盖完整夹具**
+- [x] **Step 2: 运行升级测试确认 legacy adoption 尚未覆盖完整夹具**
 
 Run: `pnpm exec vitest run packages/store/src/legacy-upgrade.test.ts`
 
 Expected: FAIL until fixture adoption and restore verification are complete.
 
-- [ ] **Step 3: 补齐夹具、报告和 README 恢复命令**
+- [x] **Step 3: 补齐夹具、报告和 README 恢复命令**
 
 Document exact commands using explicit `--data-dir` and `--output-dir`; never show `$HOME`, `~` or a broad recursive target as a destructive command.
 
-- [ ] **Step 4: 运行 Foundation 全门禁**
+- [x] **Step 4: 运行 Foundation 全门禁**
 
 Run:
 
@@ -762,9 +768,9 @@ pnpm --filter @forge/daemon build
 
 Expected: all PASS; `git diff --check` returns no errors.
 
-- [ ] **Step 5: 提交 Foundation 门禁**
+- [x] **Step 5: 提交 Foundation 门禁**
 
 ```bash
-git add packages/store/src/legacy-upgrade.test.ts apps/daemon/test-fixtures/core-v1-data.ts scripts/core-v2/capture-baseline.ts README.md
+git add packages/store apps/daemon/test-fixtures/core-v1-data.ts scripts/core-v2 package.json README.md
 git commit -m "test(core): gate core v2 foundation migration"
 ```

@@ -91,4 +91,34 @@ describe("backupForgeData", () => {
     ).rejects.toThrow("backup output must not overlap the data directory");
     expect(existsSync(join(dataDir, "backups"))).toBe(false);
   });
+
+  it("refuses to overwrite an existing restore directory", async () => {
+    const root = createFixtureRoot();
+    const dataDir = join(root, "data");
+    const outputDir = join(root, "backups");
+    const restoreDir = join(root, "existing-restore");
+    mkdirSync(dataDir);
+    mkdirSync(restoreDir);
+    writeFileSync(join(dataDir, "data.db"), "database-fixture");
+    writeFileSync(join(restoreDir, "keep.txt"), "must remain");
+    const manifest = await backupForgeData({ dataDir, outputDir });
+    const restoreForgeDataBackup = (
+      await import("./backup-data.js") as unknown as {
+        restoreForgeDataBackup?: (input: {
+          manifestPath: string;
+          restoreDir: string;
+        }) => Promise<unknown>;
+      }
+    ).restoreForgeDataBackup;
+    expect(restoreForgeDataBackup).toBeTypeOf("function");
+    if (!restoreForgeDataBackup) return;
+
+    await expect(
+      restoreForgeDataBackup({
+        manifestPath: manifest.manifestPath,
+        restoreDir,
+      }),
+    ).rejects.toThrow("restore directory already exists");
+    expect(readFileSync(join(restoreDir, "keep.txt"), "utf8")).toBe("must remain");
+  });
 });
