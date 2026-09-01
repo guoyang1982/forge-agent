@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,7 @@ import { ForgeStore } from "@forge/store";
 import { ChannelGateway } from "./gateway.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const GATEWAY_DB_NAME = "gateway.db";
 const tempDirs: string[] = [];
 
 function tempDataDir(): string {
@@ -25,7 +26,7 @@ function tempDataDir(): string {
 
 function withStore<T>(dataDir: string, fn: (store: ChannelStore) => T): T {
   const owner = ForgeStore.open({
-    dbPath: join(dataDir, "data.db"),
+    dbPath: join(dataDir, GATEWAY_DB_NAME),
     migrationsDir: join(repoRoot, "migrations"),
     owner: "test",
   });
@@ -74,6 +75,14 @@ afterEach(() => {
 });
 
 describe("ChannelGateway adapter reconciliation", () => {
+  it("does not access sessions through a local SessionStore database", () => {
+    const source = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "gateway.ts"),
+      "utf8",
+    );
+    expect(source).not.toMatch(/new SessionStore|better-sqlite3|data\.db/);
+  });
+
   it("keeps unchanged channels running and restarts only changed channels", async () => {
     const dataDir = tempDataDir();
     const records = withStore(dataDir, (store) => ({
