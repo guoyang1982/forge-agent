@@ -53,6 +53,11 @@ describe("Core v1 database upgrade", () => {
         "008_mobile_devices.sql",
         "009_core_execution.sql",
         "010_core_events.sql",
+        "011_core_workspaces.sql",
+        "012_core_policy_approvals.sql",
+        "013_core_usage_budget.sql",
+        "014_core_evidence.sql",
+        "015_core_agent_profiles.sql",
       ]);
     } finally {
       store?.close();
