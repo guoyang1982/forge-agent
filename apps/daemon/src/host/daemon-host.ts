@@ -8,6 +8,7 @@ import type {
 import { RPC_PROTOCOL_VERSION } from "@forge/protocol";
 import {
   DaemonServer,
+  type CoreEventBroadcastFailure,
   type CoreEventBroadcastResult,
   type RpcRequestContext,
 } from "@forge/bus";
@@ -21,7 +22,11 @@ export class DaemonHost<Context extends DaemonContext = DaemonContext> {
   private readonly modules: Array<DaemonModule<Context>>;
   private readonly moduleStates = new Map<string, ModuleHealthStatus>();
   private readonly startedModules: Array<DaemonModule<Context>> = [];
+  private readonly coreEventBroadcastFailureListeners = new Set<
+    (failure: CoreEventBroadcastFailure) => void
+  >();
   private server: DaemonServer | null = null;
+  private removeServerBroadcastFailureListener: (() => void) | undefined;
   private registered = false;
   private storeClosed = false;
 
@@ -53,8 +58,13 @@ export class DaemonHost<Context extends DaemonContext = DaemonContext> {
         (method, params, emit, request) =>
           this.handleRequest(method, params, emit, request),
       );
+      this.removeServerBroadcastFailureListener = this.server.onCoreEventBroadcastFailure(
+        (failure) => this.reportCoreEventBroadcastFailure(failure),
+      );
       await this.server.start();
     } catch (error) {
+      this.removeServerBroadcastFailureListener?.();
+      this.removeServerBroadcastFailureListener = undefined;
       this.server?.stop();
       this.server = null;
       await this.stopStartedModules();
@@ -64,6 +74,8 @@ export class DaemonHost<Context extends DaemonContext = DaemonContext> {
   }
 
   async stop(): Promise<void> {
+    this.removeServerBroadcastFailureListener?.();
+    this.removeServerBroadcastFailureListener = undefined;
     this.server?.stop();
     this.server = null;
     const errors = await this.stopStartedModules();
@@ -79,6 +91,13 @@ export class DaemonHost<Context extends DaemonContext = DaemonContext> {
       delivered: 0,
       failed: 0,
     };
+  }
+
+  onCoreEventBroadcastFailure(
+    listener: (failure: CoreEventBroadcastFailure) => void,
+  ): () => void {
+    this.coreEventBroadcastFailureListeners.add(listener);
+    return () => this.coreEventBroadcastFailureListeners.delete(listener);
   }
 
   capabilities(): CapabilityManifest {
@@ -121,6 +140,12 @@ export class DaemonHost<Context extends DaemonContext = DaemonContext> {
       correlationId: request.correlationId,
       emitLegacyAgentEvent,
     });
+  }
+
+  private reportCoreEventBroadcastFailure(failure: CoreEventBroadcastFailure): void {
+    for (const listener of this.coreEventBroadcastFailureListeners) {
+      listener(failure);
+    }
   }
 
   private async moduleHealth(): Promise<ModuleHealthSummary[]> {
