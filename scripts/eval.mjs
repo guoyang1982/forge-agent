@@ -83,6 +83,8 @@ function assertIncludes(text, expected, label) {
   }
 }
 
+const vitestBin = join(root, "packages/execution/node_modules/.bin/vitest");
+
 function runExecutionGate() {
   const targets = [
     "packages/store/src/core-execution-migrations.test.ts",
@@ -95,13 +97,24 @@ function runExecutionGate() {
     "packages/daemon-client/src/subscription.test.ts",
     "apps/daemon/src/durable-restart.e2e.test.ts",
   ];
-  const result = spawnSync(
-    "pnpm",
-    ["exec", "vitest", "run", ...targets],
-    { cwd: root, stdio: "inherit", env: process.env },
-  );
+  const result = spawnSync(vitestBin, ["run", ...targets], {
+    cwd: root,
+    stdio: "inherit",
+    env: process.env,
+  });
   if (result.status !== 0) {
     throw new Error("durable execution gate failed");
+  }
+}
+
+function runEvalCenterGate() {
+  const result = spawnSync(vitestBin, ["run", "packages/evals/src"], {
+    cwd: root,
+    stdio: "inherit",
+    env: process.env,
+  });
+  if (result.status !== 0) {
+    throw new Error("eval center gate failed");
   }
 }
 
@@ -114,6 +127,10 @@ async function main() {
   console.log("=== Durable execution gate ===\n");
   runExecutionGate();
   console.log("\n✓ durable execution gate\n");
+
+  console.log("=== Eval center gate ===\n");
+  runEvalCenterGate();
+  console.log("\n✓ eval center gate\n");
 
   console.log("=== Forge eval ===\n");
   mkdirSync(workspace, { recursive: true });
@@ -146,7 +163,13 @@ async function main() {
   console.log("✓ status --json\n");
 
   const { SessionStore } = await import("../packages/session/dist/index.js");
-  const store = new SessionStore(join(dataDir, "data.db"), join(root, "migrations"));
+  const { ForgeStore } = await import("../packages/store/dist/index.js");
+  const forgeStore = ForgeStore.open({
+    dbPath: join(dataDir, "data.db"),
+    migrationsDir: join(root, "migrations"),
+    owner: "test",
+  });
+  const store = new SessionStore(forgeStore.db);
   const seededSessionId = store.createSession(workspace);
   for (let i = 0; i < 5; i++) {
     store.appendMessage(seededSessionId, {
@@ -155,13 +178,18 @@ async function main() {
     });
   }
   store.close();
+  forgeStore.close();
 
   const sessions = await run(["sessions", "--json"], { capture: true });
   assertIncludes(sessions.stdout, seededSessionId, "sessions --json");
   const session = await run(["session", seededSessionId.slice(0, 8), "--json"], {
     capture: true,
   });
-  assertIncludes(session.stdout, "eval session message 4", "session --json");
+  const sessionJson = JSON.parse(session.stdout);
+  if (sessionJson.messageCount !== 5) {
+    throw new Error(`unexpected session messageCount: ${session.stdout}`);
+  }
+  assertIncludes(session.stdout, seededSessionId, "session --json");
   const compact = await run(
     ["compact", seededSessionId.slice(0, 8), "--keep-last", "2", "--json"],
     { capture: true },
