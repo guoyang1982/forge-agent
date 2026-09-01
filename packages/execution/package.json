@@ -21,6 +21,7 @@
     "vitest": "^3.0.9"
   },
   "dependencies": {
+    "@forge/event-store": "workspace:*",
     "@forge/store": "workspace:*",
     "better-sqlite3": "^13.0.2"
   }

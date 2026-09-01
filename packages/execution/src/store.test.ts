@@ -2,8 +2,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { EventStore } from "@forge/event-store";
 import { ForgeStore } from "@forge/store";
-import { ExecutionStore } from "./store.js";
+import { ExecutionStore, type EventAppendFn } from "./store.js";
 import type { RunSpec } from "./types.js";
 
 const migrationsDir = join(import.meta.dirname, "..", "..", "..", "migrations");
@@ -21,7 +22,7 @@ afterEach(() => {
 
 describe("ExecutionStore", () => {
   it("claims one runnable step once", () => {
-    const store = executionFixture();
+    const { store } = executionFixture();
     store.createRun(twoStepRunSpec(), clock.now());
     const first = store.claimNextStep("run-1", "worker-a", clock.now());
     const second = store.claimNextStep("run-1", "worker-b", clock.now());
@@ -30,7 +31,7 @@ describe("ExecutionStore", () => {
   });
 
   it("makes dependent step runnable after success", () => {
-    const store = executionFixture();
+    const { store } = executionFixture();
     store.createRun(twoStepRunSpec(), clock.now());
     const attempt = store.claimNextStep("run-1", "worker-a", clock.now())!;
     store.finishAttempt(
@@ -42,7 +43,7 @@ describe("ExecutionStore", () => {
   });
 
   it("persists the immutable run spec and dependency rows", () => {
-    const store = executionFixture();
+    const { store } = executionFixture();
     const spec = twoStepRunSpec();
     store.createRun(spec, clock.now());
 
@@ -53,7 +54,7 @@ describe("ExecutionStore", () => {
   });
 
   it("marks the run succeeded when all steps succeed", () => {
-    const store = executionFixture();
+    const { store } = executionFixture();
     store.createRun(twoStepRunSpec(), clock.now());
 
     const first = store.claimNextStep("run-1", "worker-a", clock.now())!;
@@ -74,7 +75,7 @@ describe("ExecutionStore", () => {
   });
 
   it("rejects cyclic run specs before insert", () => {
-    const store = executionFixture();
+    const { store } = executionFixture();
     expect(() =>
       store.createRun(
         {
@@ -104,7 +105,7 @@ describe("ExecutionStore", () => {
   });
 
   it("reloads recoverable runs with in-flight work", () => {
-    const store = executionFixture();
+    const { store } = executionFixture();
     store.createRun(twoStepRunSpec(), clock.now());
     store.claimNextStep("run-1", "worker-a", clock.now());
 
@@ -112,9 +113,49 @@ describe("ExecutionStore", () => {
     expect(recoverable.map((run) => run.id)).toEqual(["run-1"]);
     expect(recoverable[0]?.state).toBe("running");
   });
+
+  it("rolls back run state when event append fails", () => {
+    const { store } = executionFixture({ failEventAppend: true });
+    expect(() => store.createRun(singleStepRunSpec(), clock.now())).toThrow(
+      /event append failed/i,
+    );
+    expect(store.getRun("run-1")).toBeNull();
+  });
+
+  it("writes correlation, run, step and attempt ids to domain events", () => {
+    const { store, events } = executionFixture();
+    store.createRun(singleStepRunSpec(), clock.now());
+    const attempt = store.claimNextStep("run-1", "worker-a", clock.tick())!;
+    store.finishAttempt(
+      attempt.id,
+      { state: "succeeded", outputRef: "artifact:only" },
+      clock.tick(),
+    );
+
+    const recorded = events.readAfter({ sequence: 0, filter: {}, limit: 20 });
+    expect(recorded[0]).toMatchObject({
+      type: "run.created",
+      runId: "run-1",
+      correlationId: "corr-1",
+    });
+    expect(recorded.some((event) => event.type === "step.started")).toBe(true);
+    expect(recorded.some((event) => event.type === "step.succeeded")).toBe(true);
+    expect(recorded.some((event) => event.type === "run.succeeded")).toBe(true);
+    expect(
+      recorded.find((event) => event.type === "step.started"),
+    ).toMatchObject({
+      runId: "run-1",
+      stepId: "only",
+      attemptId: attempt.id,
+      correlationId: "corr-1",
+    });
+  });
 });
 
-function executionFixture(): ExecutionStore {
+function executionFixture(options?: { failEventAppend?: boolean }): {
+  store: ExecutionStore;
+  events: EventStore;
+} {
   const root = mkdtempSync(join(tmpdir(), "forge-execution-store-"));
   fixtureRoots.push(root);
   const forgeStore = ForgeStore.open({
@@ -122,7 +163,16 @@ function executionFixture(): ExecutionStore {
     migrationsDir,
     owner: "test",
   });
-  return new ExecutionStore(forgeStore.db);
+  const events = new EventStore(forgeStore.db);
+  const appendEvent: EventAppendFn = options?.failEventAppend
+    ? () => {
+        throw new Error("event append failed");
+      }
+    : EventStore.appendInTransaction;
+  return {
+    store: new ExecutionStore(forgeStore.db, appendEvent),
+    events,
+  };
 }
 
 function twoStepRunSpec(): RunSpec {

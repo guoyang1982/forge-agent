@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import { EventStore } from "@forge/event-store";
 import { transitionRun, transitionStep } from "./state-machine.js";
 import type {
   AttemptState,
@@ -8,6 +9,8 @@ import type {
   StepSpec,
   StepState,
 } from "./types.js";
+
+export type EventAppendFn = typeof EventStore.appendInTransaction;
 
 export interface ClaimedAttempt {
   id: string;
@@ -60,7 +63,10 @@ export interface FinishAttemptInput {
 }
 
 export class ExecutionStore {
-  constructor(private readonly db: Database.Database) {}
+  constructor(
+    private readonly db: Database.Database,
+    private readonly appendEvent: EventAppendFn = EventStore.appendInTransaction,
+  ) {}
 
   createRun(spec: RunSpec, now: string): StoredRun {
     assertAcyclic(spec);
@@ -123,6 +129,8 @@ export class ExecutionStore {
             .run(spec.id, step.id, dependencyId);
         }
       }
+
+      this.emitRunEvent(spec, "run.created", now);
     });
     create.immediate();
 
@@ -187,6 +195,14 @@ export class ExecutionStore {
           now,
         );
 
+      const run = this.getRun(step.runId);
+      if (run) {
+        this.emitRunEvent(run.spec, "step.started", now, {
+          stepId: step.id,
+          attemptId,
+        });
+      }
+
       return {
         id: attemptId,
         runId: step.runId,
@@ -246,6 +262,17 @@ export class ExecutionStore {
 
       if (input.state === "succeeded") {
         this.promoteDependentSteps(attempt.runId, attempt.stepId, now);
+      }
+
+      const run = this.getRun(attempt.runId);
+      if (run) {
+        this.emitRunEvent(
+          run.spec,
+          stepEventType(resolvedStepState),
+          now,
+          { stepId: attempt.stepId, attemptId: attempt.id },
+          { outputRef: input.outputRef ?? null },
+        );
       }
 
       this.refreshRunState(attempt.runId, now);
@@ -461,9 +488,39 @@ export class ExecutionStore {
   }
 
   private updateRunState(runId: string, state: RunState, now: string): void {
+    const current = this.getRun(runId);
+    if (!current || current.state === state) {
+      return;
+    }
+    const nextState = transitionRun(current.state, state);
     this.db
       .prepare(`UPDATE core_runs SET state = ?, updated_at = ? WHERE id = ?`)
-      .run(state, now, runId);
+      .run(nextState, now, runId);
+
+    const eventType = runEventType(nextState);
+    if (eventType) {
+      this.emitRunEvent(current.spec, eventType, now);
+    }
+  }
+
+  private emitRunEvent(
+    spec: RunSpec,
+    type: string,
+    now: string,
+    ids?: { stepId?: string; attemptId?: string },
+    data: unknown = {},
+  ): void {
+    this.appendEvent(this.db, {
+      eventId: randomUUID(),
+      type,
+      subject: spec.actingSubject,
+      correlationId: spec.correlationId,
+      runId: spec.id,
+      stepId: ids?.stepId,
+      attemptId: ids?.attemptId,
+      occurredAt: now,
+      data,
+    });
   }
 }
 
@@ -496,5 +553,29 @@ function assertAcyclic(spec: RunSpec): void {
 
   for (const stepId of graph.keys()) {
     visit(stepId);
+  }
+}
+
+function stepEventType(state: StepState): string {
+  switch (state) {
+    case "succeeded":
+      return "step.succeeded";
+    case "cancelled":
+      return "step.cancelled";
+    default:
+      return "step.failed";
+  }
+}
+
+function runEventType(state: RunState): string | null {
+  switch (state) {
+    case "succeeded":
+      return "run.succeeded";
+    case "failed":
+      return "run.failed";
+    case "cancelled":
+      return "run.cancelled";
+    default:
+      return null;
   }
 }
