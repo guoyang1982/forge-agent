@@ -69,10 +69,7 @@ describe("session module", () => {
     expect(error).toMatchObject({
       fault: { code: "INVALID_REQUEST", correlationId: "correlation-1" },
     });
-    const persisted = sessions.getDb()
-      .prepare("SELECT content FROM messages WHERE session_id = ? ORDER BY id ASC")
-      .all(sessionId)
-      .map((row) => JSON.parse((row as { content: string }).content));
+    const persisted = readPersistedMessages(sessions, sessionId);
 
     expect(persisted).toEqual([
       { role: "user", content: "plain text" },
@@ -97,10 +94,39 @@ function sessionRouterFixture(): { router: TypedRouter; sessions: SessionStore }
     owner: "test",
   });
   const sessions = new SessionStore(forgeStore.db);
-  const context = { sessions } as ForgeDaemonContext;
+  const context = {
+    socketPath: join(root, "daemon.sock"),
+    store: forgeStore,
+    serverVersion: "0.2.0-test",
+    build: "session-module-test",
+    sessions,
+    getRuntime: async () => {
+      throw new Error("not implemented in session module fixture");
+    },
+  } satisfies Pick<
+    ForgeDaemonContext,
+    "socketPath" | "store" | "serverVersion" | "build" | "sessions" | "getRuntime"
+  >;
   const router = new TypedRouter();
   createSessionModule().register(router, context);
   return { router, sessions };
+}
+
+function readPersistedMessages(sessions: SessionStore, sessionId: string): unknown[] {
+  return sessions.getDb()
+    .prepare("SELECT content FROM messages WHERE session_id = ? ORDER BY id ASC")
+    .all(sessionId)
+    .map((row) => {
+      if (!isRecord(row) || typeof row.content !== "string") {
+        throw new Error("expected persisted message content row");
+      }
+      const message: unknown = JSON.parse(row.content);
+      return message;
+    });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function rpcContext() {

@@ -17,8 +17,12 @@ import { handleReview } from "../services/review-service.js";
 import type { ForgeDaemonContext } from "./context.js";
 
 type SharedProject = { id: string; name: string; cwd: string };
+type SessionModuleContext = Pick<
+  ForgeDaemonContext,
+  "socketPath" | "store" | "serverVersion" | "build" | "sessions" | "getRuntime"
+>;
 
-export function createSessionModule(): DaemonModule<ForgeDaemonContext> {
+export function createSessionModule(): DaemonModule<SessionModuleContext> {
   return {
     id: "session",
     feature: { version: 1, enabled: true },
