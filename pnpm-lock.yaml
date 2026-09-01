@@ -641,15 +641,30 @@ importers:
 
   packages/execution:
     dependencies:
+      '@forge/agent-profile':
+        specifier: workspace:*
+        version: link:../agent-profile
       '@forge/event-store':
         specifier: workspace:*
         version: link:../event-store
+      '@forge/evidence':
+        specifier: workspace:*
+        version: link:../evidence
+      '@forge/policy':
+        specifier: workspace:*
+        version: link:../policy
       '@forge/protocol':
         specifier: workspace:*
         version: link:../protocol
       '@forge/store':
         specifier: workspace:*
         version: link:../store
+      '@forge/usage-ledger':
+        specifier: workspace:*
+        version: link:../usage-ledger
+      '@forge/workspace':
+        specifier: workspace:*
+        version: link:../workspace
       better-sqlite3:
         specifier: ^13.0.2
         version: 13.0.2

@@ -609,6 +609,77 @@ export class ExecutionStore {
     })();
   }
 
+  enterStepWait(
+    attemptId: string,
+    waitKind: string,
+    waitReason: unknown,
+    now: string,
+  ): string {
+    let waitId = "";
+    this.db.transaction(() => {
+      const attempt = this.db
+        .prepare(
+          `SELECT id, run_id AS runId, step_id AS stepId
+           FROM core_attempts WHERE id = ?`,
+        )
+        .get(attemptId) as
+        | { id: string; runId: string; stepId: string }
+        | undefined;
+      if (!attempt) {
+        throw new Error(`attempt not found: ${attemptId}`);
+      }
+
+      this.db
+        .prepare(
+          `UPDATE core_attempts
+           SET state = 'abandoned', finished_at = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(now, now, attemptId);
+
+      const step = this.getStep(attempt.runId, attempt.stepId);
+      if (!step) {
+        throw new Error(`step not found: ${attempt.stepId}`);
+      }
+      const waitingState = transitionStep(step.state, "waiting");
+      this.db
+        .prepare(
+          `UPDATE core_steps SET state = ?, updated_at = ? WHERE run_id = ? AND id = ?`,
+        )
+        .run(waitingState, now, attempt.runId, attempt.stepId);
+
+      waitId = randomUUID();
+      this.db
+        .prepare(
+          `INSERT INTO core_step_waits (
+            id, run_id, step_id, attempt_id, wait_kind, wait_ref, state,
+            payload_json, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'waiting', ?, ?)`,
+        )
+        .run(
+          waitId,
+          attempt.runId,
+          attempt.stepId,
+          attemptId,
+          waitKind,
+          waitId,
+          JSON.stringify(waitReason),
+          now,
+        );
+
+      const run = this.getRun(attempt.runId);
+      if (run) {
+        this.emitRunEvent(run.spec, "step.waiting", now, {
+          stepId: attempt.stepId,
+          attemptId,
+        }, { waitId, reason: waitKind });
+      }
+
+      this.refreshRunState(attempt.runId, now);
+    })();
+    return waitId;
+  }
+
   abandonAttemptForManualReview(attemptId: string, now: string): void {
     this.db.transaction(() => {
       const attempt = this.db
