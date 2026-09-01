@@ -1,14 +1,19 @@
-import { connectDaemon } from "@forge/daemon-client";
+import { connectDaemon, type DaemonClient } from "@forge/daemon-client";
 import type { AgentEvent, RunRequest, RunResult } from "@forge/protocol";
 import { DAEMON_METHODS } from "@forge/protocol";
 
 export class ForgeBridge {
-  private client: Awaited<ReturnType<typeof connectDaemon>> | null = null;
+  private client: DaemonClient | null = null;
 
   constructor(private readonly socketPath: string) {}
 
   isConnected(): boolean {
     return this.client != null;
+  }
+
+  get daemon(): DaemonClient {
+    if (!this.client) throw new Error("forge daemon not connected");
+    return this.client;
   }
 
   async connect(): Promise<void> {
@@ -34,7 +39,10 @@ export class ForgeBridge {
   ): Promise<unknown> {
     await this.connect();
     if (!this.client) throw new Error("forge daemon not connected");
-    return this.client.request(method, params, onEvent);
+    if (onEvent) {
+      return this.client.request(method, params, onEvent as (event: AgentEvent) => void);
+    }
+    return this.client.request(method, params);
   }
 
   close(): void {

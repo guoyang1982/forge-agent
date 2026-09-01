@@ -22,6 +22,9 @@ export const V2_RPC_METHODS = [
   "validations.list",
   "agentProfiles.publish",
   "agentProfiles.resolve",
+  "session.create",
+  "session.get",
+  "session.appendMessage",
 ] as const;
 
 export const V2_EXECUTION_EVENT_TYPES = [
@@ -312,6 +315,32 @@ export interface RpcContractMap {
       policyVersionId: string;
     };
   };
+  "session.create": {
+    params: { cwd: string };
+    result: { sessionId: string };
+  };
+  "session.get": {
+    params: { sessionId: string };
+    result: SessionDto;
+  };
+  "session.appendMessage": {
+    params: AppendSessionMessageInput;
+    result: { ok: true };
+  };
+}
+
+export interface SessionDto {
+  sessionId: string;
+  cwd: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+}
+
+export interface AppendSessionMessageInput {
+  sessionId: string;
+  role: "user" | "assistant" | "system";
+  content: unknown;
 }
 
 export type RpcMethod = keyof RpcContractMap;

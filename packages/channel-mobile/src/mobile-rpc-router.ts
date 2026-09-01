@@ -1,11 +1,13 @@
 import { existsSync, mkdirSync, realpathSync, rmdirSync, statSync } from "node:fs";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 import type { AdapterDaemonBridge } from "@forge/channel-core";
+import { isMobileV2OnlyMethod } from "@forge/mobile-protocol/v2";
 import { mobileRpcFrameV1Schema, type MobileRpcFrameV1 } from "@forge/mobile-protocol";
 import { DAEMON_METHODS } from "@forge/protocol";
 import { z } from "zod";
 import { normalizeMobileAttachments } from "./mobile-attachments.js";
 import type { MobileDeviceRegistry } from "./device-registry.js";
+import { MobileRpcV2Router } from "./mobile-rpc-v2.js";
 
 type RpcRequest = Extract<MobileRpcFrameV1, { type: "rpc.request" }>;
 type RpcResponse = Extract<MobileRpcFrameV1, { type: "rpc.response" }>;
@@ -161,14 +163,24 @@ export class MobileRpcRouter {
   >();
   /** Avoid re-listing hundreds of sessions just to authorize opening one already listed to mobile. */
   private readonly sessionCwdCache = new Map<string, string>();
+  private readonly v2Router: MobileRpcV2Router;
 
   constructor(private readonly options: MobileRpcRouterOptions) {
     // options.allowedProjects is retained for channel config compatibility but
     // access is scoped to Desktop's shared ui.projects list (synced live).
     void this.options.allowedProjects;
+    this.v2Router = new MobileRpcV2Router({ daemon: options.daemon });
   }
 
   async handle(deviceId: string, input: unknown, emit: EventSink): Promise<RpcResponse> {
+    const candidate = input as { type?: string; method?: string };
+    if (
+      candidate.type === "rpc.request" &&
+      typeof candidate.method === "string" &&
+      isMobileV2OnlyMethod(candidate.method)
+    ) {
+      return this.v2Router.handle(deviceId, input, emit) as Promise<RpcResponse>;
+    }
     const frame = mobileRpcFrameV1Schema.parse(input);
     if (frame.type !== "rpc.request") {
       throw new MobileRpcRouterError("bad_request", "expected rpc.request");

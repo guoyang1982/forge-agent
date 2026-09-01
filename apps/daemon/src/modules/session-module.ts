@@ -2,8 +2,9 @@ import { basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { loadConfig, saveConfig } from "@forge/config";
-import { DAEMON_METHODS } from "@forge/protocol";
+import { DAEMON_METHODS, rpcFault } from "@forge/protocol";
 import type { DaemonModule } from "../host/types.js";
+import { RpcFaultError } from "../host/router.js";
 import {
   handleGetSessionMessages,
   handleListSessions,
@@ -22,6 +23,45 @@ export function createSessionModule(): DaemonModule<ForgeDaemonContext> {
     id: "session",
     feature: { version: 1, enabled: true },
     register(router, context) {
+      router.register("session.create", async (params, rpc) => {
+        if (!params.cwd?.trim()) {
+          throw invalidRequest("cwd is required", rpc.correlationId);
+        }
+        const sessionId = context.sessions.createSession(params.cwd.trim());
+        return { sessionId };
+      });
+      router.register("session.get", async (params, rpc) => {
+        if (!params.sessionId?.trim()) {
+          throw invalidRequest("sessionId is required", rpc.correlationId);
+        }
+        const summary = context.sessions
+          .listSessions(500)
+          .find((session) => session.id === params.sessionId);
+        if (!summary) {
+          throw invalidRequest("session not found", rpc.correlationId);
+        }
+        return {
+          sessionId: summary.id,
+          cwd: summary.cwd,
+          createdAt: summary.createdAt,
+          updatedAt: summary.updatedAt,
+          messageCount: summary.messageCount,
+        };
+      });
+      router.register("session.appendMessage", async (params, rpc) => {
+        if (!params.sessionId?.trim()) {
+          throw invalidRequest("sessionId is required", rpc.correlationId);
+        }
+        if (!params.role) {
+          throw invalidRequest("role is required", rpc.correlationId);
+        }
+        context.sessions.appendMessage(params.sessionId, {
+          role: params.role,
+          content: params.content,
+        });
+        return { ok: true as const };
+      });
+
       router.registerLegacy(DAEMON_METHODS.LIST_SESSIONS, async (params) =>
         handleListSessions(params, { sessions: context.sessions }));
       router.registerLegacy(DAEMON_METHODS.LIST_PROJECTS, async () => ({
@@ -48,6 +88,12 @@ export function createSessionModule(): DaemonModule<ForgeDaemonContext> {
         }));
     },
   };
+}
+
+function invalidRequest(message: string, correlationId: string): RpcFaultError {
+  return new RpcFaultError(
+    rpcFault("INVALID_REQUEST", message, { correlationId }),
+  );
 }
 
 function sharedProjects(): SharedProject[] {
