@@ -2,9 +2,14 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { connect as netConnect } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { rpcFault, type AgentEvent } from "@forge/protocol";
+import { CORE_EVENT_METHOD, rpcFault, type AgentEvent } from "@forge/protocol";
 import { DaemonRpcError } from "@forge/daemon-client";
-import { connectDaemon, DaemonServer, type RpcHandler } from "./index.js";
+import {
+  connectDaemon,
+  DaemonServer,
+  serializeCoreEvent,
+  type RpcHandler,
+} from "./index.js";
 
 const servers: DaemonServer[] = [];
 
@@ -87,6 +92,27 @@ describe("DaemonServer event isolation", () => {
     } finally {
       client.close();
     }
+  });
+});
+
+describe("DaemonServer core event notifications", () => {
+  it("serializes live core events for subscription clients", () => {
+    const event = {
+      eventId: "event-1",
+      sequence: 1,
+      type: "run.created",
+      subject: { kind: "agent_profile", id: "forge-default" },
+      correlationId: "corr-1",
+      runId: "run-1",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+      data: {},
+    };
+    expect(JSON.parse(serializeCoreEvent(event).trim())).toEqual({
+      jsonrpc: "2.0",
+      method: CORE_EVENT_METHOD,
+      params: event,
+    });
   });
 });
 
