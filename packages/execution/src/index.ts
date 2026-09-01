@@ -58,3 +58,12 @@ export type {
   StoredStep,
 } from "./store.js";
 export { ExecutionStore } from "./store.js";
+export type {
+  AttemptSpan,
+  EvalTraceFixture,
+  RunSpan,
+  StepSpan,
+  TraceContext,
+  TraceSummaries,
+} from "./trace.js";
+export { buildTrace, exportTraceEvalFixture } from "./trace.js";

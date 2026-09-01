@@ -3,7 +3,7 @@
  * Lightweight eval: isolated config + daemon + optional live agent runs.
  * Requires: pnpm build. Live agent runs require FORGE_MODEL_API_KEY.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -83,11 +83,39 @@ function assertIncludes(text, expected, label) {
   }
 }
 
+function runExecutionGate() {
+  const targets = [
+    "packages/store/src/core-execution-migrations.test.ts",
+    "packages/store/src/legacy-upgrade.test.ts",
+    "packages/event-store/src/store.test.ts",
+    "packages/execution/src/trace.test.ts",
+    "packages/execution/src/store.test.ts",
+    "packages/execution/src/executor.test.ts",
+    "packages/execution/src/recovery.test.ts",
+    "packages/daemon-client/src/subscription.test.ts",
+    "apps/daemon/src/durable-restart.e2e.test.ts",
+  ];
+  const result = spawnSync(
+    "pnpm",
+    ["exec", "vitest", "run", ...targets],
+    { cwd: root, stdio: "inherit", env: process.env },
+  );
+  if (result.status !== 0) {
+    throw new Error("durable execution gate failed");
+  }
+}
+
 async function main() {
   if (!existsSync(cli) || !existsSync(daemon)) {
     console.error("Run pnpm build first.");
     process.exit(1);
   }
+
+  console.log("=== Durable execution gate ===\n");
+  runExecutionGate();
+  console.log("\n✓ durable execution gate\n");
+
+  console.log("=== Forge eval ===\n");
   mkdirSync(workspace, { recursive: true });
   writeFileSync(
     join(workspace, "package.json"),
@@ -104,7 +132,6 @@ async function main() {
     ),
   );
 
-  console.log("=== Forge eval ===\n");
   daemonProc = startDaemon();
   process.on("exit", cleanup);
 
