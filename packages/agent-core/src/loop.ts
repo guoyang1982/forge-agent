@@ -16,6 +16,11 @@ import {
 import type { WorkspaceGuard } from "@forge/workspace";
 import { buildSystemPrompt, type FileWriteToolsMode } from "./prompts.js";
 import {
+  buildDynamicStatus,
+  formatDynamicStatusTail,
+  type DynamicRunStatus,
+} from "./dynamic-status.js";
+import {
   RunCancelledError,
   AgentMaxStepsError,
   throwIfAborted,
@@ -479,6 +484,7 @@ export async function buildInitialMessages(
     userContent?: ChatContent;
     visionImagesInTurn?: boolean;
     documentFilesInTurn?: boolean;
+    dynamicStatus?: DynamicRunStatus;
   },
 ): Promise<ChatMessage[]> {
   const system = buildSystemPrompt({
@@ -495,6 +501,9 @@ export async function buildInitialMessages(
     automationRun: context.automationRun,
     visionImagesInTurn: context.visionImagesInTurn,
     documentFilesInTurn: context.documentFilesInTurn,
+    dynamicStatusBlock: context.dynamicStatus
+      ? formatDynamicStatusTail(buildDynamicStatus(context.dynamicStatus))
+      : undefined,
   });
   return [
     { role: "system", content: system },

@@ -589,12 +589,19 @@ importers:
 
   packages/context:
     dependencies:
+      '@forge/agent-core':
+        specifier: workspace:*
+        version: link:../agent-core
       '@forge/project-rules':
         specifier: workspace:*
         version: link:../project-rules
       '@forge/workspace':
         specifier: workspace:*
         version: link:../workspace
+    devDependencies:
+      vitest:
+        specifier: ^3.0.9
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@26.1.2)(lightningcss@1.32.0)(terser@5.49.0)(tsx@4.22.3)(yaml@2.9.0)
 
   packages/daemon-client:
     dependencies:

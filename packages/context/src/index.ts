@@ -122,3 +122,5 @@ export function formatContextForPrompt(block: AgentContextBlock): {
     extraFiles: parts.join("\n\n"),
   };
 }
+
+export * from "./compression.js";

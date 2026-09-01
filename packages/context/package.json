@@ -5,9 +5,13 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
-  "scripts": { "build": "tsc" },
+  "scripts": { "build": "tsc", "test": "vitest run" },
   "dependencies": {
+    "@forge/agent-core": "workspace:*",
     "@forge/project-rules": "workspace:*",
     "@forge/workspace": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.9"
   }
 }
