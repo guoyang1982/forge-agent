@@ -54,6 +54,7 @@ function automationDeps(context: ForgeDaemonContext): AutomationServiceDeps {
       sessions: context.sessions,
       getRuntime: context.getRuntime,
       cancelService: context.cancelService,
+      executeDurableAutomation: context.executeDurableAutomation,
     }),
   };
 }

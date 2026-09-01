@@ -26,7 +26,7 @@ import { LlmClient } from "@forge/llm";
 import type { SessionStore } from "@forge/session";
 import {
   AutomationStore,
-  automationLegacyRunInput,
+  buildAutomationRunContext,
   buildAutomationDraftParsePrompt,
   computeNextRun,
   listTemplates,
@@ -37,7 +37,7 @@ import {
   type UpdateAutomationPatch,
 } from "@forge/automation";
 import type { AutomationSchedulerHost } from "./automation-scheduler-host.js";
-import { handleRun, type RunServiceDeps } from "./run-service.js";
+import type { RunServiceDeps } from "./run-service.js";
 
 export interface AutomationServiceDeps {
   sessions: SessionStore;
@@ -374,13 +374,21 @@ export async function executeAutomation(
   const emit = runOpts?.emit ?? (() => {});
 
   try {
-    const result = await handleRun(
+    const executeDurableAutomation = deps.runDeps.executeDurableAutomation;
+    if (!executeDurableAutomation) {
+      throw new Error("durable automation executor unavailable");
+    }
+    const result = await executeDurableAutomation(
       {
-        ...automationLegacyRunInput(auto, sessionId),
+        cwd: auto.cwd,
+        message: auto.prompt,
+        sessionId,
+        hookSource: "startup",
+        autoApply: false,
+        automationRun: buildAutomationRunContext(auto),
         clientRunId: workflowCorrelationId(auto),
       },
       emit,
-      deps.runDeps,
     );
     let preview = result.finalText.slice(0, 200);
     try {

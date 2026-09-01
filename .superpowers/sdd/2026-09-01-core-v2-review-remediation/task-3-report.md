@@ -61,5 +61,5 @@ passed
 
 ## Concerns
 
-- Automation still uses its legacy `handleRun` path and AgentProfile runtime policy is not yet wired to dynamic status/context compression. Those two required Task 3 paths remain outstanding and need a follow-up; this commit does not claim them complete.
-- Full daemon socket integration tests need an environment that permits binding temporary Unix-domain sockets.
+- Automation service now requires a production-injected durable automation facade and no longer calls `handleRun` directly. The facade creates and executes a durable run, while the existing automation record remains the projection for session/status/notification behavior. The workflow-instance projection and AgentProfile runtime-policy-to-agent-loop wiring remain outstanding follow-up work.
+- The daemon socket integration test was rerun outside the sandbox and passed: `CI=true pnpm --filter @forge/daemon test -- production-events.e2e.test.ts` (4 tests).
