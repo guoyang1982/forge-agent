@@ -7,6 +7,8 @@ export type {
   StepState,
   SubjectRef,
 } from "./types.js";
+export type { ExecutionClock } from "./clock.js";
+export { ManualTestClock } from "./clock.js";
 export {
   allowedAttemptTransitions,
   allowedRunTransitions,
@@ -19,6 +21,19 @@ export {
   transitionRun,
   transitionStep,
 } from "./state-machine.js";
+export type {
+  StepExecutionInput,
+  StepExecutor,
+  StepOutcome,
+} from "./executor-types.js";
+export {
+  retryable,
+  StepExecutorRegistry,
+  succeeded,
+} from "./executor-types.js";
+export type { DurableExecutorOptions } from "./executor.js";
+export { DurableExecutor } from "./executor.js";
+export { ExecutionRecovery } from "./recovery.js";
 export type {
   ClaimedAttempt,
   EventAppendFn,
