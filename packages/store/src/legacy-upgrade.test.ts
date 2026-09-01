@@ -51,6 +51,8 @@ describe("Core v1 database upgrade", () => {
         "006_session_dispatch_plans.sql",
         "007_session_events.sql",
         "008_mobile_devices.sql",
+        "009_core_execution.sql",
+        "010_core_events.sql",
       ]);
     } finally {
       store?.close();
