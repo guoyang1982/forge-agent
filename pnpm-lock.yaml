@@ -417,6 +417,22 @@ importers:
         specifier: ^3.0.9
         version: 3.2.4(@types/debug@4.1.13)(@types/node@22.19.19)(lightningcss@1.32.0)(terser@5.49.0)(tsx@4.22.3)(yaml@2.9.0)
 
+  packages/asset-registry:
+    dependencies:
+      '@forge/store':
+        specifier: workspace:*
+        version: link:../store
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.10
+        version: 22.19.19
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.9
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@22.19.19)(lightningcss@1.32.0)(terser@5.49.0)(tsx@4.22.3)(yaml@2.9.0)
+
   packages/automation:
     dependencies:
       '@forge/protocol':
@@ -8018,7 +8034,7 @@ snapshots:
 
   '@types/better-sqlite3@7.6.13':
     dependencies:
-      '@types/node': 26.1.2
+      '@types/node': 22.19.19
 
   '@types/bunyan@1.8.11':
     dependencies:
