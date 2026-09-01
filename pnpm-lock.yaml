@@ -779,9 +779,18 @@ importers:
 
   packages/memory:
     dependencies:
+      '@forge/asset-registry':
+        specifier: workspace:*
+        version: link:../asset-registry
+      '@forge/document-extract':
+        specifier: workspace:*
+        version: link:../document-extract
       '@forge/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@forge/store':
+        specifier: workspace:*
+        version: link:../store
       '@forge/tools':
         specifier: workspace:*
         version: link:../tools
@@ -792,6 +801,9 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13
+      vitest:
+        specifier: ^3.0.9
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@26.1.2)(lightningcss@1.32.0)(terser@5.49.0)(tsx@4.22.3)(yaml@2.9.0)
 
   packages/mobile-crypto:
     dependencies:
