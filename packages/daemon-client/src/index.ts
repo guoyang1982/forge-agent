@@ -1,30 +1,68 @@
 import { connect as netConnect, type Socket } from "node:net";
+import { randomUUID } from "node:crypto";
 import type {
   AgentEvent,
   AgentEventNotificationParams,
+  EventEnvelope,
   JsonRpcId,
   JsonRpcNotification,
   JsonRpcRequest,
   JsonRpcResponse,
+  RpcFault,
+  RpcMethod,
+  RpcParams,
+  RpcResult,
 } from "@forge/protocol";
-import { AGENT_EVENT_METHOD } from "@forge/protocol";
+import {
+  AGENT_EVENT_METHOD,
+  RPC_PROTOCOL_VERSION,
+  V2_RPC_METHODS,
+  isRpcFault,
+  rpcFault,
+} from "@forge/protocol";
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
-  onEvent?: (event: AgentEvent) => void;
+  requestId: string;
+  legacyOnEvent?: (event: AgentEvent) => void;
+  onNotification?: (event: EventEnvelope) => void;
+  cleanup: () => void;
+}
+
+export interface RequestOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  onNotification?: (event: EventEnvelope) => void;
+}
+
+export class DaemonRpcError extends Error {
+  readonly name = "DaemonRpcError";
+
+  constructor(readonly fault: RpcFault) {
+    super(fault.message);
+  }
 }
 
 export interface DaemonClient {
   onEvent(handler: (event: AgentEvent) => void): void;
   onClose(handler: () => void): void;
+  request<M extends RpcMethod>(
+    method: M,
+    params: RpcParams<M>,
+    options?: RequestOptions,
+  ): Promise<RpcResult<M>>;
+  /** Temporary bridge until Workbench, CLI, Mobile and Channel use v2 contracts. */
   request(
     method: string,
     params?: unknown,
-    onEvent?: (event: AgentEvent) => void,
+    legacyOnEvent?: (event: AgentEvent) => void,
   ): Promise<unknown>;
   close(): void;
 }
+
+const V2_RPC_METHOD_SET: ReadonlySet<string> = new Set(V2_RPC_METHODS);
+const CANCEL_REQUEST_METHOD = "$/cancelRequest";
 
 export function connectDaemon(socketPath: string): Promise<DaemonClient> {
   return new Promise((resolve, reject) => {
@@ -48,19 +86,16 @@ export function connectDaemon(socketPath: string): Promise<DaemonClient> {
             routeAgentEvent(msg.params, pending, eventHandler);
             continue;
           }
+          if (msg.method && msg.params && routeNotification(msg.params, pending)) {
+            continue;
+          }
           if (msg.id === undefined) continue;
           const entry = pending.get(msg.id);
           if (!entry) continue;
           pending.delete(msg.id);
+          entry.cleanup();
           if (msg.error) {
-            const message = msg.error.message ?? "Unknown RPC error";
-            entry.reject(
-              new Error(
-                message.startsWith("Error:")
-                  ? message.slice("Error:".length).trim()
-                  : message,
-              ),
-            );
+            entry.reject(toDaemonRpcError(msg.error));
           } else {
             entry.resolve(msg.result);
           }
@@ -71,7 +106,10 @@ export function connectDaemon(socketPath: string): Promise<DaemonClient> {
     };
 
     const rejectAll = (err: Error) => {
-      for (const entry of pending.values()) entry.reject(err);
+      for (const entry of pending.values()) {
+        entry.cleanup();
+        entry.reject(err);
+      }
       pending.clear();
     };
 
@@ -107,26 +145,115 @@ function createClient(
     setCloseHandler: (handler: () => void) => void;
   },
 ): DaemonClient {
+  function request<M extends RpcMethod>(
+    method: M,
+    params: RpcParams<M>,
+    options?: RequestOptions,
+  ): Promise<RpcResult<M>>;
+  function request(
+    method: string,
+    params?: unknown,
+    legacyOnEvent?: (event: AgentEvent) => void,
+  ): Promise<unknown>;
+  function request(
+    method: string,
+    params?: unknown,
+    optionsOrLegacyOnEvent?: RequestOptions | ((event: AgentEvent) => void),
+  ): Promise<unknown> {
+    const id = allocateId();
+    const requestId = randomUUID();
+    const isV2Method = V2_RPC_METHOD_SET.has(method);
+    const frame: JsonRpcRequest & {
+      protocolVersion?: typeof RPC_PROTOCOL_VERSION;
+      requestId?: string;
+    } = {
+      jsonrpc: "2.0",
+      id,
+      method,
+      params,
+      ...(isV2Method
+        ? { protocolVersion: RPC_PROTOCOL_VERSION, requestId }
+        : {}),
+    };
+    const legacyOnEvent =
+      typeof optionsOrLegacyOnEvent === "function"
+        ? optionsOrLegacyOnEvent
+        : undefined;
+    const options =
+      typeof optionsOrLegacyOnEvent === "function"
+        ? undefined
+        : optionsOrLegacyOnEvent;
+
+    return new Promise((resolve, reject) => {
+      if (options?.signal?.aborted) {
+        reject(
+          new DaemonRpcError(
+            rpcFault("CORE_CANCELLED", "RPC request cancelled", {
+              correlationId: requestId,
+            }),
+          ),
+        );
+        return;
+      }
+
+      let timeout: NodeJS.Timeout | undefined;
+      let abortHandler: (() => void) | undefined;
+      const entry: PendingRequest = {
+        resolve,
+        reject,
+        requestId,
+        legacyOnEvent,
+        onNotification: options?.onNotification,
+        cleanup: () => {
+          if (timeout) clearTimeout(timeout);
+          if (abortHandler && options?.signal) {
+            options.signal.removeEventListener("abort", abortHandler);
+          }
+        },
+      };
+      const cancel = (fault: RpcFault) => {
+        if (pending.get(id) !== entry) return;
+        pending.delete(id);
+        entry.cleanup();
+        sendCancellation(socket, id, requestId);
+        reject(new DaemonRpcError(fault));
+      };
+
+      pending.set(id, entry);
+      if (options?.timeoutMs !== undefined) {
+        timeout = setTimeout(() => {
+          cancel(
+            rpcFault("CORE_TIMEOUT", "RPC request timed out", {
+              retryable: true,
+              correlationId: requestId,
+            }),
+          );
+        }, options.timeoutMs);
+      }
+      if (options?.signal) {
+        abortHandler = () => {
+          cancel(
+            rpcFault("CORE_CANCELLED", "RPC request cancelled", {
+              correlationId: requestId,
+            }),
+          );
+        };
+        options.signal.addEventListener("abort", abortHandler, { once: true });
+      }
+
+      socket.write(JSON.stringify(frame) + "\n", (error) => {
+        if (!error || pending.get(id) !== entry) return;
+        pending.delete(id);
+        entry.cleanup();
+        reject(error);
+      });
+    });
+  }
+
   return {
     onEvent: handlers.setEventHandler,
     onClose: handlers.setCloseHandler,
-    request: (method, params, onEvent) => {
-      const id = allocateId();
-      const request: JsonRpcRequest = {
-        jsonrpc: "2.0",
-        id,
-        method,
-        params,
-      };
-      return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject, onEvent });
-        socket.write(JSON.stringify(request) + "\n", (error) => {
-          if (!error) return;
-          pending.delete(id);
-          reject(error);
-        });
-      });
-    },
+    request,
     close: () => socket.end(),
   };
 }
@@ -137,13 +264,91 @@ function routeAgentEvent(
   fallback?: (event: AgentEvent) => void,
 ): void {
   if (isScopedEvent(params)) {
-    const requestHandler = pending.get(params.requestId)?.onEvent;
+    const requestHandler = pending.get(params.requestId)?.legacyOnEvent;
     (requestHandler ?? fallback)?.(params.event);
     return;
   }
 
   // Compatibility with daemons that emitted the AgentEvent directly.
   fallback?.(params as AgentEvent);
+}
+
+function routeNotification(
+  params: unknown,
+  pending: Map<JsonRpcId, PendingRequest>,
+): boolean {
+  if (!isEventEnvelope(params)) return false;
+  for (const entry of pending.values()) {
+    if (entry.requestId !== params.correlationId) continue;
+    entry.onNotification?.(params);
+    return true;
+  }
+  return false;
+}
+
+function sendCancellation(
+  socket: Socket,
+  id: JsonRpcId,
+  requestId: string,
+): void {
+  if (socket.destroyed || socket.writableEnded) return;
+  const notification: JsonRpcNotification = {
+    jsonrpc: "2.0",
+    method: CANCEL_REQUEST_METHOD,
+    params: { id, requestId },
+  };
+  socket.write(JSON.stringify(notification) + "\n");
+}
+
+function toDaemonRpcError(error: unknown): DaemonRpcError {
+  const fault = extractRpcFault(error);
+  if (fault) return new DaemonRpcError(fault);
+  return new DaemonRpcError(
+    rpcFault("INTERNAL_ERROR", safeRpcErrorMessage(error)),
+  );
+}
+
+function extractRpcFault(error: unknown): RpcFault | undefined {
+  if (isRpcFault(error)) return error;
+  if (!isRecord(error) || !isRecord(error.data)) return undefined;
+  return isRpcFault(error.data.fault) ? error.data.fault : undefined;
+}
+
+function safeRpcErrorMessage(error: unknown): string {
+  if (!isRecord(error) || typeof error.message !== "string") {
+    return "Unknown RPC error";
+  }
+  const message = error.message.startsWith("Error:")
+    ? error.message.slice("Error:".length).trim()
+    : error.message.trim();
+  return message || "Unknown RPC error";
+}
+
+function isEventEnvelope(value: unknown): value is EventEnvelope {
+  if (!isRecord(value) || !isRecord(value.subject)) return false;
+  return (
+    typeof value.eventId === "string" &&
+    value.eventId.length > 0 &&
+    Number.isInteger(value.sequence) &&
+    typeof value.type === "string" &&
+    value.type.length > 0 &&
+    typeof value.subject.kind === "string" &&
+    value.subject.kind.length > 0 &&
+    typeof value.subject.id === "string" &&
+    value.subject.id.length > 0 &&
+    typeof value.correlationId === "string" &&
+    value.correlationId.length > 0 &&
+    typeof value.occurredAt === "string" &&
+    value.occurredAt.length > 0 &&
+    typeof value.schemaVersion === "number" &&
+    Number.isInteger(value.schemaVersion) &&
+    value.schemaVersion >= 1 &&
+    "data" in value
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function isScopedEvent(value: unknown): value is AgentEventNotificationParams {

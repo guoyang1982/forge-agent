@@ -1,6 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import {
   isMessageChannelAdapter,
   type AdapterContext,
@@ -20,10 +19,8 @@ import type {
 } from "@forge/protocol";
 import { DEFAULT_PERMISSIONS } from "@forge/protocol";
 import { SessionStore } from "@forge/session";
+import { openNonMigratingDatabase } from "@forge/store";
 import { ForgeBridge } from "./forge-bridge.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const MONOREPO_ROOT = join(__dirname, "..", "..", "..");
 
 export interface ChannelGatewayOptions {
   dataDir: string;
@@ -56,8 +53,7 @@ export class ChannelGateway {
   constructor(private readonly opts: ChannelGatewayOptions) {
     const cfg = loadConfig();
     const dbPath = join(opts.dataDir, "data.db");
-    const migrationsDir = join(MONOREPO_ROOT, "migrations");
-    this.sessions = new SessionStore(dbPath, migrationsDir);
+    this.sessions = new SessionStore(openNonMigratingDatabase(dbPath));
     this.store = new ChannelStore(this.sessions.getDb());
     this.forge = new ForgeBridge(cfg.daemon.socketPath);
   }

@@ -15,7 +15,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@forge/session": "workspace:*"
+    "@forge/session": "workspace:*",
+    "@forge/store": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

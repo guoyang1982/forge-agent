@@ -32,6 +32,7 @@
     "@forge/plugin-registry": "workspace:*",
     "@forge/protocol": "workspace:*",
     "@forge/session": "workspace:*",
+    "@forge/store": "workspace:*",
     "@forge/skill-registry": "workspace:*",
     "@forge/run-orchestrator": "workspace:*",
     "@forge/talent-registry": "workspace:*",

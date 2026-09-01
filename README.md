@@ -188,6 +188,41 @@ forge review --cwd /path/to/project
 
 完整的 Windows 命令、环境变量配置和首次任务示例见[快速开始](docs/getting-started.md)。
 
+## Core v2 数据备份与恢复演练
+
+升级 Core 或数据库结构前，先停止 Forge Daemon，再使用明确的绝对路径创建备份：
+
+```bash
+pnpm core:v2:backup -- --data-dir /Users/example/forge-data --output-dir /Users/example/forge-backups
+```
+
+命令会创建带时间戳的独立备份目录，复制 `data.db`、WAL/SHM 与 JSON 资产，并输出 `manifest.json` 和每个文件的 SHA-256。不要把备份目录放在数据目录内部。
+
+恢复演练始终写入一个尚不存在的新目录，不覆盖原数据：
+
+```bash
+pnpm core:v2:restore -- --restore-manifest /Users/example/forge-backups/forge-data-2026-08-31T10-00-00-000Z-ab12cd34/manifest.json --restore-dir /Users/example/forge-restore-check
+```
+
+恢复前会重新校验 manifest、文件大小和 SHA-256；目标目录已存在、路径为根目录/用户主目录，或与源目录、备份目录重叠时会拒绝执行。恢复完成后可在隔离数据目录启动并验证：
+
+```bash
+FORGE_DATA_DIR=/Users/example/forge-restore-check pnpm start:daemon
+FORGE_DATA_DIR=/Users/example/forge-restore-check pnpm test:ping
+```
+
+生成可比较的 Core v2 基线报告：
+
+```bash
+pnpm core:v2:baseline -- --repository-root /Users/example/forge-agent --output /Users/example/forge-reports/core-v2-baseline.json
+```
+
+报告记录 Git、运行环境、工作区包、迁移范围和校验和，并包含旧库夹具、升级门禁与恢复工具的证据哈希。自动化升级/恢复门禁可运行：
+
+```bash
+pnpm --filter @forge/store test -- src/legacy-upgrade.test.ts
+```
+
 ## 文档
 
 | 文档 | 内容 |
