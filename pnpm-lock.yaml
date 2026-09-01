@@ -366,6 +366,9 @@ importers:
 
   packages/agent-core:
     dependencies:
+      '@forge/agent-profile':
+        specifier: workspace:*
+        version: link:../agent-profile
       '@forge/llm':
         specifier: workspace:*
         version: link:../llm

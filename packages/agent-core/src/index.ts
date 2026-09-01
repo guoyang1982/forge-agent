@@ -30,3 +30,11 @@ export {
   type VisionPrepareResult,
   type VisionStrategy,
 } from "./vision.js";
+export {
+  ModelRouter,
+  ModelRoutingError,
+  buildModelRouteTrace,
+  type ModelCandidate,
+  type ModelRouteInput,
+  type ModelRoutingDecision,
+} from "./model-routing.js";
