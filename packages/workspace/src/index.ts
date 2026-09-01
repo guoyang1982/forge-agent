@@ -20,6 +20,20 @@ export {
   safeRealpath,
 } from "./permissions.js";
 
+export {
+  WorkspaceGroupService,
+  type WorkspaceBinding,
+  type WorkspaceGroup,
+  type WorkspaceRecord,
+} from "./groups.js";
+export {
+  WorkspaceConflictError,
+  WorkspaceLeaseExpiredError,
+  WorkspaceLeaseService,
+  type AcquireLeaseInput,
+  type WorkspaceLease,
+} from "./leases.js";
+
 const IGNORE_DIRS = new Set([
   "node_modules",
   ".git",
