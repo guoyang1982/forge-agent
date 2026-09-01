@@ -9,6 +9,7 @@ import type { AgentEvent, EventEnvelope } from "@forge/protocol";
 export interface ProductionEventSinkOptions {
   events: EventStore;
   getCorrelationId(runId: string): string | undefined;
+  getActingSubject(runId: string): EventEnvelope["subject"] | undefined;
   broadcast(event: EventEnvelope): void;
   reportDeliveryFailure?(event: EventEnvelope, error: Error): void;
   now?(): string;
@@ -52,10 +53,14 @@ export class ProductionEventSink {
     if (!correlationId) {
       throw new Error(`cannot persist agent event for unknown run: ${links.runId}`);
     }
+    const subject = this.options.getActingSubject(links.runId);
+    if (!subject) {
+      throw new Error(`cannot persist agent event for unknown run subject: ${links.runId}`);
+    }
     const stored = this.options.events.append({
       eventId: randomUUID(),
       type: "agent.event",
-      subject: { kind: "agent_profile", id: "forge-default" },
+      subject,
       correlationId,
       runId: links.runId,
       stepId: links.stepId,

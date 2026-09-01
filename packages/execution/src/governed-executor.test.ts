@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ForgeStore } from "@forge/store";
+import { ApprovalService } from "@forge/policy";
 import { ManualTestClock } from "./clock.js";
 import {
   GovernedStepExecutor,
@@ -43,11 +44,27 @@ describe("GovernedStepExecutor", () => {
     expect(fx.calls).not.toContain("step.execute");
     expect(fx.calls).not.toContain("budget.reserve");
     expect(fx.store.getStep("r1", "s1")?.state).toBe("waiting");
-    expect(outcome).toEqual({
+    expect(outcome).toMatchObject({
       state: "waiting",
-      waitReason: { kind: "approval", approvalId: "approval-1" },
+      waitReason: { kind: "approval", approvalId: expect.any(String) },
     });
     expect(fx.calls).toContain("workspace.release");
+  });
+
+  it("uses a resumed approved approval instead of opening another approval wait", async () => {
+    const fx = governedFixture({ decision: "require_approval" });
+    const approvalId = fx.approveMatchingRequest();
+    const outcome = await fx.executor.execute(
+      {
+        ...fx.input,
+        policyContext: { approvedApprovalId: approvalId },
+      },
+      fx.signal,
+    );
+
+    expect(outcome).toEqual({ state: "succeeded", outputRef: "output-1" });
+    expect(fx.calls).not.toContain("approval.request");
+    expect(fx.calls).toContain("step.execute");
   });
 
   it("releases workspace and budget reservations when policy denies", async () => {
@@ -93,7 +110,14 @@ function governedFixture(options?: {
     owner: "test",
   });
   const store = new ExecutionStore(forgeStore.db);
+  const approvals = new ApprovalService(forgeStore.db);
   const clock = new ManualTestClock("2026-01-01T00:00:00.000Z");
+  forgeStore.db
+    .prepare(
+      `INSERT INTO core_policy_versions (id, name, version, rules_json, is_active, created_at)
+       VALUES ('policy-1', 'test-policy', 1, '{}', 1, ?)`,
+    )
+    .run(clock.now());
 
   store.createRun(
     {
@@ -187,10 +211,14 @@ function governedFixture(options?: {
       },
     },
     approval: {
-      requestApproval: () => {
+      requestApproval: (input) => {
         calls.push("approval.request");
-        return { id: "approval-1" };
+        return approvals.requestApproval({
+          ...input,
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        });
       },
+      getApproval: (approvalId) => approvals.getApproval(approvalId),
     },
     budget: {
       reserve: async () => {
@@ -257,5 +285,24 @@ function governedFixture(options?: {
     store,
     input,
     signal: AbortSignal.timeout(1000),
+    approveMatchingRequest: () => {
+      const approval = approvals.requestApproval({
+        subject: { kind: "agent", id: "a1" },
+        action: "connector.publish",
+        resource: { kind: "connector", id: "web" },
+        parametersSummary: "connector.publish",
+        risk: "high",
+        policyVersionId: "policy-1",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        runId: "r1",
+        stepId: "s1",
+      });
+      approvals.decide(approval.id, {
+        decision: "approved",
+        actor: { kind: "user", id: "u1" },
+        parametersHash: approval.parametersHash,
+      });
+      return approval.id;
+    },
   };
 }

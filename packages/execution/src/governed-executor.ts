@@ -1,6 +1,7 @@
 import type { AgentCapabilitySnapshot } from "@forge/agent-profile";
 import type { ValidationInput } from "@forge/evidence";
 import type { PolicyDecision } from "@forge/policy";
+import type { ApprovalRecord } from "@forge/policy";
 import type { SubjectRef } from "@forge/protocol";
 import type { BudgetReservation } from "@forge/usage-ledger";
 import type { WorkspaceLease } from "@forge/workspace";
@@ -90,6 +91,7 @@ export interface GovernedExecutionPorts {
   };
   approval: {
     requestApproval(input: ApprovalRequestInput): { id: string };
+    getApproval(approvalId: string): ApprovalRecord;
   };
   budget: {
     reserve(input: BudgetReserveInput): Promise<BudgetReservation>;
@@ -157,6 +159,17 @@ export class GovernedStepExecutor {
       }
 
       if (decision.outcome === "require_approval") {
+        const approvedApprovalId = approvedApprovalIdFrom(input.policyContext);
+        if (
+          approvedApprovalId &&
+          matchesApprovedRequest(
+            this.ports.approval.getApproval(approvedApprovalId),
+            input,
+            decision.policyVersionId,
+          )
+        ) {
+          // The exact approved durable approval authorizes this resumed attempt.
+        } else {
         const approval = this.ports.approval.requestApproval({
           subject: input.actingSubject,
           action: input.action,
@@ -181,6 +194,7 @@ export class GovernedStepExecutor {
           this.clock.now(),
         );
         return { state: "waiting", waitReason };
+        }
       }
 
       if (input.budgetAccountId && input.budgetAmountMinor != null) {
@@ -207,6 +221,26 @@ export class GovernedStepExecutor {
         timeoutMs: input.timeoutMs,
       };
 
+      if (input.idempotencyKey) {
+        const claim = this.store.claimIdempotencyKey({
+          idempotencyKey: input.idempotencyKey,
+          runId: input.runId,
+          stepId: input.stepId,
+          attemptId: input.attemptId,
+          now: this.clock.now(),
+        });
+        if (claim.state === "completed") {
+          return { state: "succeeded", outputRef: claim.outputRef };
+        }
+        if (claim.state === "in_progress") {
+          return {
+            state: "failed",
+            error: { code: "IDEMPOTENCY_IN_PROGRESS" },
+            retryable: false,
+          };
+        }
+      }
+
       const stepOutcome = await this.ports.step.execute(stepInput, signal);
 
       if (stepOutcome.state === "waiting") {
@@ -223,6 +257,14 @@ export class GovernedStepExecutor {
         retainResourcesForRetry =
           stepOutcome.retryable && input.retainResourcesOnRetry === true;
         return stepOutcome;
+      }
+
+      if (input.idempotencyKey) {
+        this.store.completeIdempotencyKey(
+          input.idempotencyKey,
+          input.attemptId,
+          stepOutcome.outputRef,
+        );
       }
 
       const validation = await this.ports.evidence.validateDelivery({
@@ -261,6 +303,29 @@ export class GovernedStepExecutor {
       }
     }
   }
+}
+
+function approvedApprovalIdFrom(context: Record<string, unknown>): string | undefined {
+  const value = context.approvedApprovalId;
+  return typeof value === "string" && value ? value : undefined;
+}
+
+function matchesApprovedRequest(
+  approval: ApprovalRecord,
+  input: GovernedStepExecutionInput,
+  policyVersionId: string,
+): boolean {
+  return (
+    approval.state === "approved" &&
+    approval.subject.kind === input.actingSubject.kind &&
+    approval.subject.id === input.actingSubject.id &&
+    approval.action === input.action &&
+    approval.resource.kind === input.resource.kind &&
+    approval.resource.id === input.resource.id &&
+    approval.policyVersionId === policyVersionId &&
+    approval.runId === input.runId &&
+    approval.stepId === input.stepId
+  );
 }
 
 function defaultLeaseExpiry(clock: ExecutionClock): string {

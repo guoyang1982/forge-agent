@@ -37,9 +37,11 @@ export class ValidationService {
       this.persistResult(input, validator.id, result);
     }
 
-    const accepted = !results.some(
-      (result) => result.status === "failed" && result.severity === "blocking",
-    );
+    const accepted =
+      validators.length > 0 &&
+      !results.some(
+        (result) => result.status === "failed" && result.severity === "blocking",
+      );
 
     return { accepted, results };
   }

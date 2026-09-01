@@ -56,6 +56,11 @@ describe("production v2 events", () => {
         "run.succeeded",
       ]);
       expect(recorded.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+      expect(recorded.filter((event) => event.type === "agent.event")).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ subject: fx.spec.actingSubject }),
+        ]),
+      );
       expect(
         fx.events
           .readAfter({ sequence: 2, filter: { runId: created.runId }, limit: 20 })
@@ -91,6 +96,7 @@ describe("production v2 events", () => {
     const sink = createProductionEventSink({
       events,
       getCorrelationId: () => "corr-pong",
+      getActingSubject: () => ({ kind: "agent", id: "agent-pong" }),
       broadcast: (event) => broadcasted.push(event),
     });
     vi.spyOn(events, "append").mockImplementation(() => {
@@ -120,6 +126,7 @@ describe("production v2 events", () => {
     const sink = createProductionEventSink({
       events,
       getCorrelationId: (runId) => store.getRun(runId)?.correlationId,
+      getActingSubject: (runId) => store.getRun(runId)?.spec.actingSubject,
       broadcast: (event) => broadcasted.push(event),
     });
     const appendEvent: EventAppendFn = (db, event) => {
@@ -261,7 +268,7 @@ function pongRunSpec(): RunSpec {
   return {
     id: "run-pong",
     requestedBy: { kind: "human", id: "user-1" },
-    actingSubject: { kind: "agent_profile", id: "forge-default" },
+    actingSubject: { kind: "agent", id: "agent-pong" },
     objective: "reply pong",
     correlationId: "corr-pong",
     policyContext: {},

@@ -37,6 +37,7 @@ export const V2_EXECUTION_EVENT_TYPES = [
   "step.succeeded",
   "step.failed",
   "step.cancelled",
+  "step.skipped",
   "step.waiting",
   "step.resumed",
 ] as const;
