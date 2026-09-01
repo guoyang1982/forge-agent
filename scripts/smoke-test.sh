@@ -37,6 +37,24 @@ sleep 1
 echo "==> ping"
 node apps/cli/dist/cli.js ping
 
+echo "==> core v2 capability probe"
+node --input-type=module -e "
+import { connectDaemon } from './packages/bus/dist/index.js';
+import { loadConfig } from './packages/config/dist/index.js';
+const cfg = loadConfig();
+const client = await connectDaemon(cfg.daemon.socketPath);
+try {
+  const caps = await client.request('system.capabilities', {});
+  if (caps?.protocolVersion !== 2) {
+    console.warn('[smoke] daemon protocolVersion is not 2:', caps?.protocolVersion);
+  } else {
+    console.log('[smoke] protocolVersion=2 features=', Object.keys(caps.features ?? {}).join(','));
+  }
+} finally {
+  client.close();
+}
+"
+
 echo ""
 echo "冒烟测试通过。接下来可配置 API Key 后执行："
 echo "  node apps/cli/dist/cli.js config set model.apiKey <KEY>"
