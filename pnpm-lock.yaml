@@ -49,9 +49,6 @@ importers:
       '@forge/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
-      '@forge/session':
-        specifier: workspace:*
-        version: link:../../packages/session
       '@forge/store':
         specifier: workspace:*
         version: link:../../packages/store
@@ -77,6 +74,9 @@ importers:
       '@forge/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@forge/daemon-client':
+        specifier: workspace:*
+        version: link:../../packages/daemon-client
       '@forge/marketplace':
         specifier: workspace:*
         version: link:../../packages/marketplace
@@ -241,6 +241,9 @@ importers:
       '@forge/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@forge/daemon-client':
+        specifier: workspace:*
+        version: link:../../packages/daemon-client
       '@forge/document-extract':
         specifier: workspace:*
         version: link:../../packages/document-extract
@@ -630,6 +633,9 @@ importers:
 
   packages/daemon-client:
     dependencies:
+      '@forge/execution':
+        specifier: workspace:*
+        version: link:../execution
       '@forge/protocol':
         specifier: workspace:*
         version: link:../protocol

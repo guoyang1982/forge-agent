@@ -8,6 +8,8 @@ import type {
 } from "@forge/protocol";
 import { DAEMON_METHODS } from "@forge/protocol";
 import { connectDaemon } from "@forge/bus";
+import { supportsDaemonV2 } from "@forge/daemon-client";
+import { createCliDaemonApi } from "./client-v2.js";
 import { createProgressReporter } from "./progress.js";
 import { printPatchSummary } from "./diff-view.js";
 import {
@@ -41,6 +43,26 @@ export async function executeRun(
   client: ForgeClient,
   opts: RunTaskOptions,
 ): Promise<RunTaskResult> {
+  if (await supportsDaemonV2(client)) {
+    const api = createCliDaemonApi(client);
+    const result = await api.startSimpleRun(
+      {
+        cwd: opts.cwd,
+        message: opts.message,
+        sessionId: opts.sessionId,
+        hookSource: opts.hookSource,
+        runtime: opts.runtime,
+        autoApply: opts.autoApply,
+        files: opts.files,
+      },
+      opts.onEvent,
+    );
+    return {
+      sessionId: result.sessionId,
+      finalText: result.finalText,
+    };
+  }
+
   const result = (await client.request(
     DAEMON_METHODS.RUN,
     {
