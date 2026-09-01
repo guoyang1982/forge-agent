@@ -584,6 +584,9 @@ importers:
       '@forge/event-store':
         specifier: workspace:*
         version: link:../event-store
+      '@forge/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@forge/store':
         specifier: workspace:*
         version: link:../store

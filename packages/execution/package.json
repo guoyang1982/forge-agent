@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@forge/event-store": "workspace:*",
+    "@forge/protocol": "workspace:*",
     "@forge/store": "workspace:*",
     "better-sqlite3": "^13.0.2"
   }

@@ -97,6 +97,15 @@ export interface RunServiceDeps {
   cancelService: CancelService;
 }
 
+/** Bridge used by the durable execution legacy adapter. */
+export async function executeLegacyForgeRun(
+  request: RunRequest,
+  emit: (event: AgentEvent) => void,
+  deps: RunServiceDeps,
+): Promise<RunResult> {
+  return handleRun(request, emit, deps);
+}
+
 function runPreviewFromAttachments(req: RunRequest): string {
   const message = String(req.message || "").trim();
   if (message) return message.slice(0, 120);
