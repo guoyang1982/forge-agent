@@ -4,12 +4,20 @@ import { fileURLToPath } from "node:url";
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import type { ReloadRuntimeResult } from "@forge/protocol";
-import { DAEMON_METHODS, FORGE_DAEMON_BUILD } from "@forge/protocol";
+import { DAEMON_METHODS, FORGE_DAEMON_BUILD, V2_EXECUTION_EVENT_TYPES } from "@forge/protocol";
 import { loadConfig } from "@forge/config";
 import { SessionStore } from "@forge/session";
 import { ForgeStore } from "@forge/store";
 import { AutomationStore } from "@forge/automation";
 import { ChannelStore } from "@forge/channel";
+import {
+  DurableExecutor,
+  ExecutionRecovery,
+  ExecutionStore,
+  LegacyForgeStepExecutor,
+  StepExecutorRegistry,
+} from "@forge/execution";
+import { EventStore } from "@forge/event-store";
 import { clearMcpClientPool } from "@forge/tool-mcp";
 import {
   clearProjectPluginCache,
@@ -26,6 +34,7 @@ import { CancelService } from "./services/cancel-service.js";
 import { ChannelGatewayHost } from "./services/channel-gateway-host.js";
 import { releaseAllAcpSessions } from "./services/runtime-service.js";
 import { runSessionEndHooksOnShutdown } from "./services/session-end-service.js";
+import { executeLegacyForgeRun } from "./services/run-service.js";
 
 const SERVER_VERSION = "0.2.0";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -119,11 +128,46 @@ const channelGatewayHost = new ChannelGatewayHost({
   listenPort: Number(process.env.FORGE_CHANNEL_GATEWAY_PORT ?? "8787"),
 });
 
+const executionClock = {
+  now: () => new Date().toISOString(),
+  nowMs: () => Date.now(),
+};
+const eventStore = new EventStore(forgeStore.db);
+const executionStore = new ExecutionStore(forgeStore.db);
+const stepExecutors = new StepExecutorRegistry();
+stepExecutors.register(
+  new LegacyForgeStepExecutor({
+    run: (request, emit, signal) =>
+      executeLegacyForgeRun(
+        request,
+        emit,
+        { sessions, getRuntime, cancelService },
+      ).then((result) => {
+        if (signal.aborted) {
+          throw new Error("run cancelled");
+        }
+        return result;
+      }),
+  }),
+);
+const executor = new DurableExecutor(executionStore, stepExecutors, executionClock);
+const executionRecovery = new ExecutionRecovery(
+  executionStore,
+  stepExecutors,
+  executionClock,
+);
+const wakeExecutor = () => {
+  void executor.tick().catch((error) => {
+    console.error(`[forge:execution] tick failed: ${String(error)}`);
+  });
+};
+
 const context: ForgeDaemonContext = {
   socketPath: bootConfig.daemon.socketPath,
   store: forgeStore,
   serverVersion: SERVER_VERSION,
   build: FORGE_DAEMON_BUILD,
+  eventTypes: [...V2_EXECUTION_EVENT_TYPES],
   dataDir: bootConfig.daemon.dataDir,
   monorepoRoot,
   sessions,
@@ -132,6 +176,12 @@ const context: ForgeDaemonContext = {
   cancelService,
   schedulerHost,
   channelGatewayHost,
+  executionStore,
+  eventStore,
+  executor,
+  executionRecovery,
+  executionClock,
+  wakeExecutor,
   getRuntime,
   reloadRuntime,
   shutdownRuntime,

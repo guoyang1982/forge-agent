@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { DAEMON_METHODS } from "@forge/protocol";
+import { DAEMON_METHODS, V2_RPC_METHODS } from "@forge/protocol";
 import { TypedRouter } from "../host/router.js";
 import type { ForgeDaemonContext } from "./context.js";
 import { createDaemonModules } from "./index.js";
@@ -18,10 +18,23 @@ describe("daemon business modules", () => {
       module.register(router, context);
     }
 
-    expect(new Set(router.methods())).toEqual(
+    const v2Methods = new Set<string>(V2_RPC_METHODS);
+    const legacyMethods = router.methods().filter((method) => !v2Methods.has(method));
+
+    expect(new Set(legacyMethods)).toEqual(
       new Set(Object.values(DAEMON_METHODS)),
     );
-    expect(router.methods()).toHaveLength(Object.values(DAEMON_METHODS).length);
+    expect(legacyMethods).toHaveLength(Object.values(DAEMON_METHODS).length);
+    expect(router.methods()).toEqual(
+      expect.arrayContaining([
+        "run.create",
+        "run.get",
+        "run.cancel",
+        "run.resume",
+        "events.read",
+        "events.cursor.ack",
+      ]),
+    );
   });
 
   it("keeps main as the composition root instead of a business router", () => {

@@ -6,7 +6,85 @@ export const V2_RPC_METHODS = [
   "system.capabilities",
   "system.ping",
   "system.status",
+  "run.create",
+  "run.get",
+  "run.cancel",
+  "run.resume",
+  "events.read",
+  "events.cursor.ack",
 ] as const;
+
+export const V2_EXECUTION_EVENT_TYPES = [
+  "run.created",
+  "run.succeeded",
+  "run.failed",
+  "run.cancelled",
+  "step.started",
+  "step.succeeded",
+  "step.failed",
+  "step.cancelled",
+  "step.waiting",
+  "step.resumed",
+] as const;
+
+export type RunState =
+  | "queued"
+  | "running"
+  | "waiting"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export type StepState =
+  | "pending"
+  | "runnable"
+  | "running"
+  | "waiting"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "cancelled";
+
+export interface StepRetryPolicy {
+  maxAttempts: number;
+  backoffMs: number;
+  maxBackoffMs: number;
+}
+
+export interface StepSpec {
+  id: string;
+  kind: string;
+  dependsOn: string[];
+  input: unknown;
+  workspaceBindingId?: string;
+  idempotencyKey?: string;
+  retry: StepRetryPolicy;
+  timeoutMs: number;
+}
+
+export interface RunSpec {
+  id: string;
+  requestedBy: SubjectRef;
+  actingSubject: SubjectRef;
+  objective: string;
+  steps: StepSpec[];
+  budgetAccountId?: string;
+  policyContext: Record<string, unknown>;
+  correlationId: string;
+}
+
+export interface RunStepSummary {
+  id: string;
+  kind: string;
+  state: StepState;
+}
+
+export interface SubscriptionFilter {
+  runId?: string;
+  subjectKind?: string;
+  subjectId?: string;
+  typePrefix?: string;
+}
 
 export interface CapabilityManifest {
   protocolVersion: typeof RPC_PROTOCOL_VERSION;
@@ -41,6 +119,42 @@ export interface RpcContractMap {
   "system.status": {
     params: Record<string, never>;
     result: SystemStatusResult;
+  };
+  "run.create": {
+    params: RunSpec;
+    result: { runId: string; state: RunState };
+  };
+  "run.get": {
+    params: { runId: string };
+    result: {
+      runId: string;
+      state: RunState;
+      objective: string;
+      correlationId: string;
+      steps: RunStepSummary[];
+      createdAt: string;
+      updatedAt: string;
+    };
+  };
+  "run.cancel": {
+    params: { runId: string; reason?: string };
+    result: { ok: true; runId: string; state: RunState };
+  };
+  "run.resume": {
+    params: { waitId: string; payload: unknown };
+    result: { ok: true; waitId: string };
+  };
+  "events.read": {
+    params: {
+      cursor: number;
+      limit: number;
+      filter: SubscriptionFilter;
+    };
+    result: { events: EventEnvelope[] };
+  };
+  "events.cursor.ack": {
+    params: { consumerId: string; sequence: number };
+    result: { ok: true; cursor: number };
   };
 }
 
@@ -156,6 +270,11 @@ const RPC_FAULT_CODES = new Set<RpcFaultCode>([
 ]);
 
 const V2_RPC_METHOD_SET = new Set<string>(V2_RPC_METHODS);
+const V2_SYSTEM_RPC_METHODS = new Set<string>([
+  "system.capabilities",
+  "system.ping",
+  "system.status",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -182,7 +301,9 @@ export function isRpcRequestEnvelope(value: unknown): value is RpcRequestEnvelop
     value.requestId.length > 0 &&
     typeof value.method === "string" &&
     V2_RPC_METHOD_SET.has(value.method) &&
-    Object.keys(value.params).length === 0
+    (V2_SYSTEM_RPC_METHODS.has(value.method)
+      ? Object.keys(value.params).length === 0
+      : true)
   );
 }
 

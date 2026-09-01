@@ -1,5 +1,12 @@
 import type { AutomationStore } from "@forge/automation";
 import type { ChannelStore } from "@forge/channel";
+import type {
+  DurableExecutor,
+  ExecutionClock,
+  ExecutionRecovery,
+  ExecutionStore,
+} from "@forge/execution";
+import type { EventStore } from "@forge/event-store";
 import type { ReloadRuntimeResult } from "@forge/protocol";
 import type { SessionStore } from "@forge/session";
 import type { ForgeRuntime } from "../runtime.js";
@@ -17,6 +24,12 @@ export interface ForgeDaemonContext extends DaemonContext {
   cancelService: CancelService;
   schedulerHost: AutomationSchedulerHost;
   channelGatewayHost: ChannelGatewayHost;
+  executionStore: ExecutionStore;
+  eventStore: EventStore;
+  executor: DurableExecutor;
+  executionRecovery: ExecutionRecovery;
+  executionClock: ExecutionClock;
+  wakeExecutor: () => void;
   getRuntime: () => Promise<ForgeRuntime>;
   reloadRuntime: () => Promise<ReloadRuntimeResult>;
   shutdownRuntime: () => Promise<void>;
