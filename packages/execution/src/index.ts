@@ -34,6 +34,21 @@ export {
 export type { DurableExecutorOptions } from "./executor.js";
 export { DurableExecutor } from "./executor.js";
 export { ExecutionRecovery } from "./recovery.js";
+export {
+  bridgeLegacyAgentEvent,
+  compatibilityStep,
+  finalTextToArtifactRef,
+  FORGE_AGENT_STEP_KIND,
+  LegacyForgeStepExecutor,
+  legacyRunInputFromRequest,
+  parseLegacyRunRequest,
+  runRequestToRunSpec,
+} from "./legacy-run-adapter.js";
+export type {
+  IdFactory,
+  LegacyForgeRunFn,
+  LegacyForgeStepExecutorOptions,
+} from "./legacy-run-adapter.js";
 export type {
   ClaimedAttempt,
   EventAppendFn,

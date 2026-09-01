@@ -123,6 +123,18 @@ export interface EventEnvelope<T = unknown> {
   data: T;
 }
 
+export const FORGE_LEGACY_AGENT_STEP_KIND = "forge.agent" as const;
+
+export interface LegacyRunCompatibilityLinks {
+  compatibility: true;
+  legacyEventType: string;
+  runId: string;
+  stepId: string;
+  attemptId: string;
+  correlationId: string;
+  sessionId?: string;
+}
+
 export interface RpcFaultOptions {
   retryable?: boolean;
   correlationId?: string;
