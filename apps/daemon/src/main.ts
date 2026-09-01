@@ -18,7 +18,7 @@ import { AgentProfileStore } from "@forge/agent-profile";
 import { ArtifactService, ValidationService, ValidatorRegistry } from "@forge/evidence";
 import { ApprovalService } from "@forge/policy";
 import { BudgetLedgerService } from "@forge/usage-ledger";
-import { WorkspaceGroupService } from "@forge/workspace";
+import { WorkspaceGroupService, WorkspaceLeaseService } from "@forge/workspace";
 import { clearMcpClientPool } from "@forge/tool-mcp";
 import {
   clearProjectPluginCache,
@@ -136,6 +136,16 @@ const executionClock = {
   nowMs: () => Date.now(),
 };
 let host!: DaemonHost<ForgeDaemonContext>;
+const workspaceGroups = new WorkspaceGroupService(forgeStore.db);
+const workspaceLeases = new WorkspaceLeaseService(forgeStore.db);
+const approvals = new ApprovalService(forgeStore.db);
+const budgetLedger = new BudgetLedgerService(forgeStore.db);
+const agentProfiles = new AgentProfileStore(forgeStore.db);
+const artifacts = new ArtifactService(
+  forgeStore.db,
+  join(bootConfig.daemon.dataDir, "evidence"),
+);
+const validations = new ValidationService(forgeStore.db, new ValidatorRegistry());
 const productionExecution = createProductionExecutionComposition({
   db: forgeStore.db,
   clock: executionClock,
@@ -156,17 +166,15 @@ const productionExecution = createProductionExecutionComposition({
       }
       return result;
     }),
+  governance: {
+    profiles: agentProfiles,
+    approvals,
+    budgets: budgetLedger,
+    leases: workspaceLeases,
+    validations,
+  },
 });
 const { eventStore, executionStore, executor, executionRecovery } = productionExecution;
-const workspaceGroups = new WorkspaceGroupService(forgeStore.db);
-const approvals = new ApprovalService(forgeStore.db);
-const budgetLedger = new BudgetLedgerService(forgeStore.db);
-const agentProfiles = new AgentProfileStore(forgeStore.db);
-const artifacts = new ArtifactService(
-  forgeStore.db,
-  join(bootConfig.daemon.dataDir, "evidence"),
-);
-const validations = new ValidationService(forgeStore.db, new ValidatorRegistry());
 const wakeExecutor = () => {
   void executor.tick().catch((error) => {
     console.error(`[forge:execution] tick failed: ${String(error)}`);

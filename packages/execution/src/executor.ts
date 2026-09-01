@@ -17,12 +17,15 @@ export interface DurableExecutorOptions {
     step: StoredStep,
     run: StoredRun,
   ) => GovernedStepExecutionInput | null;
+  requireGovernance?: boolean;
 }
 
 export class DurableExecutor {
   private readonly workerId: string;
   private readonly governedExecutor?: GovernedStepExecutor;
   private readonly buildGovernedInput?: DurableExecutorOptions["buildGovernedInput"];
+  private readonly requireGovernance: boolean;
+  private readonly activeControllers = new Map<string, Set<AbortController>>();
 
   constructor(
     private readonly store: ExecutionStore,
@@ -33,6 +36,7 @@ export class DurableExecutor {
     this.workerId = options.workerId ?? "durable-executor";
     this.governedExecutor = options.governedExecutor;
     this.buildGovernedInput = options.buildGovernedInput;
+    this.requireGovernance = options.requireGovernance ?? false;
   }
 
   async tick(limit = 10): Promise<number> {
@@ -72,6 +76,9 @@ export class DurableExecutor {
   }
 
   cancelRun(runId: string, reason: string): void {
+    for (const controller of this.activeControllers.get(runId) ?? []) {
+      controller.abort(reason);
+    }
     this.store.cancelRun(runId, reason, this.clock.now());
   }
 
@@ -101,17 +108,59 @@ export class DurableExecutor {
       idempotencyKey: step.idempotencyKey,
       timeoutMs: step.timeoutMs,
     };
+    const run = this.store.getRun(claimed.runId);
+    const governedInput =
+      this.governedExecutor && run && this.buildGovernedInput
+        ? this.buildGovernedInput(claimed, step, run)
+        : null;
+
+    if (this.requireGovernance && !governedInput) {
+      this.store.finishAttempt(
+        claimed.id,
+        {
+          state: "failed",
+          error: { code: "GOVERNANCE_CONFIGURATION_MISSING" },
+        },
+        this.clock.now(),
+      );
+      return;
+    }
+
+    if (input.idempotencyKey && !governedInput) {
+      const claim = this.store.claimIdempotencyKey({
+        idempotencyKey: input.idempotencyKey,
+        runId: input.runId,
+        stepId: input.stepId,
+        attemptId: input.attemptId,
+        now: this.clock.now(),
+      });
+      if (claim.state === "completed") {
+        await this.applyOutcome(claimed, step.retry, {
+          state: "succeeded",
+          outputRef: claim.outputRef,
+        });
+        return;
+      }
+      if (claim.state === "in_progress") {
+        await this.applyOutcome(claimed, step.retry, {
+          state: "failed",
+          error: { code: "IDEMPOTENCY_IN_PROGRESS" },
+          retryable: false,
+        });
+        return;
+      }
+    }
 
     const controller = new AbortController();
+    let controllers = this.activeControllers.get(claimed.runId);
+    if (!controllers) {
+      controllers = new Set();
+      this.activeControllers.set(claimed.runId, controllers);
+    }
+    controllers.add(controller);
     const timeout = setTimeout(() => controller.abort(), step.timeoutMs);
     let outcome: StepOutcome;
     try {
-      const run = this.store.getRun(claimed.runId);
-      const governedInput =
-        this.governedExecutor && run && this.buildGovernedInput
-          ? this.buildGovernedInput(claimed, step, run)
-          : null;
-
       if (this.governedExecutor && governedInput) {
         outcome = mapGovernedOutcome(
           await this.governedExecutor.execute(governedInput, controller.signal),
@@ -127,8 +176,22 @@ export class DurableExecutor {
       };
     } finally {
       clearTimeout(timeout);
+      controllers.delete(controller);
+      if (controllers.size === 0) {
+        this.activeControllers.delete(claimed.runId);
+      }
     }
 
+    if (this.store.getRun(claimed.runId)?.state === "cancelled") {
+      return;
+    }
+    if (outcome.state === "succeeded" && input.idempotencyKey && !governedInput) {
+      this.store.completeIdempotencyKey(
+        input.idempotencyKey,
+        input.attemptId,
+        outcome.outputRef,
+      );
+    }
     await this.applyOutcome(claimed, step.retry, outcome);
   }
 

@@ -89,6 +89,16 @@ describe("EvidenceService", () => {
 });
 
 describe("ValidationService", () => {
+  it("fails closed when no validators are registered", async () => {
+    const fixture = evidenceFixture();
+    const validations = new ValidationService(fixture.store.db, new ValidatorRegistry());
+
+    const result = await validations.validateDelivery(deliveryFixture());
+
+    expect(result.accepted).toBe(false);
+    expect(result.results).toEqual([]);
+  });
+
   it("fails delivery when any blocking layer fails", async () => {
     const { validations } = validationFixture({ answerLayer: "failed" });
     const result = await validations.validateDelivery(deliveryFixture());

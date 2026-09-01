@@ -207,6 +207,7 @@ async function governedDaemonFixture() {
           expiresAt: "2099-01-01T00:00:00.000Z",
         });
       },
+      getApproval: (approvalId) => approvals.getApproval(approvalId),
     },
     budget: {
       reserve: async (input) => {

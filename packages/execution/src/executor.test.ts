@@ -62,6 +62,69 @@ describe("DurableExecutor", () => {
     expect(fx.store.getRun("run-1")?.state).toBe("failed");
     expect(fx.store.getStep("run-1", "step-1")?.state).toBe("failed");
   });
+
+  it("executes one side effect for duplicate idempotency keys", async () => {
+    const { store, clock } = baseFixture();
+    const registry = new StepExecutorRegistry();
+    let sideEffects = 0;
+    registry.register({
+      kind: "test.idempotent",
+      async execute() {
+        sideEffects += 1;
+        return succeeded("artifact:published");
+      },
+    });
+    const executor = new DurableExecutor(store, registry, clock);
+    const first = {
+      ...singleStepRunSpec(),
+      steps: [{ ...singleStepRunSpec().steps[0]!, kind: "test.idempotent", idempotencyKey: "publish-once" }],
+    };
+    const second = { ...first, id: "run-2", correlationId: "corr-2" };
+    store.createRun(first, clock.now());
+    store.createRun(second, clock.now());
+
+    await executor.tick(2);
+
+    expect(sideEffects).toBe(1);
+    expect(store.getRun("run-1")?.state).toBe("succeeded");
+    expect(store.getRun("run-2")?.state).toBe("succeeded");
+  });
+
+  it("aborts active execution and keeps a cancelled run terminal", async () => {
+    const { store, clock } = baseFixture();
+    const registry = new StepExecutorRegistry();
+    let observedSignal: AbortSignal | undefined;
+    let started!: () => void;
+    const didStart = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    registry.register({
+      kind: "test.blocking",
+      async execute(_input, signal) {
+        observedSignal = signal;
+        started();
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
+        return succeeded("late-result");
+      },
+    });
+    const executor = new DurableExecutor(store, registry, clock);
+    store.createRun(
+      {
+        ...singleStepRunSpec(),
+        steps: [{ ...singleStepRunSpec().steps[0]!, kind: "test.blocking" }],
+      },
+      clock.now(),
+    );
+
+    const ticking = executor.tick();
+    await didStart;
+    executor.cancelRun("run-1", "user requested");
+    await ticking;
+
+    expect(observedSignal?.aborted).toBe(true);
+    expect(store.getRun("run-1")?.state).toBe("cancelled");
+    expect(store.getStep("run-1", "step-1")?.state).toBe("cancelled");
+  });
 });
 
 describe("ExecutionRecovery", () => {

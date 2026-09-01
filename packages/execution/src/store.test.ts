@@ -74,6 +74,22 @@ describe("ExecutionStore", () => {
     expect(store.getRun("run-1")?.state).toBe("succeeded");
   });
 
+  it("skips blocked dependents and fails the run when a prerequisite fails", () => {
+    const { store } = executionFixture();
+    store.createRun(twoStepRunSpec(), clock.now());
+
+    const first = store.claimNextStep("run-1", "worker-a", clock.now())!;
+    store.finishAttempt(
+      first.id,
+      { state: "failed", error: { code: "RESEARCH_FAILED" } },
+      clock.tick(),
+    );
+
+    expect(store.getStep("run-1", "research")?.state).toBe("failed");
+    expect(store.getStep("run-1", "report")?.state).toBe("skipped");
+    expect(store.getRun("run-1")?.state).toBe("failed");
+  });
+
   it("rejects cyclic run specs before insert", () => {
     const { store } = executionFixture();
     expect(() =>

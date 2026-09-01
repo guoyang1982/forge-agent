@@ -67,6 +67,11 @@ export interface FinishAttemptInput {
   error?: unknown;
 }
 
+export type IdempotencyClaim =
+  | { state: "claimed" }
+  | { state: "completed"; outputRef: string }
+  | { state: "in_progress" };
+
 export class ExecutionStore {
   constructor(
     private readonly db: Database.Database,
@@ -267,6 +272,8 @@ export class ExecutionStore {
 
       if (input.state === "succeeded") {
         this.promoteDependentSteps(attempt.runId, attempt.stepId, now);
+      } else if (input.state === "failed") {
+        this.skipBlockedDependents(attempt.runId, now);
       }
 
       const run = this.getRun(attempt.runId);
@@ -282,6 +289,62 @@ export class ExecutionStore {
 
       this.refreshRunState(attempt.runId, now);
     });
+  }
+
+  claimIdempotencyKey(input: {
+    idempotencyKey: string;
+    runId: string;
+    stepId: string;
+    attemptId: string;
+    now: string;
+  }): IdempotencyClaim {
+    return this.runInTransaction(() => {
+      const inserted = this.db
+        .prepare(
+          `INSERT OR IGNORE INTO core_idempotency_records (
+            idempotency_key, run_id, step_id, attempt_id, created_at
+          ) VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.idempotencyKey,
+          input.runId,
+          input.stepId,
+          input.attemptId,
+          input.now,
+        ).changes;
+      if (inserted === 1) {
+        return { state: "claimed" };
+      }
+
+      const existing = this.db
+        .prepare(
+          `SELECT result_ref AS resultRef
+           FROM core_idempotency_records
+           WHERE idempotency_key = ?`,
+        )
+        .get(input.idempotencyKey) as { resultRef: string | null } | undefined;
+      if (existing?.resultRef) {
+        return { state: "completed", outputRef: existing.resultRef };
+      }
+      return { state: "in_progress" };
+    });
+  }
+
+  completeIdempotencyKey(
+    idempotencyKey: string,
+    attemptId: string,
+    outputRef: string,
+  ): void {
+    const result = this.db
+      .prepare(
+        `UPDATE core_idempotency_records
+         SET result_ref = ?
+         WHERE idempotency_key = ? AND attempt_id = ? AND result_ref IS NULL`,
+      )
+      .run(outputRef, idempotencyKey, attemptId);
+    if (result.changes !== 1) {
+      throw new Error(`idempotency claim not owned: ${idempotencyKey}`);
+    }
   }
 
   getRun(runId: string): StoredRun | null {
@@ -587,6 +650,22 @@ export class ExecutionStore {
     return row ?? null;
   }
 
+  getLatestResolvedWait(
+    runId: string,
+    stepId: string,
+  ): { payload: unknown } | null {
+    const row = this.db
+      .prepare(
+        `SELECT payload_json AS payloadJson
+         FROM core_step_waits
+         WHERE run_id = ? AND step_id = ? AND state = 'resolved'
+         ORDER BY resolved_at DESC
+         LIMIT 1`,
+      )
+      .get(runId, stepId) as { payloadJson: string } | undefined;
+    return row ? { payload: JSON.parse(row.payloadJson) as unknown } : null;
+  }
+
   cancelRun(runId: string, reason: string, now: string): void {
     this.runInTransaction(() => {
       const run = this.getRun(runId);
@@ -882,6 +961,65 @@ export class ExecutionStore {
            WHERE run_id = ? AND id = ? AND state = 'pending'`,
         )
         .run(now, runId, dependent.stepId);
+    }
+  }
+
+  private skipBlockedDependents(runId: string, now: string): void {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const candidates = this.db
+        .prepare(
+          `SELECT id
+           FROM core_steps
+           WHERE run_id = ? AND state = 'pending'
+           ORDER BY id`,
+        )
+        .all(runId) as Array<{ id: string }>;
+
+      for (const candidate of candidates) {
+        const blockers = this.db
+          .prepare(
+            `SELECT dependency.state
+             FROM core_step_dependencies edge
+             JOIN core_steps dependency
+               ON dependency.run_id = edge.run_id
+              AND dependency.id = edge.depends_on_step_id
+             WHERE edge.run_id = ? AND edge.step_id = ?`,
+          )
+          .all(runId, candidate.id) as Array<{ state: StepState }>;
+        if (
+          !blockers.some((dependency) =>
+            dependency.state === "failed" ||
+            dependency.state === "skipped" ||
+            dependency.state === "cancelled"
+          )
+        ) {
+          continue;
+        }
+
+        const result = this.db
+          .prepare(
+            `UPDATE core_steps
+             SET state = 'skipped', updated_at = ?
+             WHERE run_id = ? AND id = ? AND state = 'pending'`,
+          )
+          .run(now, runId, candidate.id);
+        if (result.changes !== 1) {
+          continue;
+        }
+        changed = true;
+        const run = this.getRun(runId);
+        if (run) {
+          this.emitRunEvent(
+            run.spec,
+            "step.skipped",
+            now,
+            { stepId: candidate.id },
+            { reason: "dependency_failed" },
+          );
+        }
+      }
     }
   }
 
