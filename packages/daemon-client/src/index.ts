@@ -12,14 +12,32 @@ import type {
   RpcMethod,
   RpcParams,
   RpcResult,
+  SubscriptionFilter,
 } from "@forge/protocol";
 import {
   AGENT_EVENT_METHOD,
+  CORE_EVENT_METHOD,
   RPC_PROTOCOL_VERSION,
   V2_RPC_METHODS,
   isRpcFault,
   rpcFault,
 } from "@forge/protocol";
+import {
+  createEventSubscription,
+  type EventSubscription,
+  type SubscribeOptions,
+  type SubscriptionTransport,
+} from "./subscription.js";
+
+export type {
+  EventSubscription,
+  SubscribeOptions,
+  SubscriptionTransport,
+} from "./subscription.js";
+export {
+  createEventSubscription,
+  matchesEventFilter,
+} from "./subscription.js";
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -47,6 +65,12 @@ export class DaemonRpcError extends Error {
 export interface DaemonClient {
   onEvent(handler: (event: AgentEvent) => void): void;
   onClose(handler: () => void): void;
+  onNotification(handler: (event: EventEnvelope) => void): () => void;
+  subscribe(
+    filter: SubscriptionFilter,
+    handler: (event: EventEnvelope) => void | Promise<void>,
+    options?: SubscribeOptions,
+  ): EventSubscription;
   request<M extends RpcMethod>(
     method: M,
     params: RpcParams<M>,
@@ -66,13 +90,26 @@ const CANCEL_REQUEST_METHOD = "$/cancelRequest";
 
 export function connectDaemon(socketPath: string): Promise<DaemonClient> {
   return new Promise((resolve, reject) => {
-    const socket = netConnect(socketPath);
+    let socket = netConnect(socketPath);
     let buffer = "";
     let nextId = 1;
     let eventHandler: ((event: AgentEvent) => void) | undefined;
     let closeHandler: (() => void) | undefined;
     let connected = false;
     const pending = new Map<JsonRpcId, PendingRequest>();
+    const notificationListeners = new Set<(event: EventEnvelope) => void>();
+    const closeListeners = new Set<() => void>();
+    let reconnectPromise: Promise<void> | null = null;
+    let intentionalReconnect = false;
+    const getSocket = (): Socket => socket;
+
+    const notifyClose = () => {
+      if (intentionalReconnect) return;
+      closeHandler?.();
+      for (const listener of closeListeners) {
+        listener();
+      }
+    };
 
     const onData = (chunk: Buffer) => {
       buffer += chunk.toString();
@@ -84,6 +121,10 @@ export function connectDaemon(socketPath: string): Promise<DaemonClient> {
           const msg = JSON.parse(line) as JsonRpcResponse & JsonRpcNotification;
           if (msg.method === AGENT_EVENT_METHOD && msg.params) {
             routeAgentEvent(msg.params, pending, eventHandler);
+            continue;
+          }
+          if (msg.method === CORE_EVENT_METHOD && msg.params) {
+            routeCoreEvent(msg.params, pending, notificationListeners);
             continue;
           }
           if (msg.method && msg.params && routeNotification(msg.params, pending)) {
@@ -113,38 +154,98 @@ export function connectDaemon(socketPath: string): Promise<DaemonClient> {
       pending.clear();
     };
 
+    const attachSocket = (activeSocket: Socket) => {
+      activeSocket.on("data", onData);
+      activeSocket.on("error", (error) => {
+        rejectAll(error);
+        if (!connected) reject(error);
+      });
+      activeSocket.on("close", () => {
+        rejectAll(new Error("Daemon connection closed"));
+        notifyClose();
+      });
+    };
+
+    const reconnect = async (): Promise<void> => {
+      if (reconnectPromise) {
+        return reconnectPromise;
+      }
+      reconnectPromise = new Promise<void>((resolveReconnect, rejectReconnect) => {
+        intentionalReconnect = true;
+        socket.removeAllListeners();
+        socket.destroy();
+        buffer = "";
+        const replacement = netConnect(socketPath);
+        replacement.once("connect", () => {
+          socket = replacement;
+          intentionalReconnect = false;
+          attachSocket(replacement);
+          resolveReconnect();
+        });
+        replacement.once("error", (error) => {
+          intentionalReconnect = false;
+          rejectReconnect(error);
+        });
+      }).finally(() => {
+        reconnectPromise = null;
+      });
+      return reconnectPromise;
+    };
+
     socket.once("connect", () => {
       connected = true;
-      socket.on("data", onData);
-      resolve(createClient(socket, pending, () => nextId++, {
+      attachSocket(socket);
+      const client = createClient(getSocket, pending, () => nextId++, {
         setEventHandler: (handler) => {
           eventHandler = handler;
         },
         setCloseHandler: (handler) => {
           closeHandler = handler;
         },
-      }));
+      });
+      const transport: SubscriptionTransport = {
+        request: (method, params, options) => client.request(method, params, options),
+        addNotificationListener: (listener) => {
+          notificationListeners.add(listener);
+          return () => notificationListeners.delete(listener);
+        },
+        addCloseListener: (listener) => {
+          closeListeners.add(listener);
+          return () => closeListeners.delete(listener);
+        },
+        reconnect,
+      };
+      resolve({
+        ...client,
+        onNotification: (listener) => {
+          notificationListeners.add(listener);
+          return () => notificationListeners.delete(listener);
+        },
+        subscribe: (filter, handler, options) =>
+          createEventSubscription(transport, filter, handler, options),
+      });
     });
     socket.on("error", (error) => {
       rejectAll(error);
       if (!connected) reject(error);
     });
-    socket.on("close", () => {
-      rejectAll(new Error("Daemon connection closed"));
-      closeHandler?.();
-    });
   });
 }
 
+type BaseDaemonClient = Pick<
+  DaemonClient,
+  "onEvent" | "onClose" | "request" | "close"
+>;
+
 function createClient(
-  socket: Socket,
+  getSocket: () => Socket,
   pending: Map<JsonRpcId, PendingRequest>,
   allocateId: () => JsonRpcId,
   handlers: {
     setEventHandler: (handler: (event: AgentEvent) => void) => void;
     setCloseHandler: (handler: () => void) => void;
   },
-): DaemonClient {
+): BaseDaemonClient {
   function request<M extends RpcMethod>(
     method: M,
     params: RpcParams<M>,
@@ -215,7 +316,7 @@ function createClient(
         if (pending.get(id) !== entry) return;
         pending.delete(id);
         entry.cleanup();
-        sendCancellation(socket, id, requestId);
+        sendCancellation(getSocket(), id, requestId);
         reject(new DaemonRpcError(fault));
       };
 
@@ -241,7 +342,7 @@ function createClient(
         options.signal.addEventListener("abort", abortHandler, { once: true });
       }
 
-      socket.write(JSON.stringify(frame) + "\n", (error) => {
+      getSocket().write(JSON.stringify(frame) + "\n", (error) => {
         if (!error || pending.get(id) !== entry) return;
         pending.delete(id);
         entry.cleanup();
@@ -254,7 +355,7 @@ function createClient(
     onEvent: handlers.setEventHandler,
     onClose: handlers.setCloseHandler,
     request,
-    close: () => socket.end(),
+    close: () => getSocket().end(),
   };
 }
 
@@ -271,6 +372,18 @@ function routeAgentEvent(
 
   // Compatibility with daemons that emitted the AgentEvent directly.
   fallback?.(params as AgentEvent);
+}
+
+function routeCoreEvent(
+  params: unknown,
+  pending: Map<JsonRpcId, PendingRequest>,
+  listeners: Set<(event: EventEnvelope) => void>,
+): void {
+  if (!isEventEnvelope(params)) return;
+  routeNotification(params, pending);
+  for (const listener of listeners) {
+    listener(params);
+  }
 }
 
 function routeNotification(

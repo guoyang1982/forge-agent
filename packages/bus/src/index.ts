@@ -3,15 +3,22 @@ import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import type {
   AgentEvent,
   AgentEventNotificationParams,
+  EventEnvelope,
   JsonRpcId,
   JsonRpcNotification,
   JsonRpcRequest,
   JsonRpcResponse,
   RpcFault,
 } from "@forge/protocol";
-import { AGENT_EVENT_METHOD, isRpcFault, rpcFault } from "@forge/protocol";
+import {
+  AGENT_EVENT_METHOD,
+  CORE_EVENT_METHOD,
+  isRpcFault,
+  rpcFault,
+} from "@forge/protocol";
 
 export { connectDaemon, type DaemonClient } from "@forge/daemon-client";
+export { CORE_EVENT_METHOD } from "@forge/protocol";
 
 export interface RpcRequestContext {
   requestId: string;
@@ -35,6 +42,15 @@ function serializeAgentEvent(requestId: JsonRpcId, event: AgentEvent): string {
     jsonrpc: "2.0",
     method: AGENT_EVENT_METHOD,
     params,
+  };
+  return JSON.stringify(note) + "\n";
+}
+
+export function serializeCoreEvent(event: EventEnvelope): string {
+  const note: JsonRpcNotification = {
+    jsonrpc: "2.0",
+    method: CORE_EVENT_METHOD,
+    params: event,
   };
   return JSON.stringify(note) + "\n";
 }
