@@ -6,8 +6,8 @@ import {
   type AutomationStore,
   type ScheduledRunClaimStore,
 } from "@forge/automation";
+import type { Database } from "@forge/store";
 import { TriggerStore } from "@forge/workflows";
-import type Database from "better-sqlite3";
 
 export class AutomationSchedulerHost {
   private readonly scheduler: AutomationScheduler;
@@ -16,7 +16,7 @@ export class AutomationSchedulerHost {
   constructor(
     private readonly deps: {
       store: AutomationStore;
-      db: Database.Database;
+      db: Database;
       executeAutomation: (
         id: string,
         trigger: AutomationRunTrigger,

@@ -2,7 +2,7 @@ import { basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { loadConfig, saveConfig } from "@forge/config";
-import { DAEMON_METHODS, rpcFault } from "@forge/protocol";
+import { DAEMON_METHODS, rpcFault, type ChatContent } from "@forge/protocol";
 import type { DaemonModule } from "../host/types.js";
 import { RpcFaultError } from "../host/router.js";
 import {
@@ -55,6 +55,9 @@ export function createSessionModule(): DaemonModule<ForgeDaemonContext> {
         if (!params.role) {
           throw invalidRequest("role is required", rpc.correlationId);
         }
+        if (!isChatContent(params.content)) {
+          throw invalidRequest("content is invalid", rpc.correlationId);
+        }
         context.sessions.appendMessage(params.sessionId, {
           role: params.role,
           content: params.content,
@@ -94,6 +97,28 @@ function invalidRequest(message: string, correlationId: string): RpcFaultError {
   return new RpcFaultError(
     rpcFault("INVALID_REQUEST", message, { correlationId }),
   );
+}
+
+function isChatContent(content: unknown): content is ChatContent {
+  return content === null || typeof content === "string" || (
+    Array.isArray(content) && content.every(isChatContentPart)
+  );
+}
+
+function isChatContentPart(content: unknown): boolean {
+  if (!isRecord(content)) return false;
+  if (content.type === "text") return typeof content.text === "string";
+  if (content.type !== "image_url" || !isRecord(content.image_url)) return false;
+  return typeof content.image_url.url === "string" && (
+    content.image_url.detail === undefined ||
+    content.image_url.detail === "auto" ||
+    content.image_url.detail === "low" ||
+    content.image_url.detail === "high"
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function sharedProjects(): SharedProject[] {
