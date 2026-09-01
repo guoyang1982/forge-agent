@@ -123,6 +123,9 @@ importers:
       '@forge/agent-core':
         specifier: workspace:*
         version: link:../../packages/agent-core
+      '@forge/agent-profile':
+        specifier: workspace:*
+        version: link:../../packages/agent-profile
       '@forge/automation':
         specifier: workspace:*
         version: link:../../packages/automation
@@ -150,6 +153,9 @@ importers:
       '@forge/event-store':
         specifier: workspace:*
         version: link:../../packages/event-store
+      '@forge/evidence':
+        specifier: workspace:*
+        version: link:../../packages/evidence
       '@forge/execution':
         specifier: workspace:*
         version: link:../../packages/execution
@@ -171,6 +177,9 @@ importers:
       '@forge/plugin-registry':
         specifier: workspace:*
         version: link:../../packages/plugin-registry
+      '@forge/policy':
+        specifier: workspace:*
+        version: link:../../packages/policy
       '@forge/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -204,6 +213,9 @@ importers:
       '@forge/tools':
         specifier: workspace:*
         version: link:../../packages/tools
+      '@forge/usage-ledger':
+        specifier: workspace:*
+        version: link:../../packages/usage-ledger
       '@forge/workflows':
         specifier: workspace:*
         version: link:../../packages/workflows

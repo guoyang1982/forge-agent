@@ -33,6 +33,12 @@ describe("daemon business modules", () => {
         "run.resume",
         "events.read",
         "events.cursor.ack",
+        "workspace.groups.create",
+        "approvals.list",
+        "budgets.get",
+        "artifacts.get",
+        "validations.list",
+        "agentProfiles.publish",
       ]),
     );
   });

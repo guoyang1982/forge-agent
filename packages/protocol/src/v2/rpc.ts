@@ -12,6 +12,16 @@ export const V2_RPC_METHODS = [
   "run.resume",
   "events.read",
   "events.cursor.ack",
+  "workspace.groups.create",
+  "workspace.groups.bind",
+  "workspace.groups.listBindings",
+  "approvals.list",
+  "approvals.decide",
+  "budgets.get",
+  "artifacts.get",
+  "validations.list",
+  "agentProfiles.publish",
+  "agentProfiles.resolve",
 ] as const;
 
 export const V2_EXECUTION_EVENT_TYPES = [
@@ -155,6 +165,152 @@ export interface RpcContractMap {
   "events.cursor.ack": {
     params: { consumerId: string; sequence: number };
     result: { ok: true; cursor: number };
+  };
+  "workspace.groups.create": {
+    params: { id?: string; name: string; description?: string };
+    result: {
+      id: string;
+      name: string;
+      description?: string;
+      createdAt: string;
+      updatedAt: string;
+    };
+  };
+  "workspace.groups.bind": {
+    params: {
+      id?: string;
+      groupId: string;
+      workspaceId: string;
+      rootPath: string;
+      mode: "read" | "write";
+      pathScopes?: string[];
+    };
+    result: {
+      id: string;
+      groupId: string;
+      workspaceId: string;
+      rootPath: string;
+      mode: "read" | "write";
+      pathScopes: string[];
+      createdAt: string;
+    };
+  };
+  "workspace.groups.listBindings": {
+    params: { groupId: string };
+    result: {
+      bindings: Array<{
+        id: string;
+        groupId: string;
+        workspaceId: string;
+        rootPath: string;
+        mode: "read" | "write";
+        pathScopes: string[];
+        createdAt: string;
+      }>;
+    };
+  };
+  "approvals.list": {
+    params: { subjectKind?: string; subjectId?: string; runId?: string };
+    result: {
+      approvals: Array<{
+        id: string;
+        subject: SubjectRef;
+        action: string;
+        resource: { kind: string; id: string };
+        parametersHash: string;
+        parametersSummary: string;
+        risk: string;
+        policyVersionId: string;
+        state: string;
+        runId?: string;
+        stepId?: string;
+        attemptId?: string;
+        expiresAt: string;
+        createdAt: string;
+      }>;
+    };
+  };
+  "approvals.decide": {
+    params: {
+      approvalId: string;
+      decision: "approved" | "denied";
+      actor: SubjectRef;
+      reason?: string;
+      parametersHash?: string;
+    };
+    result: {
+      id: string;
+      state: string;
+      decision?: {
+        decision: "approved" | "denied";
+        actor: SubjectRef;
+        reason?: string;
+        decidedAt: string;
+      };
+    };
+  };
+  "budgets.get": {
+    params: { accountId: string };
+    result: {
+      accountId: string;
+      currency: string;
+      hardLimitMinor?: string;
+      committedMinor: string;
+      reservedMinor: string;
+      availableMinor?: string;
+    };
+  };
+  "artifacts.get": {
+    params: { artifactId: string };
+    result: {
+      id: string;
+      producerRunId: string;
+      producerStepId?: string;
+      mediaType: string;
+      sha256: string;
+      sizeBytes: number;
+      accessScope: Record<string, unknown>;
+      metadata: Record<string, unknown>;
+      createdAt: string;
+    };
+  };
+  "validations.list": {
+    params: { runId: string };
+    result: {
+      validations: Array<{
+        id: string;
+        runId: string;
+        deliveryId: string;
+        validatorId: string;
+        layer: string;
+        status: string;
+        severity: string;
+        summary: string;
+        createdAt: string;
+      }>;
+    };
+  };
+  "agentProfiles.publish": {
+    params: {
+      profileId?: string;
+      name?: string;
+      model?: string;
+      policyVersionId?: string;
+    };
+    result: {
+      profileId: string;
+      versionId: string;
+      version: number;
+    };
+  };
+  "agentProfiles.resolve": {
+    params: { profileId: string; profileVersionId: string; runId?: string };
+    result: {
+      snapshotId: string;
+      profileId: string;
+      profileVersionId: string;
+      policyVersionId: string;
+    };
   };
 }
 
