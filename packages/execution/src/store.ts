@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { EventStore } from "@forge/event-store";
-import { transitionRun, transitionStep } from "./state-machine.js";
+import { transitionRun, transitionStep, isTerminalRunState } from "./state-machine.js";
 import type {
   AttemptState,
   RunSpec,
@@ -366,6 +366,338 @@ export class ExecutionStore {
       )
       .get(attemptId) as StoredAttempt | undefined;
     return row ?? null;
+  }
+
+  listAttempts(runId: string, stepId: string): StoredAttempt[] {
+    return this.db
+      .prepare(
+        `SELECT id, run_id AS runId, step_id AS stepId, attempt_number AS attemptNumber,
+                state, worker_id AS workerId, output_ref AS outputRef,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM core_attempts
+         WHERE run_id = ? AND step_id = ?
+         ORDER BY attempt_number ASC`,
+      )
+      .all(runId, stepId) as StoredAttempt[];
+  }
+
+  listRunningAttempts(): StoredAttempt[] {
+    return this.db
+      .prepare(
+        `SELECT id, run_id AS runId, step_id AS stepId, attempt_number AS attemptNumber,
+                state, worker_id AS workerId, output_ref AS outputRef,
+                created_at AS createdAt, updated_at AS updatedAt
+         FROM core_attempts
+         WHERE state = 'running'
+         ORDER BY created_at ASC`,
+      )
+      .all() as StoredAttempt[];
+  }
+
+  scheduleRetry(
+    input: {
+      attemptId: string;
+      nextAttemptAt: string;
+      error: unknown;
+    },
+    now: string,
+  ): void {
+    this.db.transaction(() => {
+      const attempt = this.db
+        .prepare(
+          `SELECT id, run_id AS runId, step_id AS stepId
+           FROM core_attempts
+           WHERE id = ?`,
+        )
+        .get(input.attemptId) as
+        | { id: string; runId: string; stepId: string }
+        | undefined;
+      if (!attempt) {
+        throw new Error(`attempt not found: ${input.attemptId}`);
+      }
+
+      this.db
+        .prepare(
+          `UPDATE core_attempts
+           SET state = 'failed', error_json = ?, finished_at = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(JSON.stringify(input.error), now, now, input.attemptId);
+
+      const currentStep = this.getStep(attempt.runId, attempt.stepId);
+      if (!currentStep) {
+        throw new Error(`step not found: ${attempt.stepId}`);
+      }
+      const waitingState = transitionStep(currentStep.state, "waiting");
+      this.db
+        .prepare(
+          `UPDATE core_steps SET state = ?, updated_at = ? WHERE run_id = ? AND id = ?`,
+        )
+        .run(waitingState, now, attempt.runId, attempt.stepId);
+
+      const waitId = randomUUID();
+      this.db
+        .prepare(
+          `INSERT INTO core_step_waits (
+            id, run_id, step_id, attempt_id, wait_kind, wait_ref, state,
+            payload_json, created_at
+          ) VALUES (?, ?, ?, ?, 'retry', ?, 'waiting', ?, ?)`,
+        )
+        .run(
+          waitId,
+          attempt.runId,
+          attempt.stepId,
+          input.attemptId,
+          waitId,
+          JSON.stringify({ nextAttemptAt: input.nextAttemptAt, error: input.error }),
+          now,
+        );
+
+      const run = this.getRun(attempt.runId);
+      if (run) {
+        this.emitRunEvent(run.spec, "step.waiting", now, {
+          stepId: attempt.stepId,
+          attemptId: input.attemptId,
+        }, { waitId, reason: "retry" });
+      }
+
+      this.refreshRunState(attempt.runId, now);
+    })();
+  }
+
+  resumeDueWaits(now: string, limit: number): number {
+    const waits = this.db
+      .prepare(
+        `SELECT id, run_id AS runId, step_id AS stepId, payload_json AS payloadJson
+         FROM core_step_waits
+         WHERE state = 'waiting' AND wait_kind = 'retry'
+         ORDER BY created_at ASC`,
+      )
+      .all() as Array<{
+        id: string;
+        runId: string;
+        stepId: string;
+        payloadJson: string;
+      }>;
+
+    let resumed = 0;
+    for (const wait of waits) {
+      if (resumed >= limit) {
+        break;
+      }
+      const payload = JSON.parse(wait.payloadJson) as { nextAttemptAt?: string };
+      if (payload.nextAttemptAt && payload.nextAttemptAt > now) {
+        continue;
+      }
+      this.db.transaction(() => {
+        const changed = this.db
+          .prepare(
+            `UPDATE core_step_waits
+             SET state = 'resolved', resolved_at = ?
+             WHERE id = ? AND state = 'waiting'`,
+          )
+          .run(now, wait.id).changes;
+        if (changed !== 1) {
+          return;
+        }
+        const step = this.getStep(wait.runId, wait.stepId);
+        if (!step || step.state !== "waiting") {
+          return;
+        }
+        this.db
+          .prepare(
+            `UPDATE core_steps
+             SET state = 'runnable', updated_at = ?
+             WHERE run_id = ? AND id = ? AND state = 'waiting'`,
+          )
+          .run(now, wait.runId, wait.stepId);
+
+        const run = this.getRun(wait.runId);
+        if (run) {
+          this.emitRunEvent(run.spec, "step.resumed", now, {
+            stepId: wait.stepId,
+          }, { waitId: wait.id });
+        }
+      })();
+      resumed += 1;
+    }
+    return resumed;
+  }
+
+  resumeWait(waitId: string, payload: unknown, now: string): void {
+    this.db.transaction(() => {
+      const wait = this.db
+        .prepare(
+          `SELECT id, run_id AS runId, step_id AS stepId, state
+           FROM core_step_waits
+           WHERE id = ?`,
+        )
+        .get(waitId) as
+        | { id: string; runId: string; stepId: string; state: string }
+        | undefined;
+      if (!wait || wait.state !== "waiting") {
+        throw new Error(`wait not found or not waiting: ${waitId}`);
+      }
+
+      this.db
+        .prepare(
+          `UPDATE core_step_waits
+           SET state = 'resolved', resolved_at = ?, payload_json = ?
+           WHERE id = ?`,
+        )
+        .run(now, JSON.stringify(payload), waitId);
+
+      this.db
+        .prepare(
+          `UPDATE core_steps
+           SET state = 'runnable', updated_at = ?
+           WHERE run_id = ? AND id = ? AND state = 'waiting'`,
+        )
+        .run(now, wait.runId, wait.stepId);
+
+      const run = this.getRun(wait.runId);
+      if (run) {
+        this.emitRunEvent(run.spec, "step.resumed", now, {
+          stepId: wait.stepId,
+        }, { waitId, payload });
+      }
+    })();
+  }
+
+  cancelRun(runId: string, reason: string, now: string): void {
+    this.db.transaction(() => {
+      const run = this.getRun(runId);
+      if (!run || isTerminalRunState(run.state)) {
+        return;
+      }
+
+      this.db
+        .prepare(
+          `UPDATE core_attempts
+           SET state = 'cancelled', finished_at = ?, updated_at = ?
+           WHERE run_id = ? AND state IN ('created', 'running', 'waiting')`,
+        )
+        .run(now, now, runId);
+
+      this.db
+        .prepare(
+          `UPDATE core_steps
+           SET state = 'cancelled', updated_at = ?
+           WHERE run_id = ? AND state NOT IN ('succeeded', 'failed', 'skipped', 'cancelled')`,
+        )
+        .run(now, runId);
+
+      this.updateRunState(runId, "cancelled", now);
+    })();
+  }
+
+  abandonAttemptForManualReview(attemptId: string, now: string): void {
+    this.db.transaction(() => {
+      const attempt = this.db
+        .prepare(
+          `SELECT id, run_id AS runId, step_id AS stepId
+           FROM core_attempts WHERE id = ?`,
+        )
+        .get(attemptId) as
+        | { id: string; runId: string; stepId: string }
+        | undefined;
+      if (!attempt) {
+        throw new Error(`attempt not found: ${attemptId}`);
+      }
+
+      this.db
+        .prepare(
+          `UPDATE core_attempts
+           SET state = 'abandoned', finished_at = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(now, now, attemptId);
+
+      const step = this.getStep(attempt.runId, attempt.stepId);
+      if (!step) {
+        return;
+      }
+      const waitingState = transitionStep(step.state, "waiting");
+      this.db
+        .prepare(
+          `UPDATE core_steps SET state = ?, updated_at = ? WHERE run_id = ? AND id = ?`,
+        )
+        .run(waitingState, now, attempt.runId, attempt.stepId);
+
+      const waitId = randomUUID();
+      this.db
+        .prepare(
+          `INSERT INTO core_step_waits (
+            id, run_id, step_id, attempt_id, wait_kind, wait_ref, state,
+            payload_json, created_at
+          ) VALUES (?, ?, ?, ?, 'manual_review', ?, 'waiting', ?, ?)`,
+        )
+        .run(
+          waitId,
+          attempt.runId,
+          attempt.stepId,
+          attemptId,
+          waitId,
+          JSON.stringify({ reason: "interrupted_non_idempotent" }),
+          now,
+        );
+
+      const run = this.getRun(attempt.runId);
+      if (run) {
+        this.emitRunEvent(run.spec, "step.waiting", now, {
+          stepId: attempt.stepId,
+          attemptId,
+        }, { waitId, reason: "manual_review" });
+      }
+
+      this.refreshRunState(attempt.runId, now);
+    })();
+  }
+
+  abandonAttemptAndRetryStep(attemptId: string, now: string): void {
+    this.db.transaction(() => {
+      const attempt = this.db
+        .prepare(
+          `SELECT id, run_id AS runId, step_id AS stepId
+           FROM core_attempts WHERE id = ?`,
+        )
+        .get(attemptId) as
+        | { id: string; runId: string; stepId: string }
+        | undefined;
+      if (!attempt) {
+        throw new Error(`attempt not found: ${attemptId}`);
+      }
+
+      this.db
+        .prepare(
+          `UPDATE core_attempts
+           SET state = 'abandoned', finished_at = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(now, now, attemptId);
+
+      const step = this.getStep(attempt.runId, attempt.stepId);
+      if (!step) {
+        return;
+      }
+      this.db
+        .prepare(
+          `UPDATE core_steps
+           SET state = 'runnable', updated_at = ?
+           WHERE run_id = ? AND id = ?`,
+        )
+        .run(now, attempt.runId, attempt.stepId);
+
+      const run = this.getRun(attempt.runId);
+      if (run) {
+        this.emitRunEvent(run.spec, "step.resumed", now, {
+          stepId: attempt.stepId,
+          attemptId,
+        }, { reason: "recovery_retry" });
+      }
+
+      this.refreshRunState(attempt.runId, now);
+    })();
   }
 
   loadRecoverableRuns(): StoredRun[] {
