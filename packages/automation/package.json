@@ -15,7 +15,10 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@forge/execution": "workspace:*",
     "@forge/protocol": "workspace:*",
+    "@forge/store": "workspace:*",
+    "@forge/workflows": "workspace:*",
     "better-sqlite3": "^13.0.2",
     "cron-parser": "^5.0.6"
   },
