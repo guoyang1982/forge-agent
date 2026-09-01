@@ -2,6 +2,8 @@ export interface RuntimePolicy {
   model: string;
   provider?: string;
   permissionMode?: string;
+  routingPolicyVersion?: string;
+  requiredCapabilities?: string[];
 }
 
 export interface AssetVersionRef {
