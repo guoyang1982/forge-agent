@@ -263,3 +263,4 @@ export function registerMemoryTools(
 }
 
 export * from "./knowledge.js";
+export * from "./memory-v2.js";
