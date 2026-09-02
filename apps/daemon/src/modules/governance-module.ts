@@ -98,6 +98,7 @@ export function createGovernanceModule(): DaemonModule<ForgeDaemonContext> {
           profileId: params.profileId,
           name: params.name,
           model: params.model,
+          modelPolicy: params.modelPolicy,
           policyVersionId: params.policyVersionId,
         });
         return {

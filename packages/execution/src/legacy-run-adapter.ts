@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AgentEvent, RunRequest, RunResult } from "@forge/protocol";
+import type { RuntimePolicy } from "@forge/agent-profile";
 import type { StepExecutionInput, StepExecutor, StepOutcome } from "./executor-types.js";
 import type { RunSpec, StepSpec } from "./types.js";
 
@@ -16,6 +17,7 @@ export interface LegacyForgeRunFn {
     request: RunRequest,
     emit: (event: AgentEvent) => void,
     signal: AbortSignal,
+    runtimePolicy?: RuntimePolicy,
   ): Promise<RunResult>;
 }
 
@@ -136,7 +138,12 @@ export class LegacyForgeStepExecutor implements StepExecutor {
     };
 
     try {
-      const result = await this.options.run(request, emit, signal);
+      const result = await this.options.run(
+        request,
+        emit,
+        signal,
+        input.runtimePolicy,
+      );
       return {
         state: "succeeded",
         outputRef: finalTextToArtifactRef(result.sessionId, result.finalText),

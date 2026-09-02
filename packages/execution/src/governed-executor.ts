@@ -122,7 +122,7 @@ export class GovernedStepExecutor {
     let retainResourcesForRetry = false;
 
     try {
-      await this.ports.profile.resolve({
+      const capability = await this.ports.profile.resolve({
         profileId: input.profileId,
         profileVersionId: input.profileVersionId,
         runId: input.runId,
@@ -219,6 +219,7 @@ export class GovernedStepExecutor {
         input: input.input,
         idempotencyKey: input.idempotencyKey,
         timeoutMs: input.timeoutMs,
+        runtimePolicy: capability.runtime,
       };
 
       if (input.idempotencyKey) {

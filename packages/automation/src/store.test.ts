@@ -119,6 +119,16 @@ describe("AutomationStore", () => {
     expect(finished?.preview).toBe("done");
     expect(store.hasRunningRun(created.id)).toBe(false);
 
+    const linked = store.updateRun(run.id, {
+      workflowInstanceId: "workflow-instance-1",
+      durableRunId: "durable-run-1",
+    });
+    expect(linked).toMatchObject({
+      sessionId: "sess-1",
+      workflowInstanceId: "workflow-instance-1",
+      durableRunId: "durable-run-1",
+    });
+
     store.touchLastRun(created.id, "2026-06-05T10:00:00.000Z");
     expect(store.get(created.id)?.lastRunAt).toBe("2026-06-05T10:00:00.000Z");
 

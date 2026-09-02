@@ -1,9 +1,26 @@
+export interface DynamicStatusRuntimePolicy {
+  enabled?: boolean;
+  modelHeartbeatIntervalMs?: number;
+  toolHeartbeatIntervalMs?: number;
+  dedupeWindowMs?: number;
+}
+
+export interface ContextCompressionRuntimePolicy {
+  enabled?: boolean;
+  triggerTokenEstimate?: number;
+  tokenBudget?: number;
+  modelFailureThreshold?: number;
+  maxModelAttempts?: number;
+}
+
 export interface RuntimePolicy {
   model: string;
   provider?: string;
   permissionMode?: string;
   routingPolicyVersion?: string;
   requiredCapabilities?: string[];
+  dynamicStatus?: DynamicStatusRuntimePolicy;
+  contextCompression?: ContextCompressionRuntimePolicy;
 }
 
 export interface AssetVersionRef {

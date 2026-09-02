@@ -15,7 +15,6 @@ import type { SessionStore } from "@forge/session";
 import type { BudgetLedgerService } from "@forge/usage-ledger";
 import type { WorkspaceGroupService } from "@forge/workspace";
 import type { ForgeRuntime } from "../runtime.js";
-import type { RunServiceDeps } from "../services/run-service.js";
 import type { AutomationSchedulerHost } from "../services/automation-scheduler-host.js";
 import type { CancelService } from "../services/cancel-service.js";
 import type { ChannelGatewayHost } from "../services/channel-gateway-host.js";
@@ -45,5 +44,4 @@ export interface ForgeDaemonContext extends DaemonContext {
   getRuntime: () => Promise<ForgeRuntime>;
   reloadRuntime: () => Promise<ReloadRuntimeResult>;
   shutdownRuntime: () => Promise<void>;
-  executeDurableAutomation: NonNullable<RunServiceDeps["executeDurableAutomation"]>;
 }

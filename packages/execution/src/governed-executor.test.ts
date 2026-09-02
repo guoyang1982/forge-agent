@@ -38,6 +38,20 @@ describe("GovernedStepExecutor", () => {
     ]);
   });
 
+  it("passes the resolved versioned runtime policy to the underlying step", async () => {
+    const fx = governedFixture();
+
+    await fx.executor.execute(fx.input, fx.signal);
+
+    expect(fx.stepRuntimePolicies).toEqual([
+      {
+        model: "profile-model",
+        dynamicStatus: { modelHeartbeatIntervalMs: 25 },
+        contextCompression: { triggerTokenEstimate: 100, tokenBudget: 50 },
+      },
+    ]);
+  });
+
   it("waits without executing when approval is required", async () => {
     const fx = governedFixture({ decision: "require_approval" });
     const outcome = await fx.executor.execute(fx.input, fx.signal);
@@ -102,6 +116,7 @@ function governedFixture(options?: {
   validationAccepted?: boolean;
 }) {
   const calls: string[] = [];
+  const stepRuntimePolicies: Array<unknown> = [];
   const root = mkdtempSync(join(tmpdir(), "forge-governed-"));
   fixtureRoots.push(root);
   const forgeStore = ForgeStore.open({
@@ -154,7 +169,11 @@ function governedFixture(options?: {
           profileId: "p1",
           profileVersionId: "pv1",
           modelPolicy: { model: "forge-default" },
-          runtime: { model: "forge-default" },
+          runtime: {
+            model: "profile-model",
+            dynamicStatus: { modelHeartbeatIntervalMs: 25 },
+            contextCompression: { triggerTokenEstimate: 100, tokenBudget: 50 },
+          },
           skills: [],
           tools: [],
           knowledge: [],
@@ -249,8 +268,9 @@ function governedFixture(options?: {
       },
     },
     step: {
-      execute: async () => {
+      execute: async (input) => {
         calls.push("step.execute");
+        stepRuntimePolicies.push(input.runtimePolicy);
         return succeeded("output-1");
       },
     },
@@ -283,6 +303,7 @@ function governedFixture(options?: {
     executor,
     calls,
     store,
+    stepRuntimePolicies,
     input,
     signal: AbortSignal.timeout(1000),
     approveMatchingRequest: () => {
