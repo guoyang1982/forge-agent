@@ -122,6 +122,27 @@ export interface SystemStatusResult {
   modules: ModuleHealthSummary[];
 }
 
+export interface AgentProfileRuntimePolicy {
+  model: string;
+  provider?: string;
+  permissionMode?: string;
+  routingPolicyVersion?: string;
+  requiredCapabilities?: string[];
+  dynamicStatus?: {
+    enabled?: boolean;
+    modelHeartbeatIntervalMs?: number;
+    toolHeartbeatIntervalMs?: number;
+    dedupeWindowMs?: number;
+  };
+  contextCompression?: {
+    enabled?: boolean;
+    triggerTokenEstimate?: number;
+    tokenBudget?: number;
+    modelFailureThreshold?: number;
+    maxModelAttempts?: number;
+  };
+}
+
 export interface RpcContractMap {
   "system.capabilities": {
     params: Record<string, never>;
@@ -300,6 +321,7 @@ export interface RpcContractMap {
       profileId?: string;
       name?: string;
       model?: string;
+      modelPolicy?: AgentProfileRuntimePolicy;
       policyVersionId?: string;
     };
     result: {

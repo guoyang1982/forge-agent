@@ -1,3 +1,5 @@
+import type { RuntimePolicy } from "@forge/agent-profile";
+
 export type StepOutcome =
   | { state: "succeeded"; outputRef: string }
   | { state: "failed"; error: unknown; retryable: boolean }
@@ -12,6 +14,7 @@ export interface StepExecutionInput {
   input: unknown;
   idempotencyKey?: string;
   timeoutMs: number;
+  runtimePolicy?: RuntimePolicy;
 }
 
 export interface StepExecutor {

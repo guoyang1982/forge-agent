@@ -37,6 +37,38 @@ describe("AgentProfileStore", () => {
     expect(v2.profileId).toBe(v1.profileId);
   });
 
+  it("round-trips typed dynamic-status and context-compression runtime policy", () => {
+    const profiles = profileFixture();
+    const version = profiles.publishVersion({
+      name: "runtime-policy",
+      modelPolicy: {
+        model: "m-policy",
+        dynamicStatus: {
+          enabled: true,
+          modelHeartbeatIntervalMs: 25,
+          toolHeartbeatIntervalMs: 50,
+          dedupeWindowMs: 5,
+        },
+        contextCompression: {
+          enabled: true,
+          triggerTokenEstimate: 1_000,
+          tokenBudget: 500,
+          modelFailureThreshold: 2,
+          maxModelAttempts: 2,
+        },
+      },
+    });
+
+    const snapshot = profiles.resolveSnapshot({
+      profileId: version.profileId,
+      profileVersionId: version.id,
+      runId: "run-policy",
+    });
+    expect(snapshot.runtime).toEqual(version.snapshot.modelPolicy);
+    expect(snapshot.runtime.dynamicStatus?.modelHeartbeatIntervalMs).toBe(25);
+    expect(snapshot.runtime.contextCompression?.tokenBudget).toBe(500);
+  });
+
   it("creates a normalized profile from a talent template", () => {
     const profiles = profileFixture();
     const version = profiles.createFromTalent({

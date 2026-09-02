@@ -6,6 +6,7 @@ import {
   rpcFault,
   V2_RPC_METHODS,
   type CapabilityManifest,
+  type RpcParams,
   type RpcResult,
   type SystemStatusResult,
 } from "./rpc.js";
@@ -88,6 +89,23 @@ describe("v2 RPC request envelopes", () => {
       runId: string;
       state: "queued" | "running" | "waiting" | "succeeded" | "failed" | "cancelled";
     }>();
+  });
+
+  it("types published AgentProfile runtime status and compression policy", () => {
+    const params: RpcParams<"agentProfiles.publish"> = {
+      name: "runtime-policy",
+      modelPolicy: {
+        model: "profile-model",
+        dynamicStatus: { modelHeartbeatIntervalMs: 25 },
+        contextCompression: {
+          triggerTokenEstimate: 1_000,
+          tokenBudget: 500,
+        },
+      },
+    };
+
+    expect(params.modelPolicy?.dynamicStatus?.modelHeartbeatIntervalMs).toBe(25);
+    expect(params.modelPolicy?.contextCompression?.tokenBudget).toBe(500);
   });
 });
 

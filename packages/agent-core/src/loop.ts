@@ -7,6 +7,7 @@ import type {
 } from "@forge/protocol";
 import { plainTextFromChatContent } from "@forge/protocol";
 import { LlmClient } from "@forge/llm";
+import type { RuntimePolicy } from "@forge/agent-profile";
 import {
   ToolRegistry,
   type NetworkConfirmRequest,
@@ -35,6 +36,7 @@ import {
   resolveReviewerModel,
   shouldReflect,
 } from "./reflection.js";
+import { ContextCompressor } from "./context-compression.js";
 
 const NO_TOOL_RETRY_NUDGE =
   "[forge] 这是编码/改代码任务。请在本轮使用 read_file、grep、write_patch 或 run_command 等工具完成，不要仅用文字回复。";
@@ -58,6 +60,7 @@ export interface RunAgentInput {
   spawnSubagent?: (task: string) => Promise<string>;
   /** Restrict which tools this loop may see/call (e.g. read-only sub-agents). */
   allowTool?: (name: string) => boolean;
+  runtimePolicy?: RuntimePolicy;
 }
 
 export interface RunAgentOutput {
@@ -178,7 +181,11 @@ export async function runReActLoop(
   input: RunAgentInput,
 ): Promise<RunAgentOutput> {
   const { config, guard, tools, autoApply, onEvent, signal } = input;
-  const messages = [...input.messages];
+  const messages = compressRuntimeMessages(
+    input.messages,
+    input.runtimePolicy,
+    onEvent,
+  );
   const llm = new LlmClient(config.model);
   const maxSteps = config.limits.maxSteps;
   const maxTool = config.limits.toolResultMaxChars;
@@ -234,10 +241,20 @@ export async function runReActLoop(
     const modelStarted = Date.now();
     let lastModelStatusAt = 0;
     let lastModelStatusKey = "";
+    const dynamicStatus = input.runtimePolicy?.dynamicStatus;
+    const statusEnabled = dynamicStatus?.enabled ?? true;
+    const statusDedupeWindowMs = dynamicStatus?.dedupeWindowMs ?? 1500;
+    const modelHeartbeatIntervalMs =
+      dynamicStatus?.modelHeartbeatIntervalMs ?? 5000;
     const emitModelStatus = (message: string, force = false) => {
+      if (!statusEnabled) return;
       const key = message;
       const now = Date.now();
-      if (!force && key === lastModelStatusKey && now - lastModelStatusAt < 1500) {
+      if (
+        !force &&
+        key === lastModelStatusKey &&
+        now - lastModelStatusAt < statusDedupeWindowMs
+      ) {
         return;
       }
       lastModelStatusKey = key;
@@ -252,9 +269,9 @@ export async function runReActLoop(
     emitModelStatus("连接模型…", true);
     const modelHeartbeat = setInterval(() => {
       if (modelResponseDone) return;
-      if (Date.now() - lastModelStatusAt < 4000) return;
+      if (Date.now() - lastModelStatusAt < modelHeartbeatIntervalMs) return;
       emitModelStatus("处理中…");
-    }, 5000);
+    }, modelHeartbeatIntervalMs);
 
     let response: Awaited<ReturnType<LlmClient["chat"]>>;
     let thinkingOpen = false;
@@ -384,7 +401,10 @@ export async function runReActLoop(
       if (startingFileActivity) onEvent?.(startingFileActivity);
       const toolStarted = Date.now();
       let toolActive = false;
+      const toolHeartbeatIntervalMs =
+        input.runtimePolicy?.dynamicStatus?.toolHeartbeatIntervalMs ?? 1500;
       const toolHeartbeat = setInterval(() => {
+        if (input.runtimePolicy?.dynamicStatus?.enabled === false) return;
         if (toolActive) return;
         const elapsedSec = Math.floor((Date.now() - toolStarted) / 1000);
         onEvent?.({
@@ -393,7 +413,7 @@ export async function runReActLoop(
           message: `${call.name}…`,
           elapsedSec,
         });
-      }, 1500);
+      }, toolHeartbeatIntervalMs);
       let result: string;
       try {
         result = await tools.execute(call, {
@@ -451,6 +471,51 @@ export async function runReActLoop(
   } finally {
     cleanupTools();
   }
+}
+
+function compressRuntimeMessages(
+  input: ChatMessage[],
+  runtimePolicy: RuntimePolicy | undefined,
+  onEvent: RunAgentInput["onEvent"],
+): ChatMessage[] {
+  const policy = runtimePolicy?.contextCompression;
+  if (policy?.enabled !== true || input.length < 3) {
+    return [...input];
+  }
+  const sections = input.map((message, index) => ({
+    id: `message-${index}`,
+    kind:
+      index === 0 && message.role === "system"
+        ? "decision"
+        : index === input.length - 1
+          ? "remaining"
+          : "history",
+    text: plainTextFromChatContent(message.content),
+    priority: index === 0 || index === input.length - 1 ? 100 : index,
+  }));
+  const totalTokenEstimate = sections.reduce(
+    (total, section) => total + Math.ceil(section.text.length / 4),
+    0,
+  );
+  if (totalTokenEstimate < (policy.triggerTokenEstimate ?? 4_000)) {
+    return [...input];
+  }
+  const compressor = new ContextCompressor({
+    modelFailureThreshold: policy.modelFailureThreshold,
+    maxModelAttempts: policy.maxModelAttempts,
+  });
+  const compressed = compressor.compact({
+    sections,
+    tokenBudget: policy.tokenBudget,
+  });
+  const retained = new Set(compressed.retainedRefs);
+  const messages = input.filter((_message, index) => retained.has(`message-${index}`));
+  onEvent?.({
+    type: "status",
+    phase: "runtime",
+    message: `上下文已按 AgentProfile 策略压缩，移除约 ${compressed.removedTokenEstimate} tokens`,
+  });
+  return messages;
 }
 
 function findLastUserMessage(messages: ChatMessage[]): string | null {

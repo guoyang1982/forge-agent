@@ -14,6 +14,10 @@ import type {
 } from "./types.js";
 
 export class WorkflowStore {
+  static forDatabase(db: Database): WorkflowStore {
+    return new WorkflowStore(db, new AssetRegistry(db));
+  }
+
   constructor(
     private readonly db: Database,
     private readonly assets: AssetRegistry,
@@ -96,6 +100,27 @@ export class WorkflowStore {
     return JSON.parse(row.definition_json) as DurableWorkflowDefinition;
   }
 
+  getLatestPublishedVersion(workflowId: string): {
+    workflowVersionId: string;
+    definition: DurableWorkflowDefinition;
+  } | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, definition_json
+         FROM core_workflow_versions
+         WHERE workflow_id = ?
+         ORDER BY version DESC
+         LIMIT 1`,
+      )
+      .get(workflowId) as { id: string; definition_json: string } | undefined;
+    return row
+      ? {
+          workflowVersionId: row.id,
+          definition: JSON.parse(row.definition_json) as DurableWorkflowDefinition,
+        }
+      : null;
+  }
+
   createInstance(input: {
     workflowId: string;
     workflowVersionId: string;
@@ -132,6 +157,60 @@ export class WorkflowStore {
       );
 
     return this.getInstance(id);
+  }
+
+  findInstanceByTriggerRef(
+    workflowId: string,
+    triggerRef: string,
+  ): WorkflowInstanceRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, workflow_id, workflow_version_id, run_id, state, trigger_kind,
+                trigger_ref, concurrency_key, input_json, created_at, updated_at
+         FROM core_workflow_instances
+         WHERE workflow_id = ? AND trigger_ref = ?`,
+      )
+      .get(workflowId, triggerRef) as InstanceRow | undefined;
+    return row ? mapInstance(row) : null;
+  }
+
+  linkRun(instanceId: string, runId: string): WorkflowInstanceRecord {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE core_workflow_instances
+         SET run_id = ?, state = 'running', updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(runId, now, instanceId);
+    return this.getInstance(instanceId);
+  }
+
+  updateInstanceState(
+    instanceId: string,
+    state: "running" | "waiting" | "succeeded" | "failed" | "cancelled",
+  ): WorkflowInstanceRecord {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE core_workflow_instances
+         SET state = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(state, now, instanceId);
+    return this.getInstance(instanceId);
+  }
+
+  countInstances(workflowId: string): number {
+    return (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM core_workflow_instances
+           WHERE workflow_id = ?`,
+        )
+        .get(workflowId) as { count: number }
+    ).count;
   }
 
   markDeadLetter(instanceId: string, reason: string): WorkflowInstanceRecord {

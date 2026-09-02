@@ -61,6 +61,7 @@ describe("Core v1 database upgrade", () => {
         "016_core_assets_workflows.sql",
         "017_core_knowledge_memory.sql",
         "018_core_connectors.sql",
+        "019_automation_durable_links.sql",
       ]);
     } finally {
       store?.close();

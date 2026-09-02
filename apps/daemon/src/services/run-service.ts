@@ -90,15 +90,12 @@ import { ensureExternalRuntimesRegistered } from "./external-runtimes.js";
 import { getExternalRuntime } from "./external-runtime-registry.js";
 import { buildExternalHistoryContext } from "./external-runtime-history.js";
 import { createMcpServerRequestHandler } from "./mcp-permission.js";
+import type { RuntimePolicy } from "@forge/agent-profile";
 
 export interface RunServiceDeps {
   sessions: SessionStore;
   getRuntime: () => Promise<ForgeRuntime>;
   cancelService: CancelService;
-  executeDurableAutomation?: (
-    request: RunRequest,
-    emit: (event: AgentEvent) => void,
-  ) => Promise<RunResult>;
 }
 
 /** Bridge used by the durable execution legacy adapter. */
@@ -106,8 +103,9 @@ export async function executeLegacyForgeRun(
   request: RunRequest,
   emit: (event: AgentEvent) => void,
   deps: RunServiceDeps,
+  runtimePolicy?: RuntimePolicy,
 ): Promise<RunResult> {
-  return handleRun(request, emit, deps);
+  return handleRun(request, emit, deps, runtimePolicy);
 }
 
 function runPreviewFromAttachments(req: RunRequest): string {
@@ -122,12 +120,13 @@ export async function handleRun(
   params: unknown,
   emit: (event: AgentEvent) => void,
   deps: RunServiceDeps,
+  runtimePolicy?: RuntimePolicy,
 ): Promise<RunResult> {
   const req = params as RunRequest;
   const cwd = req.cwd || process.cwd();
   const absCwd = resolve(cwd);
   const loaded = loadConfig({ cwd: absCwd });
-  const requestedModel = req.runtime?.model?.trim();
+  const requestedModel = runtimePolicy?.model.trim() || req.runtime?.model?.trim();
   const provider = req.runtime?.provider?.trim() || "forge";
   const config =
     provider === "forge" && requestedModel
@@ -880,6 +879,7 @@ export async function handleRun(
       tools: registry,
       supportsVision: supportsNativeImageUrl,
       autoApply: Boolean(req.autoApply),
+      runtimePolicy,
       skipNetworkConfirm: Boolean(req.autoApply),
       confirmNetwork: sharedConfirmNetwork,
       skipSoftwareConfirm: Boolean(req.autoApply),

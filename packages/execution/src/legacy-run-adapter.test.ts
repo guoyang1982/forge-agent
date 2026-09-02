@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RunRequest } from "@forge/protocol";
+import type { RuntimePolicy } from "@forge/agent-profile";
 import {
   finalTextToArtifactRef,
   LegacyForgeStepExecutor,
@@ -72,6 +73,28 @@ describe("legacy run adapter", () => {
         attemptId: "attempt-1",
       },
     );
+  });
+
+  it("forwards the governed profile runtime policy to the real legacy runtime boundary", async () => {
+    const runtimePolicy: RuntimePolicy = {
+      model: "profile-model",
+      dynamicStatus: { modelHeartbeatIntervalMs: 25 },
+      contextCompression: { triggerTokenEstimate: 100, tokenBudget: 50 },
+    };
+    let receivedPolicy: RuntimePolicy | undefined;
+    const adapter = new LegacyForgeStepExecutor({
+      run: async (_request, _emit, _signal, policy) => {
+        receivedPolicy = policy;
+        return { sessionId: "session-policy", finalText: "done" };
+      },
+    });
+
+    await adapter.execute(
+      { ...stepInput(), runtimePolicy },
+      new AbortController().signal,
+    );
+
+    expect(receivedPolicy).toEqual(runtimePolicy);
   });
 
   it("hashes final text deterministically", () => {

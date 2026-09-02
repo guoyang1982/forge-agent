@@ -50,11 +50,11 @@ function automationDeps(context: ForgeDaemonContext): AutomationServiceDeps {
     getStore: () => context.automationStore,
     getChannelStore: () => context.channelStore,
     getScheduler: () => context.schedulerHost,
-    getRunDeps: () => ({
-      sessions: context.sessions,
-      getRuntime: context.getRuntime,
-      cancelService: context.cancelService,
-      executeDurableAutomation: context.executeDurableAutomation,
+    getDurable: () => ({
+      db: context.store.db,
+      executionStore: context.executionStore,
+      executor: context.executor,
+      clock: context.executionClock,
     }),
   };
 }

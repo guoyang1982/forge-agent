@@ -24,27 +24,45 @@ import type { ChannelStore } from "@forge/channel";
 import { credentialsFromConfig, IlinkClient } from "@forge/channel-ilink";
 import { LlmClient } from "@forge/llm";
 import type { SessionStore } from "@forge/session";
+import type { Database } from "@forge/store";
 import {
   AutomationStore,
-  buildAutomationRunContext,
+  automationLegacyRunInput,
+  automationToWorkflow,
   buildAutomationDraftParsePrompt,
   computeNextRun,
   listTemplates,
   parseAutomationDraftFromJson,
   parseAutomationDraftHeuristic,
   validateCronExpr,
-  workflowCorrelationId,
   type UpdateAutomationPatch,
 } from "@forge/automation";
+import type {
+  DurableExecutor,
+  ExecutionClock,
+  ExecutionStore,
+  RunState,
+} from "@forge/execution";
+import {
+  compileWorkflowRun,
+  WorkflowStore,
+  type WorkflowTriggerKind,
+} from "@forge/workflows";
 import type { AutomationSchedulerHost } from "./automation-scheduler-host.js";
-import type { RunServiceDeps } from "./run-service.js";
+
+export interface DurableAutomationDeps {
+  db: Database;
+  executionStore: ExecutionStore;
+  executor: DurableExecutor;
+  clock: ExecutionClock;
+}
 
 export interface AutomationServiceDeps {
   sessions: SessionStore;
   getStore: () => AutomationStore;
   getChannelStore?: () => ChannelStore;
   getScheduler: () => AutomationSchedulerHost;
-  getRunDeps: () => RunServiceDeps;
+  getDurable: () => DurableAutomationDeps;
 }
 
 export function assertAutomationPermission(
@@ -123,8 +141,8 @@ export interface ExecuteAutomationDeps {
   channelStore?: ChannelStore;
   sessions: SessionStore;
   scheduler: AutomationSchedulerHost;
-  runDeps: RunServiceDeps;
   cfg: ForgeConfig;
+  durable: DurableAutomationDeps;
 }
 
 function automationResultNotificationText(
@@ -374,22 +392,7 @@ export async function executeAutomation(
   const emit = runOpts?.emit ?? (() => {});
 
   try {
-    const executeDurableAutomation = deps.runDeps.executeDurableAutomation;
-    if (!executeDurableAutomation) {
-      throw new Error("durable automation executor unavailable");
-    }
-    const result = await executeDurableAutomation(
-      {
-        cwd: auto.cwd,
-        message: auto.prompt,
-        sessionId,
-        hookSource: "startup",
-        autoApply: false,
-        automationRun: buildAutomationRunContext(auto),
-        clientRunId: workflowCorrelationId(auto),
-      },
-      emit,
-    );
+    const result = await executeDurableOccurrence(auto, run, sessionId, trigger, deps);
     let preview = result.finalText.slice(0, 200);
     try {
       await sendAutomationNotification(auto, result.finalText, deps);
@@ -415,6 +418,100 @@ export async function executeAutomation(
       await deps.scheduler.reschedule(automationId);
     }
   }
+}
+
+async function executeDurableOccurrence(
+  auto: AutomationRecord,
+  occurrence: AutomationRunRecord,
+  sessionId: string,
+  trigger: AutomationRunTrigger,
+  deps: ExecuteAutomationDeps,
+): Promise<{ sessionId: string; finalText: string }> {
+  const workflows = WorkflowStore.forDatabase(deps.durable.db);
+  const definition = automationToWorkflow(auto);
+  const published =
+    workflows.getLatestPublishedVersion(definition.id) ??
+    workflows.publish(
+      {
+        id: definition.id,
+        name: auto.name,
+        ownerSubject: { kind: "human", id: "local-user" },
+        definition,
+        description: auto.description ?? auto.name,
+      },
+      {
+        validationIds: ["automation-definition"],
+        permissionReviewed: true,
+        securityValidationId: "automation-definition",
+      },
+    );
+  const triggerRef = `automation-run:${occurrence.id}`;
+  const existing = workflows.findInstanceByTriggerRef(definition.id, triggerRef);
+  if (existing?.runId) {
+    deps.store.updateRun(occurrence.id, {
+      workflowInstanceId: existing.id,
+      durableRunId: existing.runId,
+    });
+    const durableRun = deps.durable.executionStore.getRun(existing.runId);
+    if (durableRun?.state !== "succeeded") {
+      throw new Error(`durable automation run failed: ${durableRun?.state ?? "missing"}`);
+    }
+    return { sessionId, finalText: "" };
+  }
+
+  const triggerKind: WorkflowTriggerKind = trigger === "schedule" ? "cron" : "manual";
+  const instance =
+    existing ??
+    workflows.createInstance({
+      workflowId: definition.id,
+      workflowVersionId: published.workflowVersionId,
+      triggerKind,
+      triggerRef,
+      concurrencyKey: auto.id,
+      runInput: {},
+    });
+  const instanceNumber = workflows.countInstances(definition.id);
+  const compiled = compileWorkflowRun(published.definition, {}, {
+    workflowId: definition.id,
+    instanceId: instance.id,
+    instanceNumber,
+    requestedBy: { kind: "human", id: "local-user" },
+    actingSubject: { kind: "agent_profile", id: "forge-default" },
+    objective: auto.prompt,
+    policyContext: { compatibility: true, automationId: auto.id },
+  });
+  const spec = {
+    ...compiled,
+    steps: compiled.steps.map((step) => ({
+      ...step,
+      input: automationLegacyRunInput(auto, sessionId),
+      idempotencyKey: `automation-occurrence:${occurrence.id}`,
+    })),
+  };
+
+  deps.durable.executionStore.createRun(spec, deps.durable.clock.now());
+  workflows.linkRun(instance.id, spec.id);
+  deps.store.updateRun(occurrence.id, {
+    workflowInstanceId: instance.id,
+    durableRunId: spec.id,
+  });
+  await deps.durable.executor.tick();
+  const durableRun = deps.durable.executionStore.getRun(spec.id);
+  if (!durableRun) {
+    workflows.updateInstanceState(instance.id, "failed");
+    throw new Error("durable automation run failed: missing");
+  }
+  workflows.updateInstanceState(instance.id, workflowStateFromRun(durableRun.state));
+  if (durableRun.state !== "succeeded") {
+    throw new Error(`durable automation run failed: ${durableRun.state}`);
+  }
+  return { sessionId, finalText: "" };
+}
+
+function workflowStateFromRun(
+  state: RunState,
+): "running" | "waiting" | "succeeded" | "failed" | "cancelled" {
+  return state === "queued" ? "running" : state;
 }
 
 export async function handleListAutomations(
@@ -536,7 +633,7 @@ export async function handleRunAutomation(
       store,
       sessions: deps.sessions,
       scheduler: deps.getScheduler(),
-      runDeps: deps.getRunDeps(),
+      durable: deps.getDurable(),
       channelStore: deps.getChannelStore?.(),
       cfg,
     },
