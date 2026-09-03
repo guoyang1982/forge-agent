@@ -21,6 +21,9 @@ export function compileWorkflowRun(
   input: unknown,
   context: WorkflowRunContext,
 ): RunSpec {
+  if (!definition.version || definition.version < 1) {
+    throw new WorkflowCompileError("published workflow version is required");
+  }
   validateWorkflowInput(definition, input);
   assertAcyclic(definition.steps);
 

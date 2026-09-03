@@ -2,7 +2,7 @@
 
 ## Capabilities
 
-Clients should call `system.capabilities` and require `core.execution.v2` before using typed run APIs.
+Typed kernel callers (`run.create`, automation, smoke) should call `system.capabilities` and require `core.execution.v2`. First-party Desktop / CLI / Mobile keep `run` / `cancel_run`; the daemon still persists those turns as durable runs.
 
 ## Backup and restore
 
@@ -17,7 +17,7 @@ pnpm core:v2:restore -- --data-dir ~/.forge-agent/data backup.tar.gz
 pnpm exec tsx scripts/core-v2/assert-no-legacy.ts
 ```
 
-The gate blocks new client usage of legacy daemon RPC symbols outside the transitional allowlist.
+The gate blocks accidental legacy RPC usage outside the allowlist. First-party Desktop / CLI / Mobile / Channel / `packages/channel-mobile` are allowlisted because product chat keeps `run` / `cancel_run`.
 
 ## Smoke
 
@@ -25,4 +25,10 @@ The gate blocks new client usage of legacy daemon RPC symbols outside the transi
 pnpm smoke
 ```
 
-Validates build, daemon startup, ping, and v2 capability discovery when available.
+Validates build, daemon startup (`FORGE_SMOKE=1`), ping, protocol v2 capability, and a kernel `run.create` durable run with persisted events plus terminal output. Product chat (`run` / `cancel_run`) is covered by daemon first-party unit tests, not this smoke script.
+
+Windows:
+
+```bash
+pnpm smoke:win
+```

@@ -54,8 +54,8 @@ describe("run activity manual expansion", () => {
       /function closeOrphanThinkingBlocks[\s\S]*?\n}\n\n\/\*\* Point live run/,
     )?.[0] ?? "";
 
-    expect(closeOrphans).toContain('block.dataset.userPinned === "1"');
-    expect(closeOrphans).not.toContain("block.open = false");
-    expect(closeOrphans).toContain("Do not force-collapse");
+    expect(closeOrphans).toContain('block.dataset.userPinned !== "1"');
+    expect(closeOrphans).toContain("block.open = false");
+    expect(closeOrphans).not.toContain("Do not force-collapse");
   });
 });

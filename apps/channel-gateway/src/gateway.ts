@@ -24,7 +24,8 @@ import { DaemonSessionStore } from "./daemon-session-store.js";
 import { ForgeBridge } from "./forge-bridge.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const GATEWAY_DB_NAME = "gateway.db";
+/** Must match daemon ForgeStore (`data.db`) so channel CRUD and gateway runtime share one store. */
+const GATEWAY_DB_NAME = "data.db";
 
 export interface ChannelGatewayOptions {
   dataDir: string;
@@ -146,10 +147,7 @@ export class ChannelGateway {
       cwd: record.cwd,
       config,
       dataDir: this.opts.dataDir,
-      daemon: {
-        request: (method, params, onEvent) =>
-          this.forge.request(method, params, onEvent),
-      },
+      daemon: this.forge,
       onInbound: (msg: InboundMessage) => {
         void this.handleInbound(record, msg);
       },

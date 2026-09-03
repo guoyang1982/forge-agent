@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ForgeStore } from "@forge/store";
 import {
   ApprovalAlreadyDecidedError,
+  ApprovalExpiredError,
   ApprovalHashMismatchError,
   ApprovalService,
   hashApprovalParameters,
@@ -64,6 +65,17 @@ describe("ApprovalService", () => {
     expect(expired.state).toBe("expired");
   });
 
+  it("rejects a decision made after the approval expiry", () => {
+    const service = approvalFixture();
+    const pending = service.requestApproval({
+      ...approvalInput(),
+      expiresAt: "2020-01-01T00:00:00.000Z",
+    });
+
+    expect(() => service.decide(pending.id, approveDecision())).toThrow(/expired/);
+    expect(service.getApproval(pending.id).state).toBe("expired");
+  });
+
   it("revokes a pending approval", () => {
     const service = approvalFixture();
     const pending = pendingApproval(service);
@@ -80,6 +92,23 @@ describe("ApprovalService", () => {
         parametersHash: "deadbeef".repeat(8),
       }),
     ).toThrow(ApprovalHashMismatchError);
+  });
+
+  it("rejects expired approved approvals on read", () => {
+    const store = openStore();
+    seedPolicyVersion(store);
+    const service = new ApprovalService(store.db);
+    const pending = service.requestApproval({
+      ...approvalInput(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    service.decide(pending.id, approveDecision());
+    store.db
+      .prepare(`UPDATE core_approvals SET expires_at = ? WHERE id = ?`)
+      .run("2020-01-01T00:00:00.000Z", pending.id);
+
+    expect(() => service.getApproval(pending.id)).toThrow(ApprovalExpiredError);
+    expect(service.getApproval(pending.id).state).toBe("expired");
   });
 
   it("lists only non-expired pending approvals", () => {

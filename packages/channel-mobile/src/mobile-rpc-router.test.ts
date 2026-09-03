@@ -9,7 +9,8 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterDaemonBridge } from "@forge/channel-core";
+import type { AdapterDaemonBridge, AdapterDaemonMethod } from "@forge/channel-core";
+import type { RpcMethod, RpcParams, RpcResult } from "@forge/protocol";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MobileDeviceRegistry } from "./device-registry.js";
@@ -50,20 +51,43 @@ function withSharedProjects(
   daemon: AdapterDaemonBridge,
   projectCwds: string[],
 ): AdapterDaemonBridge {
+  type EventHandler = (event: unknown) => void;
+  const forwardRequest = daemon.request as (
+    method: AdapterDaemonMethod,
+    params?: unknown,
+    onEvent?: EventHandler,
+  ) => Promise<unknown>;
+
+  async function request<M extends RpcMethod>(
+    method: M,
+    params?: RpcParams<M>,
+    onEvent?: EventHandler,
+  ): Promise<RpcResult<M>>;
+  async function request(
+    method: AdapterDaemonMethod,
+    params?: unknown,
+    onEvent?: EventHandler,
+  ): Promise<unknown>;
+  async function request(
+    method: AdapterDaemonMethod,
+    params?: unknown,
+    onEvent?: EventHandler,
+  ): Promise<unknown> {
+    if (method === "project.list") {
+      return {
+        projects: projectCwds.map((cwd) => ({
+          id: `project-${cwd}`,
+          name: basename(cwd) || cwd,
+          cwd,
+        })),
+      };
+    }
+    if (onEvent) return forwardRequest(method, params, onEvent);
+    return forwardRequest(method, params);
+  }
+
   return {
-    async request(method, params, onEvent) {
-      if (method === "project.list") {
-        return {
-          projects: projectCwds.map((cwd) => ({
-            id: `project-${cwd}`,
-            name: basename(cwd) || cwd,
-            cwd,
-          })),
-        };
-      }
-      if (onEvent) return daemon.request(method, params, onEvent);
-      return daemon.request(method, params);
-    },
+    request,
   };
 }
 
@@ -85,6 +109,90 @@ function createRouter(
   });
 }
 
+type LegacyEventSpec = Record<string, unknown> & { type: string };
+
+function createDeferredV2RunBridge(options: {
+  runId?: string;
+  initialEvents?: LegacyEventSpec[];
+  onCreate?: (params: unknown) => void;
+  passthrough?: (
+    method: string,
+    params: unknown,
+  ) => Promise<unknown> | unknown | undefined;
+}): {
+  daemon: AdapterDaemonBridge;
+  finishRun: (result: { sessionId: string; finalText: string }) => void;
+} {
+  const runId = options.runId ?? "run_test_1";
+  let finished = false;
+  let finishResult = { sessionId: "session_01", finalText: "done" };
+  let resolveRun: (() => void) | undefined;
+  const runGate = new Promise<void>((resolve) => {
+    resolveRun = resolve;
+  });
+
+  const daemon: AdapterDaemonBridge = {
+    async request(method: string, params?: unknown, onEvent?: (event: unknown) => void) {
+      const routed = await options.passthrough?.(method, params);
+      if (routed !== undefined) return routed;
+      if (method === "run") {
+        options.onCreate?.(params);
+        for (const event of options.initialEvents ?? []) {
+          onEvent?.(event);
+        }
+        if (!finished) await runGate;
+        onEvent?.({
+          type: "done",
+          sessionId: finishResult.sessionId,
+          finalText: finishResult.finalText,
+        });
+        return finishResult;
+      }
+      if (method === "run.cancel" || method === "cancel_run") {
+        finished = true;
+        resolveRun?.();
+        return { ok: true, runId, state: "cancelled", canceled: true };
+      }
+      return {};
+    },
+  };
+
+  return {
+    daemon,
+    finishRun: (result) => {
+      finishResult = result;
+      finished = true;
+      resolveRun?.();
+    },
+  };
+}
+
+function createImmediateV2RunBridge(options: {
+  onCreate?: (params: unknown) => void;
+  result?: { sessionId: string; finalText: string };
+} = {}): { daemon: AdapterDaemonBridge; calls: Array<{ method: string; params: unknown }> } {
+  const calls: Array<{ method: string; params: unknown }> = [];
+  let finishRun!: (result: { sessionId: string; finalText: string }) => void;
+  const bridge = createDeferredV2RunBridge({
+    onCreate: (params) => {
+      calls.push({ method: "run", params });
+      options.onCreate?.(params);
+      finishRun(options.result ?? { sessionId: "session_01", finalText: "ok" });
+    },
+  });
+  finishRun = bridge.finishRun;
+  return { daemon: bridge.daemon, calls };
+}
+
+function legacyRunInput(params: unknown): Record<string, unknown> {
+  if (!params || typeof params !== "object") return {};
+  const spec = params as {
+    steps?: Array<{ input?: Record<string, unknown> }>;
+  };
+  if (spec.steps?.[0]?.input) return spec.steps[0].input;
+  return params as Record<string, unknown>;
+}
+
 afterEach(() => {
   for (const path of tempDirs.splice(0)) rmSync(path, { recursive: true, force: true });
 });
@@ -94,7 +202,7 @@ describe("MobileRpcRouter", () => {
     const { root, outside, escape, registry } = fixture();
     let listSessionCalls = 0;
     const daemon: AdapterDaemonBridge = {
-      async request(method) {
+      async request(method: string, params?: unknown) {
         if (method === "list_sessions") {
           listSessionCalls += 1;
           return {
@@ -172,27 +280,27 @@ describe("MobileRpcRouter", () => {
       token: "device-token-secret-value-2",
       allowedProjects: [root],
     });
-    let finishRun!: (value: unknown) => void;
     const calls: Array<{ method: string; params: unknown }> = [];
-    const daemon: AdapterDaemonBridge = {
-      async request(method, params, onEvent) {
+    const { daemon, finishRun } = createDeferredV2RunBridge({
+      initialEvents: [
+        { type: "session_start", sessionId: "session_01" },
+        {
+          type: "permission_request",
+          sessionId: "session_01",
+          id: "permission_01",
+          kind: "command",
+        },
+      ],
+      onCreate: (params) => calls.push({ method: "run", params }),
+      passthrough: (method, params) => {
         calls.push({ method, params });
-        if (method === "run") {
-          onEvent?.({ type: "session_start", sessionId: "session_01" });
-          onEvent?.({
-            type: "permission_request",
-            sessionId: "session_01",
-            id: "permission_01",
-            kind: "command",
-          });
-          return new Promise((resolve) => {
-            finishRun = resolve;
-          });
+        if (method === "permission_response") return { ok: true };
+        if (method === "list_sessions") {
+          return { sessions: [{ id: "session_01", cwd: root }] };
         }
-        if (method === "cancel_run" || method === "permission_response") return { ok: true };
-        return { sessions: [{ id: "session_01", cwd: root }] };
+        return undefined;
       },
-    };
+    });
     const router = createRouter(registry, daemon, [root]);
     const events: unknown[] = [];
     try {
@@ -270,12 +378,13 @@ describe("MobileRpcRouter", () => {
         ),
       ).resolves.toMatchObject({ ok: true });
 
-      expect(events).toHaveLength(2);
-      expect(calls.find((call) => call.method === "run")?.params).toMatchObject({
+      expect(events.length).toBeGreaterThanOrEqual(2);
+      const runInput = legacyRunInput(calls.find((call) => call.method === "run")?.params);
+      expect(runInput).toMatchObject({
         cwd: realpathSync.native(root),
         autoApply: true,
       });
-      expect(calls.find((call) => call.method === "run")?.params).not.toHaveProperty("channelRun");
+      expect(runInput.channelRun).toBeUndefined();
       expect(calls.find((call) => call.method === "permission_response")?.params).toMatchObject({
         id: "permission_01",
         approved: true,
@@ -290,28 +399,24 @@ describe("MobileRpcRouter", () => {
 
   it("cancels a follow-up turn on an existing sessionId (activeRuns registered immediately)", async () => {
     const { root, registry } = fixture();
-    let finishRun!: (value: unknown) => void;
     const cancelCalls: unknown[] = [];
-    const daemon: AdapterDaemonBridge = {
-      async request(method, params, onEvent) {
-        if (method === "run") {
-          // Same sessionId as the request — previously this never entered activeRuns.
-          onEvent?.({ type: "session_start", sessionId: "session_existing_01" });
-          onEvent?.({ type: "status", sessionId: "session_existing_01", message: "连接模型…" });
-          return new Promise((resolve) => {
-            finishRun = resolve;
-          });
-        }
-        if (method === "cancel_run") {
+    const { daemon, finishRun } = createDeferredV2RunBridge({
+      runId: "run_followup_1",
+      initialEvents: [
+        { type: "session_start", sessionId: "session_existing_01" },
+        { type: "status", sessionId: "session_existing_01", message: "连接模型…" },
+      ],
+      passthrough: (method, params) => {
+        if (method === "run.cancel") {
           cancelCalls.push(params);
-          return { ok: true };
+          return { ok: true, runId: "run_followup_1", state: "cancelled" };
         }
         if (method === "list_sessions") {
           return { sessions: [{ id: "session_existing_01", cwd: root }] };
         }
-        return {};
+        return undefined;
       },
-    };
+    });
     const router = createRouter(registry, daemon, [root]);
     try {
       const runPromise = router.handle(
@@ -356,10 +461,10 @@ describe("MobileRpcRouter", () => {
     const { root, outside, registry } = fixture();
     const cancelCalls: unknown[] = [];
     const daemon: AdapterDaemonBridge = {
-      async request(method, params) {
-        if (method === "cancel_run") {
+      async request(method: string, params?: unknown) {
+        if (method === "run.cancel") {
           cancelCalls.push(params);
-          return { ok: true };
+          return { ok: true, runId: String((params as { sessionId?: string }).sessionId ?? ""), state: "cancelled" };
         }
         if (method === "list_sessions") {
           return {
@@ -407,35 +512,31 @@ describe("MobileRpcRouter", () => {
 
   it("forwards Codex permission_request events without auto-approving", async () => {
     const { root, registry } = fixture();
-    let finishRun!: (value: unknown) => void;
     const permissionResponses: unknown[] = [];
-    const daemon: AdapterDaemonBridge = {
-      async request(method, params, onEvent) {
-        if (method === "run") {
-          onEvent?.({ type: "session_start", sessionId: "session_codex_01" });
-          onEvent?.({
-            type: "permission_request",
-            sessionId: "session_codex_01",
-            id: "codex_perm_01",
-            kind: "codex",
-            summary: "执行命令: touch /tmp/forge-permission-probe",
-            options: [
-              { optionId: "allow-once", name: "允许一次", kind: "allow_once" },
-              { optionId: "allow-session", name: "本会话总是允许", kind: "allow_always" },
-              { optionId: "deny", name: "拒绝", kind: "reject_once" },
-            ],
-          });
-          return new Promise((resolve) => {
-            finishRun = resolve;
-          });
-        }
+    const { daemon, finishRun } = createDeferredV2RunBridge({
+      initialEvents: [
+        { type: "session_start", sessionId: "session_codex_01" },
+        {
+          type: "permission_request",
+          sessionId: "session_codex_01",
+          id: "codex_perm_01",
+          kind: "codex",
+          summary: "执行命令: touch /tmp/forge-permission-probe",
+          options: [
+            { optionId: "allow-once", name: "允许一次", kind: "allow_once" },
+            { optionId: "allow-session", name: "本会话总是允许", kind: "allow_always" },
+            { optionId: "deny", name: "拒绝", kind: "reject_once" },
+          ],
+        },
+      ],
+      passthrough: (method, params) => {
         if (method === "permission_response") {
           permissionResponses.push(params);
           return { ok: true };
         }
-        return {};
+        return undefined;
       },
-    };
+    });
     const router = createRouter(registry, daemon, [root]);
     const events: unknown[] = [];
     try {
@@ -530,7 +631,7 @@ describe("MobileRpcRouter", () => {
     ];
     const daemonCalls: Array<{ method: string; params: unknown }> = [];
     const daemon: AdapterDaemonBridge = {
-      request: async (method, params) => {
+      request: async (method: string, params?: unknown) => {
         daemonCalls.push({ method, params });
         if (method === "project.list") return { projects: shared };
         if (method === "project.register") {
@@ -1143,14 +1244,9 @@ describe("MobileRpcRouter", () => {
 
   it("forwards normalized attachments on run.start", async () => {
     const { root, registry } = fixture();
-    const calls: Array<{ method: string; params: unknown }> = [];
-    const daemon: AdapterDaemonBridge = {
-      async request(method, params) {
-        calls.push({ method, params });
-        if (method === "run") return { sessionId: "session_att_01", finalText: "ok" };
-        return {};
-      },
-    };
+    const { daemon, calls } = createImmediateV2RunBridge({
+      result: { sessionId: "session_att_01", finalText: "ok" },
+    });
     const router = createRouter(registry, daemon, [root], { runPermission: "allow" });
     try {
       await expect(
@@ -1178,7 +1274,7 @@ describe("MobileRpcRouter", () => {
         ),
       ).resolves.toMatchObject({ ok: true });
       const runCall = calls.find((item) => item.method === "run");
-      expect(runCall?.params).toMatchObject({
+      expect(legacyRunInput(runCall?.params)).toMatchObject({
         message: "请查看附件",
         attachments: [
           { kind: "file", name: "note.txt", mimeType: "text/plain", text: "from phone" },
@@ -1192,14 +1288,9 @@ describe("MobileRpcRouter", () => {
 
   it("forwards workspace file mentions on run.start", async () => {
     const { root, registry } = fixture();
-    const calls: Array<{ method: string; params: unknown }> = [];
-    const daemon: AdapterDaemonBridge = {
-      async request(method, params) {
-        calls.push({ method, params });
-        if (method === "run") return { sessionId: "session_files_01", finalText: "ok" };
-        return {};
-      },
-    };
+    const { daemon, calls } = createImmediateV2RunBridge({
+      result: { sessionId: "session_files_01", finalText: "ok" },
+    });
     const router = createRouter(registry, daemon, [root], { runPermission: "allow" });
     try {
       await expect(
@@ -1220,7 +1311,7 @@ describe("MobileRpcRouter", () => {
         ),
       ).resolves.toMatchObject({ ok: true });
       const runCall = calls.find((item) => item.method === "run");
-      expect(runCall?.params).toMatchObject({
+      expect(legacyRunInput(runCall?.params)).toMatchObject({
         files: ["src/a.ts", "README.md"],
         autoApply: true,
       });
@@ -1301,6 +1392,67 @@ describe("MobileRpcRouter", () => {
       });
     } finally {
       registry.close();
+    }
+  });
+});
+
+describe("Mobile v2 resume routing", () => {
+  it("routes run.resume through the v2 handler before v1 schema validation", async () => {
+    const fx = fixture();
+    const daemon: AdapterDaemonBridge = {
+      async request(method: string, params?: unknown) {
+        if (method === "events.read") {
+          return {
+            events: [
+              {
+                eventId: "event-resume-1",
+                sequence: 3,
+                type: "run.updated",
+                subject: { kind: "run", id: "run_12345678" },
+                correlationId: "corr-resume",
+                runId: "run_12345678",
+                occurredAt: "2026-01-01T00:00:00.000Z",
+                schemaVersion: 1,
+                data: {},
+              },
+            ],
+          };
+        }
+        if (method === "events.cursor.ack") {
+          expect(params).toMatchObject({
+            consumerId: "subscription_12345678",
+            sequence: 3,
+          });
+          return { ok: true, cursor: 3 };
+        }
+        throw new Error(`unexpected daemon method: ${method}`);
+      },
+    };
+    const router = createRouter(fx.registry, daemon, [fx.root], {
+      runPermission: "allow",
+    });
+    try {
+      const response = await router.handle(
+        "device_000001",
+        {
+          type: "rpc.request",
+          id: "request_resume_v2",
+          protocolVersion: 2,
+          method: "run.resume",
+          params: {
+            runId: "run_12345678",
+            cursor: 2,
+            subscriptionId: "subscription_12345678",
+          },
+        },
+        () => undefined,
+      );
+      expect(response).toMatchObject({
+        ok: true,
+        result: { sequences: [3] },
+      });
+    } finally {
+      fx.registry.close();
     }
   });
 });

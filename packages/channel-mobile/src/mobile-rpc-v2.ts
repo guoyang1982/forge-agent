@@ -69,6 +69,10 @@ export class MobileRpcV2Router {
         cursor: event.sequence,
         event,
       });
+      await this.options.daemon.request("events.cursor.ack", {
+        consumerId: params.subscriptionId,
+        sequence: event.sequence,
+      });
     }
     return { sequences };
   }

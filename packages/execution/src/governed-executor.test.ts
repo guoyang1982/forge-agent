@@ -11,6 +11,7 @@ import {
   type GovernedStepExecutionInput,
 } from "./governed-executor.js";
 import { succeeded } from "./executor-types.js";
+import { retryable, type StepOutcome } from "./executor-types.js";
 import { ExecutionStore } from "./store.js";
 
 const migrationsDir = join(import.meta.dirname, "..", "..", "..", "migrations");
@@ -30,6 +31,7 @@ describe("GovernedStepExecutor", () => {
       "profile.resolve",
       "workspace.acquire",
       "policy.authorize",
+      "evidence.coverage",
       "budget.reserve",
       "step.execute",
       "evidence.validate",
@@ -109,14 +111,160 @@ describe("GovernedStepExecutor", () => {
       retryable: false,
     });
   });
+
+  it("does not cache an output rejected by validation", async () => {
+    const fx = governedFixture({ validationResults: [false, true] });
+    const input = { ...fx.input, idempotencyKey: "validated-result" };
+
+    const first = await fx.executor.execute(input, fx.signal);
+    const second = await fx.executor.execute(input, fx.signal);
+
+    expect(first).toMatchObject({ state: "failed" });
+    expect(second).toMatchObject({
+      state: "failed",
+      error: { code: "IDEMPOTENCY_UNCERTAIN" },
+    });
+    expect(fx.calls.filter((call) => call === "step.execute")).toHaveLength(1);
+  });
+
+  it("rejects an expired resumed approval without executing or opening another wait", async () => {
+    const fx = governedFixture({ decision: "require_approval" });
+    const approvalId = fx.approveMatchingRequest("2025-12-31T23:59:59.000Z");
+
+    const outcome = await fx.executor.execute(
+      {
+        ...fx.input,
+        policyContext: { approvalResume: { approvalId } },
+      },
+      fx.signal,
+    );
+
+    expect(outcome).toMatchObject({
+      state: "failed",
+      error: { code: "APPROVAL_RESUME_INVALID" },
+    });
+    expect(fx.calls).not.toContain("approval.request");
+    expect(fx.calls).not.toContain("step.execute");
+  });
+
+  it.each([
+    ["malformed", {}],
+    ["denied", { approvalId: "denied-approval" }],
+  ])(
+    "fails an %s approval resume without creating an approval loop",
+    async (_label, approvalResume) => {
+      const fx = governedFixture({ decision: "require_approval" });
+      if (approvalResume.approvalId === "denied-approval") {
+        fx.createDeniedApproval("denied-approval");
+      }
+
+      const outcome = await fx.executor.execute(
+        { ...fx.input, policyContext: { approvalResume } },
+        fx.signal,
+      );
+
+      expect(outcome).toMatchObject({
+        state: "failed",
+        error: { code: "APPROVAL_RESUME_INVALID" },
+      });
+      expect(fx.calls).not.toContain("approval.request");
+      expect(fx.calls).not.toContain("step.execute");
+    },
+  );
+
+  it("stops all governed post-step writes when cancellation wins the race", async () => {
+    let releaseStep!: (outcome: StepOutcome) => void;
+    const blocked = new Promise<StepOutcome>((resolve) => {
+      releaseStep = resolve;
+    });
+    const fx = governedFixture({ step: async () => blocked });
+    const controller = new AbortController();
+
+    const executing = fx.executor.execute(
+      { ...fx.input, idempotencyKey: "cancelled-owner" },
+      controller.signal,
+    );
+    await fx.stepStarted;
+    controller.abort("cancelled");
+    releaseStep(succeeded("late-output"));
+    const outcome = await executing;
+
+    expect(outcome).toMatchObject({ state: "failed", retryable: false });
+    expect(fx.calls).not.toContain("evidence.validate");
+    expect(fx.calls).not.toContain("budget.commit");
+  });
+
+  it("marks idempotency uncertain when cancellation wins after the side effect commits", async () => {
+    let releaseStep!: (outcome: StepOutcome) => void;
+    const blocked = new Promise<StepOutcome>((resolve) => {
+      releaseStep = resolve;
+    });
+    const fx = governedFixture({ step: async () => blocked });
+    const controller = new AbortController();
+    const input = { ...fx.input, idempotencyKey: "side-effect-once" };
+
+    const executing = fx.executor.execute(input, controller.signal);
+    await fx.stepStarted;
+    releaseStep(succeeded("committed-output"));
+    controller.abort("cancelled");
+    await executing;
+
+    expect(fx.store.getIdempotencyState("side-effect-once")).toBe("uncertain");
+
+    const retry = await fx.executor.execute(input, fx.signal);
+    expect(retry).toMatchObject({
+      state: "failed",
+      error: { code: "IDEMPOTENCY_UNCERTAIN" },
+    });
+  });
+
+  it("rejects resumed approval when execution parameters change", async () => {
+    const fx = governedFixture({ decision: "require_approval" });
+    const approvalId = fx.approveMatchingRequest();
+    const outcome = await fx.executor.execute(
+      {
+        ...fx.input,
+        parameters: { channel: "changed" },
+        policyContext: { approvalResume: { approvalId } },
+      },
+      fx.signal,
+    );
+    expect(outcome).toMatchObject({
+      state: "failed",
+      error: { code: "APPROVAL_RESUME_INVALID" },
+    });
+  });
+
+  it("rejects a reused approval on the second resume", async () => {
+    const fx = governedFixture({ decision: "require_approval" });
+    const approvalId = fx.approveMatchingRequest();
+    const resumeInput = {
+      ...fx.input,
+      policyContext: { approvalResume: { approvalId } },
+    };
+
+    await fx.executor.execute(resumeInput, fx.signal);
+    const second = await fx.executor.execute(resumeInput, fx.signal);
+    expect(second).toMatchObject({
+      state: "failed",
+      error: { code: "APPROVAL_RESUME_INVALID" },
+    });
+  });
 });
 
 function governedFixture(options?: {
   decision?: "allow" | "deny" | "require_approval";
   validationAccepted?: boolean;
+  validationResults?: boolean[];
+  step?: (signal: AbortSignal) => Promise<StepOutcome>;
 }) {
   const calls: string[] = [];
   const stepRuntimePolicies: Array<unknown> = [];
+  let stepNumber = 0;
+  let markStepStarted!: () => void;
+  const stepStarted = new Promise<void>((resolve) => {
+    markStepStarted = resolve;
+  });
   const root = mkdtempSync(join(tmpdir(), "forge-governed-"));
   fixtureRoots.push(root);
   const forgeStore = ForgeStore.open({
@@ -238,6 +386,9 @@ function governedFixture(options?: {
         });
       },
       getApproval: (approvalId) => approvals.getApproval(approvalId),
+      consumeApproval: (approvalId) => {
+        approvals.consumeApproval(approvalId);
+      },
     },
     budget: {
       reserve: async () => {
@@ -262,16 +413,29 @@ function governedFixture(options?: {
       },
     },
     evidence: {
+      hasCoverage: () => {
+        calls.push("evidence.coverage");
+        return true;
+      },
       validateDelivery: async () => {
         calls.push("evidence.validate");
-        return { accepted: options?.validationAccepted ?? true };
+        return {
+          accepted:
+            options?.validationResults?.shift() ??
+            options?.validationAccepted ??
+            true,
+        };
       },
     },
     step: {
-      execute: async (input) => {
+      execute: async (input, signal) => {
         calls.push("step.execute");
+        markStepStarted();
         stepRuntimePolicies.push(input.runtimePolicy);
-        return succeeded("output-1");
+        stepNumber += 1;
+        return options?.step
+          ? options.step(signal)
+          : succeeded(`output-${stepNumber}`);
       },
     },
   };
@@ -303,11 +467,38 @@ function governedFixture(options?: {
     executor,
     calls,
     store,
+    stepStarted,
     stepRuntimePolicies,
     input,
     signal: AbortSignal.timeout(1000),
-    approveMatchingRequest: () => {
+    approveMatchingRequest: (expiresAt = "2099-01-01T00:00:00.000Z") => {
       const approval = approvals.requestApproval({
+        subject: { kind: "agent", id: "a1" },
+        action: "connector.publish",
+        resource: { kind: "connector", id: "web" },
+        parametersSummary: "connector.publish",
+        risk: "high",
+        policyVersionId: "policy-1",
+        expiresAt:
+          expiresAt <= clock.now() ? "2099-01-01T00:00:00.000Z" : expiresAt,
+        runId: "r1",
+        stepId: "s1",
+      });
+      approvals.decide(approval.id, {
+        decision: "approved",
+        actor: { kind: "user", id: "u1" },
+        parametersHash: approval.parametersHash,
+      });
+      if (expiresAt <= clock.now()) {
+        forgeStore.db
+          .prepare("UPDATE core_approvals SET expires_at = ? WHERE id = ?")
+          .run(expiresAt, approval.id);
+      }
+      return approval.id;
+    },
+    createDeniedApproval: (id: string) => {
+      const approval = approvals.requestApproval({
+        id,
         subject: { kind: "agent", id: "a1" },
         action: "connector.publish",
         resource: { kind: "connector", id: "web" },
@@ -319,11 +510,10 @@ function governedFixture(options?: {
         stepId: "s1",
       });
       approvals.decide(approval.id, {
-        decision: "approved",
+        decision: "denied",
         actor: { kind: "user", id: "u1" },
         parametersHash: approval.parametersHash,
       });
-      return approval.id;
     },
   };
 }

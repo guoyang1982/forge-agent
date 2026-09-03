@@ -61,8 +61,8 @@ export interface WorkflowDraftInput {
 
 export interface WorkflowQualityGateInput {
   validationIds: string[];
-  permissionReviewed?: boolean;
-  securityValidationId?: string;
+  permissionReviewId: string;
+  securityValidationId: string;
   description?: string;
 }
 

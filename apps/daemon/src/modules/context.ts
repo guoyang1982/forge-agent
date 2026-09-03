@@ -16,8 +16,10 @@ import type { BudgetLedgerService } from "@forge/usage-ledger";
 import type { WorkspaceGroupService } from "@forge/workspace";
 import type { ForgeRuntime } from "../runtime.js";
 import type { AutomationSchedulerHost } from "../services/automation-scheduler-host.js";
+import type { AutomationGovernanceService } from "../services/automation-governance.js";
 import type { CancelService } from "../services/cancel-service.js";
 import type { ChannelGatewayHost } from "../services/channel-gateway-host.js";
+import type { FirstPartyRunCoordinator } from "../services/first-party-run.js";
 import type { DaemonContext } from "../host/types.js";
 
 export interface ForgeDaemonContext extends DaemonContext {
@@ -27,6 +29,7 @@ export interface ForgeDaemonContext extends DaemonContext {
   automationStore: AutomationStore;
   channelStore: ChannelStore;
   cancelService: CancelService;
+  firstPartyRuns: FirstPartyRunCoordinator;
   schedulerHost: AutomationSchedulerHost;
   channelGatewayHost: ChannelGatewayHost;
   executionStore: ExecutionStore;
@@ -40,6 +43,7 @@ export interface ForgeDaemonContext extends DaemonContext {
   agentProfiles: AgentProfileStore;
   artifacts: ArtifactService;
   validations: ValidationService;
+  automationGovernance: AutomationGovernanceService;
   wakeExecutor: () => void;
   getRuntime: () => Promise<ForgeRuntime>;
   reloadRuntime: () => Promise<ReloadRuntimeResult>;

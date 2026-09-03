@@ -2,15 +2,15 @@ import type { RunSpec } from "@forge/protocol";
 import { rpcFault } from "@forge/protocol";
 import type { DaemonModule } from "../host/types.js";
 import { RpcFaultError, TypedRouter } from "../host/router.js";
-import type { DaemonContext } from "../host/types.js";
 import type {
   DurableExecutor,
   ExecutionClock,
   ExecutionRecovery,
   ExecutionStore,
 } from "@forge/execution";
+import type { ForgeDaemonContext } from "./context.js";
 
-export interface ExecutionModuleContext extends DaemonContext {
+export interface ExecutionModuleContext {
   executionStore: ExecutionStore;
   executionClock: ExecutionClock;
   executor: DurableExecutor;
@@ -18,7 +18,7 @@ export interface ExecutionModuleContext extends DaemonContext {
   wakeExecutor(): void;
 }
 
-export function createExecutionModule<Context extends ExecutionModuleContext>(): DaemonModule<Context> {
+export function createExecutionModule(): DaemonModule<ForgeDaemonContext> {
   return {
     id: "execution",
     feature: { version: 1, enabled: true },
@@ -44,7 +44,7 @@ export function createExecutionModule<Context extends ExecutionModuleContext>():
 
 async function handleRunCreate(
   spec: RunSpec,
-  context: ExecutionModuleContext,
+  context: ForgeDaemonContext,
   correlationId: string,
 ) {
   validateRunSpec(spec, correlationId);
@@ -55,7 +55,7 @@ async function handleRunCreate(
 
 async function handleRunGet(
   runId: string,
-  context: ExecutionModuleContext,
+  context: ForgeDaemonContext,
   correlationId: string,
 ) {
   if (!runId) {
@@ -81,24 +81,35 @@ async function handleRunGet(
 }
 
 async function handleRunCancel(
-  params: { runId: string; reason?: string },
-  context: ExecutionModuleContext,
+  params: { runId?: string; sessionId?: string; reason?: string },
+  context: ForgeDaemonContext,
   correlationId: string,
 ) {
-  if (!params.runId) {
-    throw invalidRequest("runId is required", correlationId);
+  if (params.runId) {
+    context.executor.cancelRun(params.runId, params.reason ?? "cancelled by client");
+    for (const sessionId of context.cancelService.activeSessionIds()) {
+      context.cancelService.cancel(sessionId);
+    }
+    const run = context.executionStore.getRun(params.runId);
+    if (!run) {
+      throw invalidRequest("run not found", correlationId);
+    }
+    return { ok: true as const, runId: run.id, state: run.state };
   }
-  context.executor.cancelRun(params.runId, params.reason ?? "cancelled by client");
-  const run = context.executionStore.getRun(params.runId);
-  if (!run) {
-    throw invalidRequest("run not found", correlationId);
+  if (params.sessionId) {
+    const canceled = context.firstPartyRuns.cancel(params.sessionId);
+    return {
+      ok: true as const,
+      runId: params.sessionId,
+      state: canceled.canceled ? ("cancelled" as const) : ("running" as const),
+    };
   }
-  return { ok: true as const, runId: run.id, state: run.state };
+  throw invalidRequest("runId or sessionId is required", correlationId);
 }
 
 async function handleRunResume(
   params: { waitId: string; payload: unknown },
-  context: ExecutionModuleContext,
+  context: ForgeDaemonContext,
   correlationId: string,
 ) {
   if (!params.waitId) {
@@ -196,7 +207,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Test helper: register handlers without module lifecycle. */
 export function registerExecutionHandlers(
   router: TypedRouter,
-  context: ExecutionModuleContext,
+  context: ForgeDaemonContext,
 ): void {
   createExecutionModule().register(router, context);
 }

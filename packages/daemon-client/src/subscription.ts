@@ -10,6 +10,7 @@ import type { RequestOptions } from "./index.js";
 
 const DEFAULT_READ_LIMIT = 500;
 const DEFAULT_RECONNECT_DELAY_MS = 25;
+const MAX_SEEN_EVENT_IDS = 2_048;
 
 export interface SubscribeOptions {
   consumerId?: string;
@@ -67,12 +68,13 @@ export function matchesEventFilter(
 class ResumableEventSubscription implements EventSubscription {
   readonly id: string;
   private lastCursor: number;
-  private readonly seenEventIds = new Set<string>();
+  private readonly seenEventIds = new Map<string, true>();
   private readonly readLimit: number;
   private readonly reconnect: boolean;
   private readonly reconnectDelayMs: number;
   private closed = false;
   private running = false;
+  private deliveryBlocked = false;
   private replayQueue: Promise<void> = Promise.resolve();
   private removeNotificationListener: (() => void) | undefined;
   private removeCloseListener: (() => void) | undefined;
@@ -138,13 +140,26 @@ class ResumableEventSubscription implements EventSubscription {
       this.reconnectTimer = undefined;
       void this.enqueue(async () => {
         await this.transport.reconnect();
+        this.deliveryBlocked = false;
         await this.replayFromCursor(this.lastCursor);
-      });
+      }, true);
     }, this.reconnectDelayMs);
   }
 
-  private enqueue(task: () => Promise<void>): Promise<void> {
-    this.replayQueue = this.replayQueue.then(task).catch(() => undefined);
+  private enqueue(task: () => Promise<void>, resumesDelivery = false): Promise<void> {
+    if (this.deliveryBlocked && !resumesDelivery) {
+      return this.replayQueue;
+    }
+    this.replayQueue = this.replayQueue.then(async () => {
+      if (this.deliveryBlocked && !resumesDelivery) {
+        return;
+      }
+      try {
+        await task();
+      } catch {
+        this.deliveryBlocked = true;
+      }
+    });
     return this.replayQueue;
   }
 
@@ -179,22 +194,40 @@ class ResumableEventSubscription implements EventSubscription {
   }
 
   private async deliver(event: EventEnvelope): Promise<void> {
-    if (this.closed || this.seenEventIds.has(event.eventId)) {
+    if (
+      this.closed ||
+      event.sequence <= this.lastCursor ||
+      this.seenEventIds.has(event.eventId)
+    ) {
       return;
     }
     if (!matchesEventFilter(event, this.filter)) {
       return;
     }
-    this.seenEventIds.add(event.eventId);
+
     await this.handler(event);
-    if (event.sequence <= this.lastCursor) {
+
+    if (this.closed) {
       return;
     }
-    this.lastCursor = event.sequence;
     await this.transport.request("events.cursor.ack", {
       consumerId: this.id,
-      sequence: this.lastCursor,
+      sequence: event.sequence,
     });
+    this.lastCursor = event.sequence;
+    this.rememberEventId(event.eventId);
+  }
+
+  private rememberEventId(eventId: string): void {
+    if (this.seenEventIds.has(eventId)) {
+      return;
+    }
+    this.seenEventIds.set(eventId, true);
+    while (this.seenEventIds.size > MAX_SEEN_EVENT_IDS) {
+      const oldest = this.seenEventIds.keys().next().value;
+      if (!oldest) break;
+      this.seenEventIds.delete(oldest);
+    }
   }
 }
 

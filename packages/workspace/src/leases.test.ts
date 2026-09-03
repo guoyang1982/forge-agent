@@ -43,6 +43,16 @@ describe("WorkspaceLeaseService", () => {
     expect(released.releasedReason).toBe("step finished");
   });
 
+  it("rejects leases when the requested root path does not match registration", () => {
+    const { leases, frontend, backend } = leaseFixture();
+    expect(() =>
+      leases.acquire({
+        ...writeLease(frontend, "run-a"),
+        rootPath: backend.rootPath,
+      }),
+    ).toThrow(WorkspaceConflictError);
+  });
+
   it("does not steal an expired write lease during acquire", () => {
     const { leases, frontend } = leaseFixture();
     leases.acquire({

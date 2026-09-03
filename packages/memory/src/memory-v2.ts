@@ -84,6 +84,16 @@ const SHARED_CONVERSATION_KINDS = new Set([
   "cross_user_conversation",
 ]);
 
+const RESERVED_METADATA_KEYS = new Set([
+  "memoryId",
+  "version",
+  "superseded",
+  "invalidated",
+  "invalidatedAt",
+  "redacted",
+  "targetMemoryId",
+]);
+
 export class MemoryStoreV2 {
   constructor(private readonly db: Database) {}
 
@@ -117,7 +127,7 @@ export class MemoryStoreV2 {
           version,
           redacted: Boolean(input.redacted),
           targetMemoryId: input.targetMemoryId,
-          ...(input.metadata ?? {}),
+          ...sanitizeUserMetadata(input.metadata),
         }),
         now,
       );
@@ -150,11 +160,11 @@ export class MemoryStoreV2 {
     const storedDecision =
       input.decision === "UPDATE" ? "ADD" : input.decision;
 
-    this.db
+    const result = this.db
       .prepare(
         `UPDATE core_memory_candidates
          SET decision = ?, decided_at = ?, metadata_json = ?
-         WHERE id = ?`,
+         WHERE id = ? AND decision = 'pending'`,
       )
       .run(
         storedDecision,
@@ -167,6 +177,9 @@ export class MemoryStoreV2 {
         }),
         input.candidateId,
       );
+    if (result.changes !== 1) {
+      throw new Error(`memory candidate already decided: ${input.candidateId}`);
+    }
 
     return this.getCandidate(input.candidateId)!;
   }
@@ -307,10 +320,27 @@ function matchesRecallScope(scope: MemoryScope, context: RecallContext): boolean
   if (!scope.shared && scope.employeeId && scope.employeeId !== context.employeeId) {
     return false;
   }
-  if (scope.projectId && context.projectId && scope.projectId !== context.projectId) {
-    return false;
+  if (scope.projectId) {
+    if (!context.projectId || scope.projectId !== context.projectId) {
+      return false;
+    }
   }
   return true;
+}
+
+function sanitizeUserMetadata(
+  metadata?: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!metadata) {
+    return {};
+  }
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (!RESERVED_METADATA_KEYS.has(key)) {
+      sanitized[key] = value;
+    }
+  }
+  return sanitized;
 }
 
 function matchesQuery(claim: string, query?: string): boolean {

@@ -21,6 +21,7 @@ export interface ApprovalRecord {
   attemptId?: string;
   expiresAt: string;
   createdAt: string;
+  consumedAt?: string;
   decidedAt?: string;
   decision?: {
     decision: "approved" | "denied";
@@ -65,6 +66,20 @@ export class ApprovalHashMismatchError extends Error {
   constructor(message = "parameters hash mismatch") {
     super(message);
     this.name = "ApprovalHashMismatchError";
+  }
+}
+
+export class ApprovalExpiredError extends Error {
+  constructor(message = "approval expired") {
+    super(message);
+    this.name = "ApprovalExpiredError";
+  }
+}
+
+export class ApprovalAlreadyConsumedError extends Error {
+  constructor(message = "approval already consumed") {
+    super(message);
+    this.name = "ApprovalAlreadyConsumedError";
   }
 }
 
@@ -113,6 +128,10 @@ export class ApprovalService {
     if (approval.state !== "pending") {
       throw new ApprovalAlreadyDecidedError();
     }
+    if (approval.expiresAt <= new Date().toISOString()) {
+      this.expire(approvalId);
+      throw new ApprovalExpiredError();
+    }
     if (input.parametersHash && input.parametersHash !== approval.parametersHash) {
       throw new ApprovalHashMismatchError();
     }
@@ -146,6 +165,32 @@ export class ApprovalService {
         .run(nextState, decidedAt, approvalId);
     })();
 
+    return this.getApproval(approvalId);
+  }
+
+  consumeApproval(approvalId: string): ApprovalRecord {
+    const approval = this.getApproval(approvalId);
+    if (approval.state !== "approved") {
+      throw new ApprovalAlreadyDecidedError("approval is not approved");
+    }
+    if (approval.consumedAt) {
+      throw new ApprovalAlreadyConsumedError();
+    }
+    if (approval.expiresAt <= new Date().toISOString()) {
+      this.expire(approvalId);
+      throw new ApprovalExpiredError();
+    }
+    const consumedAt = new Date().toISOString();
+    const updated = this.db
+      .prepare(
+        `UPDATE core_approvals
+         SET consumed_at = ?
+         WHERE id = ? AND state = 'approved' AND consumed_at IS NULL`,
+      )
+      .run(consumedAt, approvalId);
+    if (updated.changes !== 1) {
+      throw new ApprovalAlreadyConsumedError();
+    }
     return this.getApproval(approvalId);
   }
 
@@ -209,13 +254,25 @@ export class ApprovalService {
         `SELECT id, subject_kind, subject_id, action, resource_kind, resource_id,
                 parameters_hash, parameters_summary, risk, estimated_cost_minor,
                 policy_version_id, state, run_id, step_id, attempt_id,
-                expires_at, created_at, decided_at
+                expires_at, created_at, decided_at, consumed_at
          FROM core_approvals
          WHERE id = ?`,
       )
       .get(approvalId) as ApprovalRow | undefined;
     if (!row) {
       throw new Error(`approval not found: ${approvalId}`);
+    }
+
+    const now = new Date().toISOString();
+    if (row.state === "approved" && row.expires_at <= now) {
+      this.db
+        .prepare(
+          `UPDATE core_approvals
+           SET state = 'expired'
+           WHERE id = ? AND state = 'approved'`,
+        )
+        .run(approvalId);
+      throw new ApprovalExpiredError();
     }
 
     const decision = this.db
@@ -248,6 +305,7 @@ type ApprovalRow = {
   attempt_id: string | null;
   expires_at: string;
   created_at: string;
+  consumed_at: string | null;
   decided_at: string | null;
 };
 
@@ -277,6 +335,7 @@ function mapApproval(row: ApprovalRow, decision?: DecisionRow): ApprovalRecord {
     attemptId: row.attempt_id ?? undefined,
     expiresAt: row.expires_at,
     createdAt: row.created_at,
+    consumedAt: row.consumed_at ?? undefined,
     decidedAt: row.decided_at ?? undefined,
     decision: decision
       ? {

@@ -63,5 +63,6 @@ export interface ValidationInput {
 export interface Validator {
   id: string;
   layer: ValidationResult["layer"];
+  appliesTo?(input: ValidationInput): boolean;
   validate(input: ValidationInput): Promise<ValidationResult>;
 }

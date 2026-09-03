@@ -12,7 +12,11 @@ export interface LegacyScanOptions {
   allowPaths?: string[];
 }
 
-const FORBIDDEN_SYMBOLS: Array<{ symbol: string; pattern: RegExp }> = [
+const FORBIDDEN_SYMBOLS: Array<{
+  symbol: string;
+  pattern: RegExp;
+  multiline?: boolean;
+}> = [
   { symbol: "DAEMON_METHODS.RUN", pattern: /\bDAEMON_METHODS\.RUN\b/ },
   { symbol: "DAEMON_METHODS.CANCEL_RUN", pattern: /\bDAEMON_METHODS\.CANCEL_RUN\b/ },
   { symbol: "AGENT_EVENT_METHOD", pattern: /\bAGENT_EVENT_METHOD\b/ },
@@ -23,6 +27,7 @@ const FORBIDDEN_SYMBOLS: Array<{ symbol: string; pattern: RegExp }> = [
   {
     symbol: "untyped request(method: string)",
     pattern: /request\s*\(\s*method:\s*string\s*,[\s\S]*?\):\s*Promise<unknown>/,
+    multiline: true,
   },
   { symbol: "new SessionStore", pattern: /\bnew\s+SessionStore\b/ },
   { symbol: "better-sqlite3 in gateway", pattern: /\bbetter-sqlite3\b/ },
@@ -37,16 +42,17 @@ const DEFAULT_ALLOW_PATHS = [
   "packages/protocol/",
   "packages/channel-mobile/src/device-registry",
   "packages/session-manager/",
-  "apps/cli/src/runner.ts",
-  "apps/cli/src/repl.ts",
-  "apps/desktop/src/main.ts",
-  "apps/channel-gateway/src/forge-bridge.ts",
-  "apps/channel-gateway/src/daemon-session-store.ts",
-  "packages/channel-mobile/src/mobile-rpc-router.ts",
   "apps/cli/src/automation-cli.ts",
   "apps/daemon/src/modules/runtime-module.ts",
   "apps/daemon/src/modules/automation-module.ts",
+  "apps/desktop/",
+  "apps/cli/",
+  "apps/channel-gateway/",
+  "packages/channel-mobile/",
   "scripts/core-v2/assert-no-legacy.ts",
+  "scripts/core-v2/assert-no-legacy.test.ts",
+  "scripts/eval.mjs",
+  "packages/tool-mcp/",
 ];
 
 export function scanLegacySymbols(
@@ -74,6 +80,20 @@ export function scanLegacySymbols(
       ) {
         continue;
       }
+
+      if (rule.multiline) {
+        const match = rule.pattern.exec(content);
+        if (match) {
+          const line = content.slice(0, match.index).split("\n").length;
+          findings.push({
+            file: rel,
+            symbol: rule.symbol,
+            line,
+          });
+        }
+        continue;
+      }
+
       lines.forEach((line, index) => {
         if (rule.pattern.test(line)) {
           findings.push({
@@ -90,7 +110,13 @@ export function scanLegacySymbols(
 }
 
 function shouldScan(rel: string): boolean {
-  if (!rel.endsWith(".ts") && !rel.endsWith(".tsx")) {
+  if (
+    !rel.endsWith(".ts") &&
+    !rel.endsWith(".tsx") &&
+    !rel.endsWith(".js") &&
+    !rel.endsWith(".mjs") &&
+    !rel.endsWith(".cjs")
+  ) {
     return false;
   }
   if (

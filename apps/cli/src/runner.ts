@@ -8,8 +8,6 @@ import type {
 } from "@forge/protocol";
 import { DAEMON_METHODS } from "@forge/protocol";
 import { connectDaemon } from "@forge/bus";
-import { supportsDaemonV2 } from "@forge/daemon-client";
-import { createCliDaemonApi } from "./client-v2.js";
 import { createProgressReporter } from "./progress.js";
 import { printPatchSummary } from "./diff-view.js";
 import {
@@ -32,37 +30,19 @@ export interface RunTaskOptions {
   runtime?: RunRequest["runtime"];
   json?: boolean;
   onEvent?: (event: AgentEvent) => void;
+  onRunStarted?: (runId: string) => void;
 }
 
 export interface RunTaskResult {
   sessionId: string;
   finalText: string;
+  runId: string;
 }
 
 export async function executeRun(
   client: ForgeClient,
   opts: RunTaskOptions,
 ): Promise<RunTaskResult> {
-  if (await supportsDaemonV2(client)) {
-    const api = createCliDaemonApi(client);
-    const result = await api.startSimpleRun(
-      {
-        cwd: opts.cwd,
-        message: opts.message,
-        sessionId: opts.sessionId,
-        hookSource: opts.hookSource,
-        runtime: opts.runtime,
-        autoApply: opts.autoApply,
-        files: opts.files,
-      },
-      opts.onEvent,
-    );
-    return {
-      sessionId: result.sessionId,
-      finalText: result.finalText,
-    };
-  }
-
   const result = (await client.request(
     DAEMON_METHODS.RUN,
     {
@@ -71,12 +51,17 @@ export async function executeRun(
       sessionId: opts.sessionId ?? null,
       hookSource: opts.hookSource,
       runtime: opts.runtime,
-      autoApply: Boolean(opts.autoApply),
+      autoApply: opts.autoApply,
       files: opts.files,
     },
     opts.onEvent,
-  )) as RunTaskResult;
-  return result;
+  )) as { sessionId: string; finalText: string };
+  opts.onRunStarted?.(result.sessionId);
+  return {
+    sessionId: result.sessionId,
+    finalText: result.finalText,
+    runId: result.sessionId,
+  };
 }
 
 async function applyOnePatch(

@@ -3,5 +3,6 @@ export {
   BudgetExceededError,
   BudgetLedgerService,
   CurrencyMismatchError,
+  ReservationExpiredError,
   mapReservation,
 } from "./ledger.js";

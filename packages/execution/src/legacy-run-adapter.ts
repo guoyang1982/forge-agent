@@ -6,6 +6,12 @@ import type { RunSpec, StepSpec } from "./types.js";
 
 export const FORGE_AGENT_STEP_KIND = "forge.agent" as const;
 
+export function isCompatibilityPolicyContext(
+  policyContext: Record<string, unknown>,
+): boolean {
+  return policyContext.compatibility === true;
+}
+
 export interface IdFactory {
   runId(): string;
   correlationId(): string;
@@ -23,6 +29,7 @@ export interface LegacyForgeRunFn {
 
 export interface LegacyForgeStepExecutorOptions {
   run: LegacyForgeRunFn;
+  persistResult?: (result: RunResult, input: StepExecutionInput) => string;
   emitLegacyAgentEvent?: (
     event: AgentEvent,
     links: { runId: string; stepId: string; attemptId: string },
@@ -146,7 +153,9 @@ export class LegacyForgeStepExecutor implements StepExecutor {
       );
       return {
         state: "succeeded",
-        outputRef: finalTextToArtifactRef(result.sessionId, result.finalText),
+        outputRef:
+          this.options.persistResult?.(result, input) ??
+          finalTextToArtifactRef(result.sessionId, result.finalText),
       };
     } catch (error) {
       if (signal.aborted) {

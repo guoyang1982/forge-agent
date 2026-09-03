@@ -26,6 +26,15 @@ export class CurrencyMismatchError extends Error {
   }
 }
 
+export class ReservationExpiredError extends Error {
+  readonly code = "RESERVATION_EXPIRED" as const;
+
+  constructor(message = "RESERVATION_EXPIRED") {
+    super(message);
+    this.name = "ReservationExpiredError";
+  }
+}
+
 export class BudgetLedgerService {
   constructor(private readonly db: Database) {}
 
@@ -85,6 +94,9 @@ export class BudgetLedgerService {
       const reservation = this.getReservation(reservationId);
       if (reservation.state !== "reserved") {
         throw new Error(`reservation is not active: ${reservationId}`);
+      }
+      if (reservation.expiresAt <= settledAt) {
+        throw new ReservationExpiredError();
       }
       if (actualMinor > reservation.amountMinor) {
         throw new BudgetExceededError("actual usage exceeds reservation");

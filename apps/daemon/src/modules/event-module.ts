@@ -54,7 +54,14 @@ async function handleCursorAck(
     throw invalidRequest("sequence must be a non-negative number", correlationId);
   }
   const now = context.executionClock.now();
-  context.eventStore.ackCursor(params.consumerId, params.sequence, now);
+  try {
+    context.eventStore.ackCursor(params.consumerId, params.sequence, now);
+  } catch (error) {
+    throw invalidRequest(
+      error instanceof Error ? error.message : "invalid cursor sequence",
+      correlationId,
+    );
+  }
   return {
     ok: true as const,
     cursor: context.eventStore.getCursor(params.consumerId),

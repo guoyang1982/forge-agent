@@ -27,14 +27,16 @@ export class ValidationService {
   async validateDelivery(input: ValidationInput): Promise<{
     accepted: boolean;
     results: ValidationResult[];
+    validationIds: string[];
   }> {
-    const validators = this.registry.list();
+    const validators = this.applicableValidators(input);
     const results: ValidationResult[] = [];
+    const validationIds: string[] = [];
 
     for (const validator of validators) {
       const result = await validator.validate(input);
       results.push(result);
-      this.persistResult(input, validator.id, result);
+      validationIds.push(this.persistResult(input, validator.id, result));
     }
 
     const accepted =
@@ -43,7 +45,11 @@ export class ValidationService {
         (result) => result.status === "failed" && result.severity === "blocking",
       );
 
-    return { accepted, results };
+    return { accepted, results, validationIds };
+  }
+
+  hasCoverage(input: ValidationInput): boolean {
+    return this.applicableValidators(input).length > 0;
   }
 
   listByRun(runId: string): Array<{
@@ -93,7 +99,8 @@ export class ValidationService {
     input: ValidationInput,
     validatorId: string,
     result: ValidationResult,
-  ): void {
+  ): string {
+    const id = randomUUID();
     this.db
       .prepare(
         `INSERT INTO core_validations (
@@ -102,7 +109,7 @@ export class ValidationService {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        randomUUID(),
+        id,
         input.runId,
         input.deliveryId,
         validatorId,
@@ -114,6 +121,13 @@ export class ValidationService {
         JSON.stringify({}),
         new Date().toISOString(),
       );
+    return id;
+  }
+
+  private applicableValidators(input: ValidationInput): Validator[] {
+    return this.registry
+      .list()
+      .filter((validator) => validator.appliesTo?.(input) ?? true);
   }
 }
 

@@ -94,6 +94,18 @@ export class AgentProfileStore {
       throw new Error("profile version does not belong to profile");
     }
 
+    if (input.runId) {
+      const existing = this.db
+        .prepare(
+          `SELECT id FROM core_agent_capability_snapshots
+           WHERE profile_version_id = ? AND run_id = ?`,
+        )
+        .get(input.profileVersionId, input.runId) as { id: string } | undefined;
+      if (existing) {
+        return this.getSnapshot(existing.id);
+      }
+    }
+
     const snapshotId = randomUUID();
     const createdAt = new Date().toISOString();
     const capability = toCapabilitySnapshot({
@@ -147,6 +159,18 @@ export class AgentProfileStore {
       throw new Error(`profile version not found: ${versionId}`);
     }
     return mapVersion(row);
+  }
+
+  getLatestVersion(profileId: string): AgentProfileVersion | null {
+    const row = this.db
+      .prepare(
+        `SELECT id FROM core_agent_profile_versions
+         WHERE profile_id = ?
+         ORDER BY version DESC
+         LIMIT 1`,
+      )
+      .get(profileId) as { id: string } | undefined;
+    return row ? this.getVersion(row.id) : null;
   }
 }
 

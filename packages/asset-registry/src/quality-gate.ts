@@ -11,8 +11,6 @@ export interface QualityGateInput {
   description?: string;
   validationIds: string[];
   dependencies: AssetVersionRef[];
-  permissionReviewed?: boolean;
-  securityValidationId?: string;
   resolveDependency: (ref: AssetVersionRef) => boolean;
 }
 
@@ -20,14 +18,8 @@ export function assertQualityGate(input: QualityGateInput): void {
   if (!input.description?.trim()) {
     throw new AssetQualityGateError("description is required");
   }
-  if (!input.permissionReviewed) {
-    throw new AssetQualityGateError("permission review required");
-  }
-  if (!input.securityValidationId?.trim()) {
-    throw new AssetQualityGateError("security validation is required");
-  }
-  if (input.securityValidationId === "validation-failed") {
-    throw new AssetQualityGateError("asset quality gate failed");
+  if (input.validationIds.length === 0) {
+    throw new AssetQualityGateError("validation evidence is required");
   }
   for (const validationId of input.validationIds) {
     if (validationId === "validation-failed" || validationId.endsWith("-failed")) {

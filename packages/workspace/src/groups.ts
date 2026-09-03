@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import type { Database } from "@forge/store";
+import { WorkspaceConflictError } from "./leases.js";
 
 export interface WorkspaceRecord {
   id: string;
@@ -39,6 +40,17 @@ export class WorkspaceGroupService {
   }): WorkspaceRecord {
     const now = new Date().toISOString();
     const canonicalRootPath = realpathSync.native(input.rootPath);
+    const existing = this.db
+      .prepare(
+        `SELECT id FROM core_workspaces
+         WHERE canonical_root_path = ? AND id != ?`,
+      )
+      .get(canonicalRootPath, input.id) as { id: string } | undefined;
+    if (existing) {
+      throw new WorkspaceConflictError(
+        `canonical root path already registered to workspace ${existing.id}`,
+      );
+    }
     this.db
       .prepare(
         `INSERT INTO core_workspaces (

@@ -1,10 +1,21 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "@forge/store";
 import type { PolicyEngine } from "@forge/policy";
-import type { ApprovalService } from "@forge/policy";
+import {
+  ApprovalExpiredError,
+  ApprovalHashMismatchError,
+  ApprovalService,
+  hashApprovalParameters,
+  type ApprovalRecord,
+} from "@forge/policy";
 import type { BudgetLedgerService } from "@forge/usage-ledger";
 import type { CredentialProvider } from "./credentials.js";
-import { redactObject, redactSecrets } from "./credentials.js";
+import {
+  credentialSecretStrings,
+  disposeCredential,
+  redactObject,
+  redactSecrets,
+} from "./credentials.js";
 import type {
   ApprovedConnectorAction,
   ConnectorActionInput,
@@ -15,15 +26,46 @@ import type {
   ConnectorProposalPreview,
 } from "./types.js";
 
+export interface ConnectorBudgetPolicy {
+  accountId: string;
+  amountMinor: bigint;
+  currency: string;
+}
+
 export interface ConnectorGatewayDeps {
   db: Database;
   policy: PolicyEngine;
   approvals: ApprovalService;
   budgetLedger?: BudgetLedgerService;
+  budget?: ConnectorBudgetPolicy;
   credentials: CredentialProvider;
   adapters: Map<string, ConnectorAdapter>;
   emit?: (event: ConnectorGatewayEvent) => void;
 }
+
+export class ConnectorApprovalError extends Error {
+  readonly code = "CONNECTOR_APPROVAL_INVALID" as const;
+
+  constructor(message = "connector approval is invalid") {
+    super(message);
+    this.name = "ConnectorApprovalError";
+  }
+}
+
+export class ConnectorAccountMismatchError extends Error {
+  readonly code = "CONNECTOR_ACCOUNT_MISMATCH" as const;
+
+  constructor(message = "connector account does not match proposal") {
+    super(message);
+    this.name = "ConnectorAccountMismatchError";
+  }
+}
+
+const TERMINAL_STATES = new Set<ConnectorActionRecord["state"]>([
+  "succeeded",
+  "failed",
+  "reconciled",
+]);
 
 export class ConnectorGateway {
   private readonly knownSecrets = new Set<string>();
@@ -93,35 +135,80 @@ export class ConnectorGateway {
     if (!proposal) {
       throw new Error(`connector proposal not found: ${proposalId}`);
     }
-    if (proposal.state === "succeeded") {
+    if (TERMINAL_STATES.has(proposal.state)) {
       return proposal;
     }
+    if (proposal.state === "executing") {
+      return this.waitForTerminalState(proposalId);
+    }
 
+    this.assertAccountMatchesProposal(proposal);
+    const payload = this.readProposalPayload(proposal.id);
+    const approval = this.validateApproval(proposal, approvalId, payload);
+
+    const policyDecision = this.deps.policy.authorize({
+      subject: approval.subject,
+      action: `connector.${proposal.action}`,
+      resource: {
+        kind: "connector",
+        id: proposal.connectorId,
+      },
+      scope: {},
+      risk: "low",
+      context: payload,
+    });
+    if (policyDecision.outcome === "deny") {
+      throw new Error(policyDecision.reason ?? "connector action denied");
+    }
+
+    const now = new Date().toISOString();
+    if (!this.tryClaimExecution(proposalId, approvalId, now)) {
+      const current = this.getAction(proposalId);
+      if (!current) {
+        throw new Error(`connector proposal not found: ${proposalId}`);
+      }
+      if (TERMINAL_STATES.has(current.state)) {
+        return current;
+      }
+      if (current.state === "executing") {
+        return this.waitForTerminalState(proposalId);
+      }
+      throw new ConnectorApprovalError("connector proposal is not executable");
+    }
+
+    let reservationId: string | undefined;
     const adapter = this.requireAdapter(proposal.connectorId);
     const account = this.getAccount(proposal.connectorAccountId);
-    const credential = await this.deps.credentials.resolve(account.credential_ref);
-    this.knownSecrets.add(credential.token);
+    let credential = await this.deps.credentials.resolve(account.credential_ref);
+    for (const secret of credentialSecretStrings(credential)) {
+      this.knownSecrets.add(secret);
+    }
 
     const approved: ApprovedConnectorAction = {
       proposalId: proposal.id,
       connectorId: proposal.connectorId,
       connectorAccountId: proposal.connectorAccountId,
       action: proposal.action,
-      payload: this.readProposalPayload(proposal.id),
+      payload,
       approvalId,
     };
 
-    const now = new Date().toISOString();
-    this.deps.db
-      .prepare(
-        `UPDATE core_connector_actions
-         SET state = 'executing', approval_id = ?, updated_at = ?
-         WHERE id = ?`,
-      )
-      .run(approvalId, now, proposal.id);
-
     try {
+      if (this.deps.budgetLedger && this.deps.budget) {
+        reservationId = randomUUID();
+        this.deps.budgetLedger.reserve({
+          reservationId,
+          accountId: this.deps.budget.accountId,
+          runId: proposal.runId ?? proposal.id,
+          stepId: proposal.stepId,
+          amountMinor: this.deps.budget.amountMinor,
+          currency: this.deps.budget.currency,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        });
+      }
+
       const result = await adapter.execute(approved, credential);
+      const secrets = credentialSecretStrings(credential);
       const resultJson = JSON.stringify(
         redactObject(
           {
@@ -130,7 +217,7 @@ export class ConnectorGateway {
             summary: result.summary,
             error: result.error,
           },
-          [credential.token],
+          secrets,
         ),
       );
       this.deps.db
@@ -140,6 +227,15 @@ export class ConnectorGateway {
            WHERE id = ?`,
         )
         .run(result.ok ? "succeeded" : "failed", resultJson, now, proposal.id);
+
+      if (reservationId && this.deps.budgetLedger && this.deps.budget) {
+        if (result.ok) {
+          this.deps.budgetLedger.commit(reservationId, this.deps.budget.amountMinor);
+        } else {
+          this.deps.budgetLedger.release(reservationId, "connector action failed");
+        }
+      }
+
       const updated = this.getAction(proposal.id)!;
       this.emit("connector.executed", updated.id, {
         state: updated.state,
@@ -147,7 +243,8 @@ export class ConnectorGateway {
       });
       return updated;
     } catch (error) {
-      const message = redactSecrets(String(error), [credential.token]);
+      const secrets = credentialSecretStrings(credential);
+      const message = redactSecrets(String(error), secrets);
       this.deps.db
         .prepare(
           `UPDATE core_connector_actions
@@ -155,7 +252,12 @@ export class ConnectorGateway {
            WHERE id = ?`,
         )
         .run(JSON.stringify({ ok: false, error: message }), now, proposal.id);
-      throw error;
+      if (reservationId && this.deps.budgetLedger) {
+        this.deps.budgetLedger.release(reservationId, "connector action errored");
+      }
+      throw new Error(message);
+    } finally {
+      disposeCredential(credential);
     }
   }
 
@@ -166,30 +268,35 @@ export class ConnectorGateway {
     }
     const adapter = this.requireAdapter(action.connectorId);
     const account = this.getAccount(action.connectorAccountId);
-    const credential = await this.deps.credentials.resolve(account.credential_ref);
-    const result = await adapter.reconcile(action, credential);
-    const now = new Date().toISOString();
-    if (result === "unknown") {
-      this.deps.db
-        .prepare(
-          `UPDATE core_connector_actions SET state = 'unknown', updated_at = ? WHERE id = ?`,
-        )
-        .run(now, action.id);
-    } else {
-      this.deps.db
-        .prepare(
-          `UPDATE core_connector_actions
+    let credential = await this.deps.credentials.resolve(account.credential_ref);
+    const secrets = credentialSecretStrings(credential);
+    try {
+      const result = await adapter.reconcile(action, credential);
+      const now = new Date().toISOString();
+      if (result === "unknown") {
+        this.deps.db
+          .prepare(
+            `UPDATE core_connector_actions SET state = 'unknown', updated_at = ? WHERE id = ?`,
+          )
+          .run(now, action.id);
+      } else {
+        this.deps.db
+          .prepare(
+            `UPDATE core_connector_actions
            SET state = ?, result_json = ?, updated_at = ?
            WHERE id = ?`,
-        )
-        .run(
-          result.ok ? "reconciled" : "failed",
-          JSON.stringify(redactObject({ ...result }, [credential.token])),
-          now,
-          action.id,
-        );
+          )
+          .run(
+            result.ok ? "reconciled" : "failed",
+            JSON.stringify(redactObject({ ...result }, secrets)),
+            now,
+            action.id,
+          );
+      }
+      return this.getAction(action.id)!;
+    } finally {
+      disposeCredential(credential);
     }
-    return this.getAction(action.id)!;
   }
 
   dumpDatabase(): string {
@@ -197,6 +304,87 @@ export class ConnectorGateway {
       .prepare(`SELECT proposal_json, result_json FROM core_connector_actions`)
       .all() as Array<{ proposal_json: string; result_json: string | null }>;
     return JSON.stringify(rows);
+  }
+
+  private validateApproval(
+    proposal: ConnectorProposalRecord,
+    approvalId: string,
+    payload: Record<string, unknown>,
+  ): ApprovalRecord {
+    let approval;
+    try {
+      approval = this.deps.approvals.getApproval(approvalId);
+    } catch (error) {
+      if (error instanceof ApprovalExpiredError) {
+        throw new ConnectorApprovalError("approval expired");
+      }
+      throw error;
+    }
+
+    if (approval.state !== "approved") {
+      throw new ConnectorApprovalError(`approval is ${approval.state}`);
+    }
+    if (approval.action !== `connector.${proposal.action}`) {
+      throw new ConnectorApprovalError("approval action mismatch");
+    }
+    if (
+      approval.resource.kind !== "connector" ||
+      approval.resource.id !== proposal.connectorId
+    ) {
+      throw new ConnectorApprovalError("approval resource mismatch");
+    }
+    const expectedHash = hashApprovalParameters(payload);
+    if (approval.parametersHash !== expectedHash) {
+      throw new ApprovalHashMismatchError();
+    }
+    return approval;
+  }
+
+  private assertAccountMatchesProposal(proposal: ConnectorProposalRecord): void {
+    const account = this.deps.db
+      .prepare(
+        `SELECT connector_id FROM core_connector_accounts WHERE id = ?`,
+      )
+      .get(proposal.connectorAccountId) as { connector_id: string } | undefined;
+    if (!account) {
+      throw new Error(`connector account not found: ${proposal.connectorAccountId}`);
+    }
+    if (account.connector_id !== proposal.connectorId) {
+      throw new ConnectorAccountMismatchError();
+    }
+  }
+
+  private tryClaimExecution(
+    proposalId: string,
+    approvalId: string,
+    now: string,
+  ): boolean {
+    const result = this.deps.db
+      .prepare(
+        `UPDATE core_connector_actions
+         SET state = 'executing', approval_id = ?, updated_at = ?
+         WHERE id = ? AND state IN ('proposed', 'approved')`,
+      )
+      .run(approvalId, now, proposalId);
+    return result.changes === 1;
+  }
+
+  private async waitForTerminalState(
+    proposalId: string,
+    timeoutMs = 5_000,
+  ): Promise<ConnectorActionRecord> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const action = this.getAction(proposalId);
+      if (!action) {
+        throw new Error(`connector proposal not found: ${proposalId}`);
+      }
+      if (TERMINAL_STATES.has(action.state)) {
+        return action;
+      }
+      await sleep(5);
+    }
+    throw new Error(`timed out waiting for connector action: ${proposalId}`);
   }
 
   private requireAdapter(connectorId: string): ConnectorAdapter {
@@ -303,4 +491,8 @@ function mapAction(row: ActionRow): ConnectorProposalRecord {
     idempotencyKey: row.idempotency_key,
     approvalId: row.approval_id ?? undefined,
   };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

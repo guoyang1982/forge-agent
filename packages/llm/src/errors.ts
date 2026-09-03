@@ -37,6 +37,19 @@ function formatFriendly(
   code?: string,
 ): string {
   if (
+    status === 402 ||
+    /insufficient balance|payment required|payment_required|余额不足/i.test(
+      message,
+    )
+  ) {
+    return [
+      "模型 API 余额不足（402）。",
+      "当前账户没有可用额度，请充值后再试，或切换其它模型 / API。",
+      "可在设置里更换 profile，或执行：forge model use <profile>",
+      `详情: ${message}`,
+    ].join(" ");
+  }
+  if (
     status === 429 &&
     (code === "insufficient_quota" || message.includes("quota"))
   ) {

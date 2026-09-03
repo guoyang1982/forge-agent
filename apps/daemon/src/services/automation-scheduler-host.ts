@@ -20,6 +20,7 @@ export class AutomationSchedulerHost {
       executeAutomation: (
         id: string,
         trigger: AutomationRunTrigger,
+        opts?: { occurrenceRef?: string },
       ) => Promise<AutomationRunRecord>;
       claimStore?: ScheduledRunClaimStore;
     },
@@ -42,8 +43,11 @@ export class AutomationSchedulerHost {
     await processScheduledAutomationCatchUp(
       this.deps.store.listEnabledCron(),
       this.claimStore,
-      async (id) => {
-        await this.deps.executeAutomation(id, "schedule");
+      async (id, occurrenceAt) => {
+        const result = await this.deps.executeAutomation(id, "schedule", {
+          occurrenceRef: occurrenceAt,
+        });
+        return Boolean(result.workflowInstanceId && result.durableRunId);
       },
     );
     await this.scheduler.reload();
@@ -65,6 +69,13 @@ export class AutomationSchedulerHost {
     if (!this.claimStore.tryClaim(id, auto.nextRunAt)) {
       return;
     }
-    await this.deps.executeAutomation(id, "schedule");
+    const result = await this.deps.executeAutomation(id, "schedule", {
+      occurrenceRef: auto.nextRunAt,
+    });
+    if (result.workflowInstanceId && result.durableRunId) {
+      this.claimStore.complete(id, auto.nextRunAt);
+    } else {
+      this.claimStore.abandon(id, auto.nextRunAt);
+    }
   }
 }

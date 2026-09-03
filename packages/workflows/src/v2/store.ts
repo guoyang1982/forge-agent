@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "@forge/store";
+import type { SubjectRef } from "@forge/protocol";
 import {
   AssetRegistry,
 } from "@forge/asset-registry";
@@ -12,6 +13,13 @@ import type {
   WorkflowQualityGateInput,
   WorkflowTriggerKind,
 } from "./types.js";
+
+export class WorkflowReplayAuthorizationError extends Error {
+  constructor(message = "workflow replay is not authorized") {
+    super(message);
+    this.name = "WorkflowReplayAuthorizationError";
+  }
+}
 
 export class WorkflowStore {
   static forDatabase(db: Database): WorkflowStore {
@@ -27,75 +35,103 @@ export class WorkflowStore {
     draft: WorkflowDraftInput,
     gate: WorkflowQualityGateInput,
   ): PublishedWorkflowVersion {
-    const definition = normalizeDefinition(draft.definition);
-    const workflowId = draft.id ?? definition.id;
-    const contentHash = hashWorkflowDefinition(definition);
-    const asset = this.assets.createDraft({
-      id: workflowId,
-      kind: "workflow",
-      name: draft.name,
-      ownerSubject: draft.ownerSubject,
-      sourceRef: `workflow://${definition.id}`,
-      contentHash,
-      description: draft.description ?? draft.name,
-      content: { description: draft.description ?? draft.name },
-    });
+    const workflowId = draft.id ?? draft.definition.id;
 
-    const workflowVersionId = randomUUID();
-    const now = new Date().toISOString();
-    this.db
-      .prepare(
-        `INSERT INTO core_workflow_versions (
+    return this.db.transaction(() => {
+      const nextVersion = this.nextWorkflowVersionNumber(workflowId);
+      const definition = normalizeDefinition({
+        ...draft.definition,
+        id: workflowId,
+        version: nextVersion,
+      });
+      const contentHash = hashWorkflowDefinition(definition);
+      const versionContent = {
+        description: draft.description ?? draft.name,
+        definition,
+      };
+
+      const existingAsset = this.db
+        .prepare(`SELECT id FROM core_assets WHERE id = ?`)
+        .get(workflowId) as { id: string } | undefined;
+
+      if (existingAsset) {
+        this.assets.createVersionDraft(workflowId, {
+          sourceRef: `workflow://${workflowId}`,
+          contentHash,
+          description: draft.description ?? draft.name,
+          content: versionContent,
+        });
+      } else {
+        this.assets.createDraft({
+          id: workflowId,
+          kind: "workflow",
+          name: draft.name,
+          ownerSubject: draft.ownerSubject,
+          sourceRef: `workflow://${workflowId}`,
+          contentHash,
+          description: draft.description ?? draft.name,
+          content: versionContent,
+        });
+      }
+
+      const workflowVersionId = randomUUID();
+      const now = new Date().toISOString();
+      this.db
+        .prepare(
+          `INSERT INTO core_workflow_versions (
           id, workflow_id, version, definition_json, input_schema_json,
           triggers_json, concurrency_json, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        workflowVersionId,
-        definition.id,
-        definition.version,
-        JSON.stringify(definition),
-        JSON.stringify(definition.inputSchema),
-        JSON.stringify(definition.triggers),
-        JSON.stringify(definition.concurrency),
-        now,
-      );
+        )
+        .run(
+          workflowVersionId,
+          workflowId,
+          nextVersion,
+          JSON.stringify(definition),
+          JSON.stringify(definition.inputSchema),
+          JSON.stringify(definition.triggers),
+          JSON.stringify(definition.concurrency),
+          now,
+        );
 
-    const assetVersion = this.assets.publish(asset.id, {
-      validationIds: gate.validationIds,
-      permissionReviewed: gate.permissionReviewed,
-      securityValidationId: gate.securityValidationId,
-      description: gate.description ?? draft.description ?? draft.name,
-    });
+      const assetVersion = this.assets.publish(workflowId, {
+        validationIds: gate.validationIds,
+        permissionReviewId: gate.permissionReviewId,
+        securityValidationId: gate.securityValidationId,
+        description: gate.description ?? draft.description ?? draft.name,
+      });
 
-    this.db
-      .prepare(
-        `UPDATE core_workflow_versions
+      this.db
+        .prepare(
+          `UPDATE core_workflow_versions
          SET asset_version_id = ?
          WHERE id = ?`,
-      )
-      .run(assetVersion.id, workflowVersionId);
+        )
+        .run(assetVersion.id, workflowVersionId);
 
-    return {
-      asset: this.assets.getAsset(asset.id),
-      assetVersion,
-      definition,
-      workflowVersionId,
-    };
+      return {
+        asset: this.assets.getAsset(workflowId),
+        assetVersion,
+        definition,
+        workflowVersionId,
+      };
+    })();
   }
 
   getPublishedDefinition(workflowId: string): DurableWorkflowDefinition {
     const row = this.db
       .prepare(
-        `SELECT definition_json
-         FROM core_workflow_versions
-         WHERE workflow_id = ?
-         ORDER BY version DESC
+        `SELECT wv.definition_json
+         FROM core_workflow_versions wv
+         INNER JOIN core_asset_versions av ON av.id = wv.asset_version_id
+         WHERE wv.workflow_id = ?
+           AND av.state = 'published'
+         ORDER BY wv.version DESC
          LIMIT 1`,
       )
       .get(workflowId) as { definition_json: string } | undefined;
     if (!row) {
-      throw new Error(`workflow not found: ${workflowId}`);
+      throw new Error(`published workflow not found: ${workflowId}`);
     }
     return JSON.parse(row.definition_json) as DurableWorkflowDefinition;
   }
@@ -106,10 +142,12 @@ export class WorkflowStore {
   } | null {
     const row = this.db
       .prepare(
-        `SELECT id, definition_json
-         FROM core_workflow_versions
-         WHERE workflow_id = ?
-         ORDER BY version DESC
+        `SELECT wv.id, wv.definition_json
+         FROM core_workflow_versions wv
+         INNER JOIN core_asset_versions av ON av.id = wv.asset_version_id
+         WHERE wv.workflow_id = ?
+           AND av.state = 'published'
+         ORDER BY wv.version DESC
          LIMIT 1`,
       )
       .get(workflowId) as { id: string; definition_json: string } | undefined;
@@ -130,33 +168,36 @@ export class WorkflowStore {
     runInput: unknown;
     runId?: string;
   }): WorkflowInstanceRecord {
-    if (!this.canStartInstance(input.workflowId, input.concurrencyKey)) {
-      throw new Error("workflow concurrency limit reached");
-    }
+    return this.db.transaction(() => {
+      this.assertPublishedWorkflowVersion(input.workflowId, input.workflowVersionId);
+      if (!this.canStartInstanceInTransaction(input.workflowId, input.concurrencyKey)) {
+        throw new Error("workflow concurrency limit reached");
+      }
 
-    const now = new Date().toISOString();
-    const id = randomUUID();
-    this.db
-      .prepare(
-        `INSERT INTO core_workflow_instances (
+      const now = new Date().toISOString();
+      const id = randomUUID();
+      this.db
+        .prepare(
+          `INSERT INTO core_workflow_instances (
           id, workflow_id, workflow_version_id, run_id, state, trigger_kind,
           trigger_ref, concurrency_key, input_json, created_at, updated_at
         ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        id,
-        input.workflowId,
-        input.workflowVersionId,
-        input.runId ?? null,
-        input.triggerKind,
-        input.triggerRef ?? null,
-        input.concurrencyKey ?? null,
-        JSON.stringify(input.runInput),
-        now,
-        now,
-      );
+        )
+        .run(
+          id,
+          input.workflowId,
+          input.workflowVersionId,
+          input.runId ?? null,
+          input.triggerKind,
+          input.triggerRef ?? null,
+          input.concurrencyKey ?? null,
+          JSON.stringify(input.runInput),
+          now,
+          now,
+        );
 
-    return this.getInstance(id);
+      return this.getInstance(id);
+    })();
   }
 
   findInstanceByTriggerRef(
@@ -230,6 +271,122 @@ export class WorkflowStore {
     return this.getInstance(instanceId);
   }
 
+  replayDeadLetter(
+    instanceId: string,
+    actor: SubjectRef,
+    authorization: { reason: string; grantId: string; idempotencyKey: string },
+  ): WorkflowInstanceRecord {
+    if (!actor.kind?.trim() || !actor.id?.trim()) {
+      throw new WorkflowReplayAuthorizationError("replay actor is required");
+    }
+    if (!authorization.reason.trim()) {
+      throw new WorkflowReplayAuthorizationError("replay reason is required");
+    }
+    if (!authorization.grantId.trim()) {
+      throw new WorkflowReplayAuthorizationError("replay grant is required");
+    }
+    if (!authorization.idempotencyKey.trim()) {
+      throw new WorkflowReplayAuthorizationError("replay idempotency key is required");
+    }
+
+    const grant = this.db
+      .prepare(
+        `SELECT effect, expires_at, resource_scope_json FROM core_grants
+         WHERE id = ? AND action = 'workflow.replay' AND effect = 'allow'`,
+      )
+      .get(authorization.grantId) as
+      | { effect: string; expires_at: string | null; resource_scope_json: string }
+      | undefined;
+    if (!grant) {
+      throw new WorkflowReplayAuthorizationError("replay grant is missing or denied");
+    }
+    if (grant.expires_at && grant.expires_at <= new Date().toISOString()) {
+      throw new WorkflowReplayAuthorizationError("replay grant expired");
+    }
+
+    return this.db.transaction(() => {
+      const instance = this.getInstance(instanceId);
+      if (instance.state !== "dead_letter") {
+        throw new Error(`workflow instance is not dead letter: ${instanceId}`);
+      }
+
+      const existingReplay = this.db
+        .prepare(
+          `SELECT replay_instance_id FROM core_workflow_dead_letter_replays
+           WHERE dead_letter_instance_id = ?`,
+        )
+        .get(instanceId) as { replay_instance_id: string } | undefined;
+      if (existingReplay) {
+        throw new WorkflowReplayAuthorizationError(
+          "dead letter already replayed successfully",
+        );
+      }
+
+      const duplicateKey = this.db
+        .prepare(
+          `SELECT dead_letter_instance_id FROM core_workflow_dead_letter_replays
+           WHERE idempotency_key = ?`,
+        )
+        .get(authorization.idempotencyKey) as
+        | { dead_letter_instance_id: string }
+        | undefined;
+      if (duplicateKey) {
+        throw new WorkflowReplayAuthorizationError("replay idempotency key already used");
+      }
+
+      if (!this.canStartInstanceInTransaction(instance.workflowId, instance.concurrencyKey)) {
+        throw new Error("workflow concurrency limit reached");
+      }
+
+      const now = new Date().toISOString();
+      const baseInput =
+        instance.input && typeof instance.input === "object" && !Array.isArray(instance.input)
+          ? (instance.input as Record<string, unknown>)
+          : { value: instance.input };
+      const { deadLetterReason: _ignored, ...rest } = baseInput;
+      const input = {
+        ...rest,
+        replayAudit: {
+          actor,
+          reason: authorization.reason,
+          grantId: authorization.grantId,
+          idempotencyKey: authorization.idempotencyKey,
+          replayedAt: now,
+          previousState: "dead_letter",
+          previousInstanceId: instanceId,
+        },
+      };
+
+      this.db
+        .prepare(
+          `UPDATE core_workflow_instances
+           SET state = 'pending', updated_at = ?, input_json = ?
+           WHERE id = ?`,
+        )
+        .run(now, JSON.stringify(input), instanceId);
+
+      this.db
+        .prepare(
+          `INSERT INTO core_workflow_dead_letter_replays (
+            dead_letter_instance_id, replay_instance_id, grant_id,
+            actor_kind, actor_id, reason, idempotency_key, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          instanceId,
+          instanceId,
+          authorization.grantId,
+          actor.kind,
+          actor.id,
+          authorization.reason,
+          authorization.idempotencyKey,
+          now,
+        );
+
+      return this.getInstance(instanceId);
+    })();
+  }
+
   listDeadLetters(workflowId: string): WorkflowInstanceRecord[] {
     const rows = this.db
       .prepare(
@@ -244,23 +401,28 @@ export class WorkflowStore {
   }
 
   canStartInstance(workflowId: string, concurrencyKey?: string): boolean {
-    const definition = this.getPublishedDefinition(workflowId);
-    const activeStates = ["pending", "running", "waiting"];
-    const placeholders = activeStates.map(() => "?").join(", ");
-    const params: Array<string> = [workflowId, ...activeStates];
-    let sql = `SELECT COUNT(*) AS count
-               FROM core_workflow_instances
-               WHERE workflow_id = ?
-                 AND state IN (${placeholders})`;
-    if (concurrencyKey) {
-      sql += " AND concurrency_key = ?";
-      params.push(concurrencyKey);
-    }
-    const row = this.db.prepare(sql).get(...params) as { count: number };
-    return row.count < definition.concurrency.maxRuns;
+    return this.canStartInstanceInTransaction(workflowId, concurrencyKey);
   }
 
   countActiveInstances(workflowId: string, concurrencyKey?: string): number {
+    return this.countActiveInstancesInTransaction(workflowId, concurrencyKey);
+  }
+
+  private canStartInstanceInTransaction(
+    workflowId: string,
+    concurrencyKey?: string,
+  ): boolean {
+    const definition = this.getPublishedDefinition(workflowId);
+    return (
+      this.countActiveInstancesInTransaction(workflowId, concurrencyKey) <
+      definition.concurrency.maxRuns
+    );
+  }
+
+  private countActiveInstancesInTransaction(
+    workflowId: string,
+    concurrencyKey?: string,
+  ): number {
     const activeStates = ["pending", "running", "waiting"];
     const placeholders = activeStates.map(() => "?").join(", ");
     const params: Array<string> = [workflowId, ...activeStates];
@@ -274,6 +436,38 @@ export class WorkflowStore {
     }
     const row = this.db.prepare(sql).get(...params) as { count: number };
     return row.count;
+  }
+
+  private assertPublishedWorkflowVersion(
+    workflowId: string,
+    workflowVersionId: string,
+  ): void {
+    const row = this.db
+      .prepare(
+        `SELECT wv.id
+         FROM core_workflow_versions wv
+         INNER JOIN core_asset_versions av ON av.id = wv.asset_version_id
+         WHERE wv.id = ?
+           AND wv.workflow_id = ?
+           AND av.state = 'published'`,
+      )
+      .get(workflowVersionId, workflowId) as { id: string } | undefined;
+    if (!row) {
+      throw new Error(
+        `workflow version is not published: ${workflowId}/${workflowVersionId}`,
+      );
+    }
+  }
+
+  private nextWorkflowVersionNumber(workflowId: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(MAX(version), 0) AS maxVersion
+         FROM core_workflow_versions
+         WHERE workflow_id = ?`,
+      )
+      .get(workflowId) as { maxVersion: number };
+    return row.maxVersion + 1;
   }
 
   private getInstance(id: string): WorkflowInstanceRecord {

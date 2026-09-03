@@ -510,6 +510,10 @@ importers:
         version: 3.2.4(@types/debug@4.1.13)(@types/node@26.1.2)(lightningcss@1.32.0)(terser@5.49.0)(tsx@4.22.3)(yaml@2.9.0)
 
   packages/channel-core:
+    dependencies:
+      '@forge/protocol':
+        specifier: workspace:*
+        version: link:../protocol
     devDependencies:
       typescript:
         specifier: ^5.8.3
@@ -539,6 +543,9 @@ importers:
       '@forge/channel-core':
         specifier: workspace:*
         version: link:../channel-core
+      '@forge/daemon-client':
+        specifier: workspace:*
+        version: link:../daemon-client
       '@forge/document-extract':
         specifier: workspace:*
         version: link:../document-extract

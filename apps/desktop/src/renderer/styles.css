@@ -3467,6 +3467,18 @@ body.is-resizing .resize-handle {
   border-left-color: #737373;
 }
 
+.event.thinking > summary {
+  cursor: pointer;
+  color: var(--sub);
+  font-size: 12px;
+  line-height: 1.5;
+  list-style: none;
+}
+
+.event.thinking > summary::-webkit-details-marker {
+  display: none;
+}
+
 /* Single fold per run: progress on summary, details inside body */
 .run-activity {
   margin-top: 2px;

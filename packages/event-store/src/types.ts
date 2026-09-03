@@ -31,6 +31,9 @@ export interface OutboxClaim {
   payload: unknown;
   attempts: number;
   createdAt: string;
+  leasedUntil: string;
 }
 
 export type OutboxState = "pending" | "published" | "failed";
+
+export const DEFAULT_OUTBOX_LEASE_MS = 30_000;

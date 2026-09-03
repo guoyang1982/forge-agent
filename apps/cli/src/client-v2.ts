@@ -19,7 +19,7 @@ export interface SimpleRunResult {
 export interface CliDaemonApi {
   assertCompatible(): Promise<void>;
   startSimpleRun(
-    input: SimpleRunInput,
+    input: SimpleRunInput & { onRunStarted?: (runId: string) => void },
     onEvent?: (event: AgentEvent) => void,
   ): Promise<SimpleRunResult>;
 }
@@ -29,7 +29,9 @@ export function createCliDaemonApi(client: DaemonClient): CliDaemonApi {
   return {
     assertCompatible: () => workbench.assertCompatible(),
     async startSimpleRun(input, onEvent) {
-      const created = await workbench.createRun(simpleRunSpec(input));
+      const { onRunStarted, ...runInput } = input;
+      const created = await workbench.createRun(simpleRunSpec(runInput));
+      onRunStarted?.(created.runId);
       const terminal = await waitForWorkbenchRun(client, created.runId, onEvent);
       return {
         runId: created.runId,

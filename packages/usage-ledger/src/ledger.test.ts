@@ -7,6 +7,7 @@ import {
   BudgetExceededError,
   BudgetLedgerService,
   CurrencyMismatchError,
+  ReservationExpiredError,
 } from "./ledger.js";
 
 const migrationsDir = join(import.meta.dirname, "..", "..", "..", "migrations");
@@ -81,6 +82,15 @@ describe("BudgetLedgerService", () => {
     });
     expect(ledger.balance("account-1").reservedMinor).toBe(0n);
     expect(() => ledger.reserve(reservation("fresh", 900n))).not.toThrow();
+  });
+
+  it("rejects commits against expired reservations", () => {
+    const ledger = budgetFixture({ limitMinor: 1000n });
+    const reserved = ledger.reserve({
+      ...reservation("expired", 700n),
+      expiresAt: "2020-01-01T00:00:00.000Z",
+    });
+    expect(() => ledger.commit(reserved.id, 100n)).toThrow(ReservationExpiredError);
   });
 
   it("records direct usage with provider and model dimensions", () => {

@@ -70,7 +70,14 @@ export interface FinishAttemptInput {
 export type IdempotencyClaim =
   | { state: "claimed" }
   | { state: "completed"; outputRef: string }
-  | { state: "in_progress" };
+  | { state: "in_progress" }
+  | { state: "uncertain" };
+
+const IDEMPOTENCY_BLOCKED_STATES = new Set([
+  "uncertain",
+  "side_effect_committed",
+  "validated",
+]);
 
 export class ExecutionStore {
   constructor(
@@ -247,7 +254,7 @@ export class ExecutionStore {
         .run(
           input.state,
           input.outputRef ?? null,
-          input.error === undefined ? null : JSON.stringify(input.error),
+          input.error === undefined ? null : serializeAttemptError(input.error),
           now,
           now,
           attemptId,
@@ -318,16 +325,118 @@ export class ExecutionStore {
 
       const existing = this.db
         .prepare(
-          `SELECT result_ref AS resultRef
+          `SELECT result_ref AS resultRef, state, attempt_id AS attemptId
            FROM core_idempotency_records
            WHERE idempotency_key = ?`,
         )
-        .get(input.idempotencyKey) as { resultRef: string | null } | undefined;
-      if (existing?.resultRef) {
+        .get(input.idempotencyKey) as
+        | { resultRef: string | null; state: string; attemptId: string }
+        | undefined;
+      if (existing?.state === "completed" && existing.resultRef) {
         return { state: "completed", outputRef: existing.resultRef };
+      }
+      if (existing && IDEMPOTENCY_BLOCKED_STATES.has(existing.state)) {
+        return existing.state === "uncertain"
+          ? { state: "uncertain" }
+          : { state: "in_progress" };
+      }
+      if (
+        existing &&
+        !IDEMPOTENCY_BLOCKED_STATES.has(existing.state) &&
+        existing.state !== "completed" &&
+        (existing.state === "failed" ||
+          this.idempotencyOwnerIsFinished(existing.attemptId))
+      ) {
+        const reclaimed = this.db
+          .prepare(
+            `UPDATE core_idempotency_records
+             SET run_id = ?, step_id = ?, attempt_id = ?, result_ref = NULL,
+                 state = 'claimed', updated_at = ?
+             WHERE idempotency_key = ? AND attempt_id = ? AND state != 'completed'`,
+          )
+          .run(
+            input.runId,
+            input.stepId,
+            input.attemptId,
+            input.now,
+            input.idempotencyKey,
+            existing.attemptId,
+          );
+        if (reclaimed.changes === 1) {
+          return { state: "claimed" };
+        }
       }
       return { state: "in_progress" };
     });
+  }
+
+  failIdempotencyKey(idempotencyKey: string, attemptId: string, now: string): void {
+    this.db
+      .prepare(
+        `UPDATE core_idempotency_records
+         SET state = 'failed', result_ref = NULL, updated_at = ?
+         WHERE idempotency_key = ? AND attempt_id = ? AND state = 'claimed'`,
+      )
+      .run(now, idempotencyKey, attemptId);
+  }
+
+  markIdempotencySideEffectCommitted(
+    idempotencyKey: string,
+    attemptId: string,
+    outputRef: string,
+    now: string,
+  ): void {
+    const result = this.db
+      .prepare(
+        `UPDATE core_idempotency_records
+         SET state = 'side_effect_committed', result_ref = ?, updated_at = ?
+         WHERE idempotency_key = ? AND attempt_id = ? AND state = 'claimed'`,
+      )
+      .run(outputRef, now, idempotencyKey, attemptId);
+    if (result.changes !== 1) {
+      throw new Error(`idempotency side effect commit failed: ${idempotencyKey}`);
+    }
+  }
+
+  markIdempotencyValidated(
+    idempotencyKey: string,
+    attemptId: string,
+    now: string,
+  ): void {
+    const result = this.db
+      .prepare(
+        `UPDATE core_idempotency_records
+         SET state = 'validated', updated_at = ?
+         WHERE idempotency_key = ? AND attempt_id = ? AND state = 'side_effect_committed'`,
+      )
+      .run(now, idempotencyKey, attemptId);
+    if (result.changes !== 1) {
+      throw new Error(`idempotency validation mark failed: ${idempotencyKey}`);
+    }
+  }
+
+  markIdempotencyUncertain(
+    idempotencyKey: string,
+    attemptId: string,
+    now: string,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE core_idempotency_records
+         SET state = 'uncertain', updated_at = ?
+         WHERE idempotency_key = ? AND attempt_id = ?
+           AND state IN ('claimed', 'side_effect_committed', 'validated')`,
+      )
+      .run(now, idempotencyKey, attemptId);
+  }
+
+  getIdempotencyState(idempotencyKey: string): string | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT state FROM core_idempotency_records WHERE idempotency_key = ?`,
+      )
+      .get(idempotencyKey) as { state: string } | undefined;
+    return row?.state;
   }
 
   completeIdempotencyKey(
@@ -338,13 +447,26 @@ export class ExecutionStore {
     const result = this.db
       .prepare(
         `UPDATE core_idempotency_records
-         SET result_ref = ?
-         WHERE idempotency_key = ? AND attempt_id = ? AND result_ref IS NULL`,
+         SET result_ref = ?, state = 'completed', updated_at = ?
+         WHERE idempotency_key = ? AND attempt_id = ?
+           AND state IN ('claimed', 'side_effect_committed', 'validated')`,
       )
-      .run(outputRef, idempotencyKey, attemptId);
+      .run(outputRef, new Date().toISOString(), idempotencyKey, attemptId);
     if (result.changes !== 1) {
       throw new Error(`idempotency claim not owned: ${idempotencyKey}`);
     }
+  }
+
+  private idempotencyOwnerIsFinished(attemptId: string): boolean {
+    const row = this.db
+      .prepare("SELECT state FROM core_attempts WHERE id = ?")
+      .get(attemptId) as { state: AttemptState } | undefined;
+    return (
+      !row ||
+      row.state === "failed" ||
+      row.state === "abandoned" ||
+      row.state === "cancelled"
+    );
   }
 
   getRun(runId: string): StoredRun | null {
@@ -490,7 +612,7 @@ export class ExecutionStore {
            SET state = 'failed', error_json = ?, finished_at = ?, updated_at = ?
            WHERE id = ?`,
         )
-        .run(JSON.stringify(input.error), now, now, input.attemptId);
+        .run(serializeAttemptError(input.error), now, now, input.attemptId);
 
       const currentStep = this.getStep(attempt.runId, attempt.stepId);
       if (!currentStep) {
@@ -1145,6 +1267,21 @@ function stepEventType(state: StepState): string {
     default:
       return "step.failed";
   }
+}
+
+function serializeAttemptError(error: unknown): string {
+  if (error instanceof Error) {
+    return JSON.stringify({
+      name: error.name,
+      message: error.message,
+      ...Object.fromEntries(
+        Object.entries(error as unknown as Record<string, unknown>).filter(
+          ([, value]) => value !== undefined,
+        ),
+      ),
+    });
+  }
+  return JSON.stringify(error);
 }
 
 function runEventType(state: RunState): string | null {

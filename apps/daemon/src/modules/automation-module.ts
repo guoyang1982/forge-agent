@@ -10,6 +10,7 @@ import {
   handleParseAutomationDraft,
   handleRunAutomation,
   handleUpdateAutomation,
+  reconcileAutomationRuns,
   type AutomationServiceDeps,
 } from "../services/automation-service.js";
 import type { ForgeDaemonContext } from "./context.js";
@@ -39,7 +40,17 @@ export function createAutomationModule(): DaemonModule<ForgeDaemonContext> {
       router.registerLegacy(DAEMON_METHODS.LIST_AUTOMATION_TEMPLATES, async () =>
         handleListAutomationTemplates());
     },
-    start: (context) => context.schedulerHost.start(),
+    start: async (context) => {
+      await reconcileAutomationRuns({
+        store: context.automationStore,
+        channelStore: context.channelStore,
+        durable: {
+          db: context.store.db,
+          executionStore: context.executionStore,
+        },
+      });
+      await context.schedulerHost.start();
+    },
     stop: (context) => context.schedulerHost.stop(),
   };
 }
@@ -55,6 +66,7 @@ function automationDeps(context: ForgeDaemonContext): AutomationServiceDeps {
       executionStore: context.executionStore,
       executor: context.executor,
       clock: context.executionClock,
+      governance: context.automationGovernance,
     }),
   };
 }

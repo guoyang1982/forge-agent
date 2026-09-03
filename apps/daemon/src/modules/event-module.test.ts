@@ -105,6 +105,26 @@ describe("event module", () => {
     expect(error.fault.code).toBe("INVALID_REQUEST");
   });
 
+  it("rejects cursor acknowledgments beyond the stored stream maximum", async () => {
+    const { router, eventStore } = eventRouterFixture();
+    appendSampleEvents(eventStore);
+    const maxSequence = eventStore.getMaxSequence();
+    expect(maxSequence).toBeGreaterThan(0);
+
+    await expect(
+      router.handle(
+        "events.cursor.ack",
+        { consumerId: "desktop-1", sequence: maxSequence + 1 },
+        rpcContext(),
+      ),
+    ).rejects.toMatchObject({
+      fault: {
+        code: "INVALID_REQUEST",
+        message: expect.stringMatching(/stream maximum/i),
+      },
+    });
+  });
+
   it("reports METHOD_NOT_FOUND before handlers are registered", async () => {
     const router = new TypedRouter();
     const error = await router
@@ -152,6 +172,10 @@ function eventRouterFixture(): {
     automationStore: {} as ForgeDaemonContext["automationStore"],
     channelStore: {} as ForgeDaemonContext["channelStore"],
     cancelService: {} as ForgeDaemonContext["cancelService"],
+    firstPartyRuns: {
+      start: async () => ({ sessionId: "", finalText: "" }),
+      cancel: () => ({ ok: true as const, canceled: false }),
+    } as ForgeDaemonContext["firstPartyRuns"],
     schedulerHost: {} as ForgeDaemonContext["schedulerHost"],
     channelGatewayHost: {} as ForgeDaemonContext["channelGatewayHost"],
     executionStore,
@@ -162,6 +186,7 @@ function eventRouterFixture(): {
     agentProfiles: {} as ForgeDaemonContext["agentProfiles"],
     artifacts: {} as ForgeDaemonContext["artifacts"],
     validations: {} as ForgeDaemonContext["validations"],
+    automationGovernance: {} as ForgeDaemonContext["automationGovernance"],
     executor,
     executionRecovery,
     executionClock: clock,

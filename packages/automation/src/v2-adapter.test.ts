@@ -43,6 +43,85 @@ describe("processScheduledAutomationCatchUp", () => {
     await fx.startTwice();
     expect(fx.executionCount()).toBe(1);
   });
+
+  it("reclaims an incomplete trigger receipt when execute returns false", async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-automation-trigger-false-"));
+    fixtureRoots.push(root);
+    const forgeStore = ForgeStore.open({
+      dbPath: join(root, "data.db"),
+      migrationsDir,
+      owner: "test",
+    });
+    const automation = legacyAutomationFixture();
+    const triggers = new TriggerStore(forgeStore.db);
+    const claimStore = new TriggerScheduleClaimStore(triggers);
+    let calls = 0;
+
+    await processScheduledAutomationCatchUp(
+      [automation],
+      claimStore,
+      async () => {
+        calls += 1;
+        return false;
+      },
+      new Date("2026-08-28T10:05:00.000Z"),
+    );
+
+    const receipt = triggers.getReceipt({
+      source: `automation:${automation.id}`,
+      externalId: automation.nextRunAt!,
+    });
+    expect(receipt?.state).toBe("pending");
+
+    await processScheduledAutomationCatchUp(
+      [automation],
+      claimStore,
+      async () => {
+        calls += 1;
+        return true;
+      },
+      new Date("2026-08-28T10:05:00.000Z"),
+    );
+
+    expect(calls).toBe(2);
+  });
+
+  it("reclaims an incomplete trigger receipt after a crash before durable creation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-automation-trigger-crash-"));
+    fixtureRoots.push(root);
+    const forgeStore = ForgeStore.open({
+      dbPath: join(root, "data.db"),
+      migrationsDir,
+      owner: "test",
+    });
+    const automation = legacyAutomationFixture();
+    const claimStore = new TriggerScheduleClaimStore(new TriggerStore(forgeStore.db));
+    let calls = 0;
+
+    await expect(
+      processScheduledAutomationCatchUp(
+        [automation],
+        claimStore,
+        async () => {
+          calls += 1;
+          throw new Error("process crashed before durable occurrence");
+        },
+        new Date("2026-08-28T10:05:00.000Z"),
+      ),
+    ).rejects.toThrow("process crashed");
+
+    await processScheduledAutomationCatchUp(
+      [automation],
+      claimStore,
+      async () => {
+        calls += 1;
+        return true;
+      },
+      new Date("2026-08-28T10:05:00.000Z"),
+    );
+
+    expect(calls).toBe(2);
+  });
 });
 
 function automationRestartFixture(occurrenceAt: string) {
@@ -70,6 +149,7 @@ function automationRestartFixture(occurrenceAt: string) {
         claimStore,
         async () => {
           executionCount += 1;
+          return true;
         },
         new Date("2026-08-28T10:05:00.000Z"),
       );
@@ -78,6 +158,7 @@ function automationRestartFixture(occurrenceAt: string) {
         claimStore,
         async () => {
           executionCount += 1;
+          return true;
         },
         new Date("2026-08-28T10:05:00.000Z"),
       );

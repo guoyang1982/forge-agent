@@ -7,6 +7,8 @@ export {
 } from "./engine.js";
 export {
   ApprovalAlreadyDecidedError,
+  ApprovalAlreadyConsumedError,
+  ApprovalExpiredError,
   ApprovalHashMismatchError,
   ApprovalService,
   hashApprovalParameters,

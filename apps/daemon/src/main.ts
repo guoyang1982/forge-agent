@@ -11,7 +11,7 @@ import { ForgeStore } from "@forge/store";
 import { AutomationStore } from "@forge/automation";
 import { ChannelStore } from "@forge/channel";
 import { AgentProfileStore } from "@forge/agent-profile";
-import { ArtifactService, ValidationService, ValidatorRegistry } from "@forge/evidence";
+import { ArtifactService, ValidationService } from "@forge/evidence";
 import { ApprovalService } from "@forge/policy";
 import { BudgetLedgerService } from "@forge/usage-ledger";
 import { WorkspaceGroupService, WorkspaceLeaseService } from "@forge/workspace";
@@ -25,7 +25,10 @@ import {
 import { DaemonHost } from "./host/daemon-host.js";
 import { createDaemonModules } from "./modules/index.js";
 import type { ForgeDaemonContext } from "./modules/context.js";
-import { executeAutomation } from "./services/automation-service.js";
+import {
+  executeAutomation,
+  reconcileAutomationRuns,
+} from "./services/automation-service.js";
 import { AutomationSchedulerHost } from "./services/automation-scheduler-host.js";
 import { CancelService } from "./services/cancel-service.js";
 import { ChannelGatewayHost } from "./services/channel-gateway-host.js";
@@ -33,6 +36,9 @@ import { releaseAllAcpSessions } from "./services/runtime-service.js";
 import { runSessionEndHooksOnShutdown } from "./services/session-end-service.js";
 import { executeLegacyForgeRun } from "./services/run-service.js";
 import { createProductionExecutionComposition } from "./services/production-execution-composition.js";
+import { createProductionValidatorRegistry } from "./services/production-validators.js";
+import { AutomationGovernanceService } from "./services/automation-governance.js";
+import { FirstPartyRunCoordinator } from "./services/first-party-run.js";
 
 const SERVER_VERSION = "0.2.0";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -128,7 +134,18 @@ const artifacts = new ArtifactService(
   forgeStore.db,
   join(bootConfig.daemon.dataDir, "evidence"),
 );
-const validations = new ValidationService(forgeStore.db, new ValidatorRegistry());
+const validations = new ValidationService(
+  forgeStore.db,
+  createProductionValidatorRegistry(),
+);
+const automationGovernance = new AutomationGovernanceService(
+  forgeStore.db,
+  agentProfiles,
+  budgetLedger,
+  workspaceGroups,
+  validations,
+);
+automationGovernance.ensureLocalPolicy();
 const productionExecution = createProductionExecutionComposition({
   db: forgeStore.db,
   clock: executionClock,
@@ -138,31 +155,37 @@ const productionExecution = createProductionExecutionComposition({
       `[forge:events] CoreEvent delivery failed eventId=${event.eventId} runId=${event.runId}: ${error.message}`,
     );
   },
-  run: (request, emit, signal, runtimePolicy) =>
-    executeLegacyForgeRun(
-      request,
-      emit,
-      { sessions, getRuntime, cancelService },
-      runtimePolicy,
-    ).then((result) => {
-      if (signal.aborted) {
-        throw new Error("run cancelled");
+  run: process.env.FORGE_SMOKE === "1"
+    ? async (_request, emit) => {
+        emit({ type: "status", phase: "model", message: "replying" });
+        emit({ type: "text_delta", sessionId: "session-smoke", delta: "smoke-ok" });
+        emit({ type: "done", sessionId: "session-smoke", finalText: "smoke-ok" });
+        return { sessionId: "session-smoke", finalText: "smoke-ok" };
       }
-      return result;
-    }),
-  governance: {
-    profiles: agentProfiles,
-    approvals,
-    budgets: budgetLedger,
-    leases: workspaceLeases,
-    validations,
-  },
+    : (request, emit, signal, runtimePolicy) =>
+        executeLegacyForgeRun(
+          request,
+          emit,
+          { sessions, getRuntime, cancelService },
+          runtimePolicy,
+          signal,
+        ),
+  governance: process.env.FORGE_SMOKE === "1"
+    ? undefined
+    : {
+        profiles: agentProfiles,
+        approvals,
+        budgets: budgetLedger,
+        leases: workspaceLeases,
+        validations,
+      },
 });
-const { eventStore, executionStore, executor, executionRecovery } = productionExecution;
+const { eventStore, executionStore, executor, executionRecovery, bindFirstPartyEmit } =
+  productionExecution;
 schedulerHost = new AutomationSchedulerHost({
   store: automationStore,
   db: forgeStore.db,
-  executeAutomation: (id, trigger) =>
+  executeAutomation: (id, trigger, opts) =>
     executeAutomation(id, trigger, {
       store: automationStore,
       sessions,
@@ -174,14 +197,34 @@ schedulerHost = new AutomationSchedulerHost({
         executionStore,
         executor,
         clock: executionClock,
+        governance: automationGovernance,
       },
-    }),
+    }, opts),
 });
 const wakeExecutor = () => {
-  void executor.tick().catch((error) => {
-    console.error(`[forge:execution] tick failed: ${String(error)}`);
-  });
+  void executor
+    .tick()
+    .then(() =>
+      reconcileAutomationRuns({
+        store: automationStore,
+        channelStore,
+        durable: { db: forgeStore.db, executionStore },
+      }),
+    )
+    .catch((error) => {
+      console.error(`[forge:execution] tick failed: ${String(error)}`);
+    });
 };
+
+const firstPartyRuns = new FirstPartyRunCoordinator({
+  executionStore,
+  executor,
+  clock: executionClock,
+  sessions,
+  cancelService,
+  bindEmit: bindFirstPartyEmit,
+  db: forgeStore.db,
+});
 
 const context: ForgeDaemonContext = {
   socketPath: bootConfig.daemon.socketPath,
@@ -195,6 +238,7 @@ const context: ForgeDaemonContext = {
   automationStore,
   channelStore,
   cancelService,
+  firstPartyRuns,
   schedulerHost,
   channelGatewayHost,
   executionStore,
@@ -205,6 +249,7 @@ const context: ForgeDaemonContext = {
   agentProfiles,
   artifacts,
   validations,
+  automationGovernance,
   executor,
   executionRecovery,
   executionClock,

@@ -56,9 +56,15 @@ export interface CreateDraftInput {
 
 export interface PublishInput {
   validationIds: string[];
-  permissionReviewed?: boolean;
-  securityValidationId?: string;
+  permissionReviewId: string;
+  securityValidationId: string;
   description?: string;
+}
+
+export interface RollbackInput {
+  grantId: string;
+  actor: { kind: string; id: string };
+  reason: string;
 }
 
 export interface ResolveVersionInput {

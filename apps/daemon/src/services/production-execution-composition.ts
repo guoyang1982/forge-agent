@@ -17,8 +17,9 @@ import { PolicyEngine, type ApprovalService } from "@forge/policy";
 import type { BudgetLedgerService } from "@forge/usage-ledger";
 import { WorkspaceLeaseService } from "@forge/workspace";
 import { EventStore } from "@forge/event-store";
-import type { EventEnvelope } from "@forge/protocol";
+import type { AgentEvent, EventEnvelope } from "@forge/protocol";
 import { createProductionEventSink } from "./core-event-sink.js";
+import { persistLegacyRunResult } from "./legacy-run-results.js";
 
 export interface CoreEventDeliveryFailure {
   event: EventEnvelope;
@@ -66,11 +67,16 @@ export function createProductionExecutionComposition(
     onCommitted: eventSink.flush,
     onRolledBack: eventSink.discard,
   });
+  const firstPartyEmits = new Map<string, (event: AgentEvent) => void>();
   const stepExecutors = new StepExecutorRegistry();
   stepExecutors.register(
     new LegacyForgeStepExecutor({
-      emitLegacyAgentEvent: eventSink.emitLegacyAgentEvent,
+      emitLegacyAgentEvent: (event, links) => {
+        eventSink.emitLegacyAgentEvent(event, links);
+        firstPartyEmits.get(links.runId)?.(event);
+      },
       run: options.run,
+      persistResult: (result) => persistLegacyRunResult(options.db, result),
     }),
   );
   const governedExecutor = options.governance
@@ -87,6 +93,9 @@ export function createProductionExecutionComposition(
           approval: {
             requestApproval: (input) => options.governance!.approvals.requestApproval(input),
             getApproval: (approvalId) => options.governance!.approvals.getApproval(approvalId),
+            consumeApproval: (approvalId) => {
+              options.governance!.approvals.consumeApproval(approvalId);
+            },
           },
           budget: {
             reserve: async (input) => options.governance!.budgets.reserve(input),
@@ -97,7 +106,10 @@ export function createProductionExecutionComposition(
               options.governance!.budgets.release(reservationId, reason);
             },
           },
-          evidence: { validateDelivery: (input) => options.governance!.validations.validateDelivery(input) },
+          evidence: {
+            hasCoverage: (input) => options.governance!.validations.hasCoverage(input),
+            validateDelivery: (input) => options.governance!.validations.validateDelivery(input),
+          },
           step: {
             execute: (input, signal) => {
               const step = stepExecutors.get(input.kind);
@@ -139,6 +151,15 @@ export function createProductionExecutionComposition(
     executionStore,
     executor,
     executionRecovery,
+    bindFirstPartyEmit(
+      runId: string,
+      emit: (event: AgentEvent) => void,
+    ): () => void {
+      firstPartyEmits.set(runId, emit);
+      return () => {
+        firstPartyEmits.delete(runId);
+      };
+    },
     observeDeliveryFailures(source: CoreEventDeliveryFailureSource): () => void {
       if (!options.onDeliveryFailure) return () => undefined;
       return source.onCoreEventBroadcastFailure(options.onDeliveryFailure);
@@ -169,6 +190,13 @@ function buildProductionGovernedInput(
   const delivery = readRecord(governance.delivery);
   const resolved = store.getLatestResolvedWait(run.id, step.id);
   const resumed = readRecord(resolved?.payload);
+  const workspaceId = readString(workspace?.id);
+  const workspaceRootPath = readString(workspace?.rootPath);
+  const budgetAccountId = readString(budget?.accountId) ?? run.spec.budgetAccountId;
+  const budgetAmountMinor = readNonNegativeInteger(budget?.amountMinor);
+  if (!workspaceId || !workspaceRootPath || !budgetAccountId || budgetAmountMinor == null) {
+    return null;
+  }
   return {
     runId: claimed.runId,
     stepId: claimed.stepId,
@@ -186,18 +214,17 @@ function buildProductionGovernedInput(
     risk,
     policyContext: {
       ...run.spec.policyContext,
-      ...(readString(resumed?.approvalId) ? { approvedApprovalId: readString(resumed?.approvalId) } : {}),
+      ...(resolved
+        ? {
+            approvalResume: resumed ?? null,
+          }
+        : {}),
     },
-    ...(workspace && readString(workspace.id) && readString(workspace.rootPath)
-      ? {
-          workspaceId: readString(workspace.id),
-          workspaceRootPath: readString(workspace.rootPath),
-          workspaceMode: workspace.mode === "read" ? "read" as const : "write" as const,
-        }
-      : {}),
-    ...(budget && readString(budget.accountId) && typeof budget.amountMinor === "number"
-      ? { budgetAccountId: readString(budget.accountId), budgetAmountMinor: BigInt(budget.amountMinor) }
-      : {}),
+    workspaceId,
+    workspaceRootPath,
+    workspaceMode: workspace?.mode === "read" ? "read" as const : "write" as const,
+    budgetAccountId,
+    budgetAmountMinor: BigInt(budgetAmountMinor),
     ...(delivery
       ? {
           deliveryId: readString(delivery.id) ?? step.id,
@@ -224,6 +251,12 @@ function readStringArray(value: unknown): string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string")
     ? value
     : [];
+}
+
+function readNonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
 }
 
 function readRisk(value: unknown): "low" | "medium" | "high" | "critical" | undefined {
