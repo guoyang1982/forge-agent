@@ -13,7 +13,11 @@ export function createSystemModule(
     id: "system",
     feature: { version: 1, enabled: true },
     register(router, context) {
-      const ping = async () => ({
+      const ping = async (): Promise<{
+        ok: true;
+        version: string;
+        build: string;
+      }> => ({
         ok: true,
         version: context.serverVersion,
         build: context.build,
