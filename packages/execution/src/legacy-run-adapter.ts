@@ -5,11 +5,18 @@ import type { StepExecutionInput, StepExecutor, StepOutcome } from "./executor-t
 import type { RunSpec, StepSpec } from "./types.js";
 
 export const FORGE_AGENT_STEP_KIND = "forge.agent" as const;
+export const FIRST_PARTY_RUN_ORIGIN = "first-party-chat";
 
 export function isCompatibilityPolicyContext(
   policyContext: Record<string, unknown>,
 ): boolean {
   return policyContext.compatibility === true;
+}
+
+export function isFirstPartyChatPolicyContext(
+  policyContext: Record<string, unknown>,
+): boolean {
+  return policyContext.origin === FIRST_PARTY_RUN_ORIGIN;
 }
 
 export interface IdFactory {

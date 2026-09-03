@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import {
+  FIRST_PARTY_RUN_ORIGIN,
   isTerminalRunState,
   runRequestToRunSpec,
   type DurableExecutor,
@@ -14,7 +15,7 @@ import { RpcFaultError } from "../host/router.js";
 import type { CancelService } from "./cancel-service.js";
 import { readLegacyRunResult } from "./legacy-run-results.js";
 
-export const FIRST_PARTY_RUN_ORIGIN = "first-party-chat";
+export { FIRST_PARTY_RUN_ORIGIN } from "@forge/execution";
 
 export interface FirstPartyRunDeps {
   executionStore: ExecutionStore;

@@ -1,6 +1,6 @@
 import type { ExecutionClock } from "./clock.js";
 import {
-  isCompatibilityPolicyContext,
+  isFirstPartyChatPolicyContext,
 } from "./legacy-run-adapter.js";
 import type {
   StepExecutionInput,
@@ -118,10 +118,10 @@ export class DurableExecutor {
         : null;
 
     if (this.requireGovernance && !governedInput) {
-      const compatibilityRun =
+      const firstPartyChat =
         run?.spec.policyContext &&
-        isCompatibilityPolicyContext(run.spec.policyContext);
-      if (!compatibilityRun) {
+        isFirstPartyChatPolicyContext(run.spec.policyContext);
+      if (!firstPartyChat) {
         this.store.finishAttempt(
           claimed.id,
           {

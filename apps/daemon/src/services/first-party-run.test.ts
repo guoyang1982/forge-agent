@@ -34,6 +34,11 @@ describe("FirstPartyRunCoordinator", () => {
       "text_delta",
       "done",
     ]);
+    const run = fx.latestRun();
+    expect(run?.state).toBe("succeeded");
+    expect(JSON.parse(String(run?.policy ?? "{}"))).toMatchObject({
+      origin: "first-party-chat",
+    });
     const runs = fx.executionStore.loadRecoverableRuns();
     expect(runs).toHaveLength(0);
   });
@@ -126,5 +131,15 @@ function firstPartyFixture(options: { hang?: boolean; failMessage?: string } = {
     coordinator,
     cancelService,
     executionStore: production.executionStore,
+    latestRun() {
+      return forgeStore.db
+        .prepare(
+          `SELECT id, state, policy_context_json AS policy
+           FROM core_runs
+           ORDER BY created_at DESC
+           LIMIT 1`,
+        )
+        .get() as { id: string; state: string; policy: string } | undefined;
+    },
   };
 }
