@@ -273,6 +273,9 @@ export async function runReActLoop(
     let thinkingOpen = false;
     let thinkingStartedAt = 0;
     let thinkingChars = 0;
+    const llmStarted = Date.now();
+    const modelName = config.model.name;
+    onEvent?.({ type: "llm_start", model: modelName });
     try {
       const requestMessages = compressRuntimeMessages(
         messages,
@@ -315,6 +318,11 @@ export async function runReActLoop(
       if (isAbortError(e)) throw new RunCancelledError(messages);
       throw e;
     } finally {
+      onEvent?.({
+        type: "llm_end",
+        model: modelName,
+        durationMs: Date.now() - llmStarted,
+      });
       modelResponseDone = true;
       clearInterval(modelHeartbeat);
     }

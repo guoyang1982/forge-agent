@@ -10,10 +10,12 @@
   let activeId = null;
   let seq = 0;
 
-  const TAB_ICONS = {
+  const   TAB_ICONS = {
     terminal: "&gt;_",
     browser:
       '<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><circle cx="8" cy="8" r="6.4" /><ellipse cx="8" cy="8" rx="2.9" ry="6.4" /><path d="M1.6 8h12.8" /></svg>',
+    trace:
+      '<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M3 3.5h6.5v3H8" /><path d="M8 8.5h5v4H8z" /><path d="M3 11.5h3v2H3z" /><path d="M6.5 6.5v2H8" /></svg>',
   };
 
   function els() {
@@ -149,6 +151,33 @@
     return tabs.size > 0;
   }
 
+  /** Last tab of `kind`, or null. */
+  function getByKind(kind) {
+    let found = null;
+    for (const [id, t] of tabs) {
+      if (t.kind === kind) found = { id, t };
+    }
+    if (!found) return null;
+    const { id, t } = found;
+    return {
+      id,
+      body: t.bodyEl,
+      setLabel(text) {
+        t.labelEl.textContent = text || "";
+        t.tabEl.title = text || "";
+      },
+      activate: () => activate(id),
+      close: () => close(id),
+      isActive: () => activeId === id,
+    };
+  }
+
+  function closeOthersOfKind(kind, keepId) {
+    for (const [id, t] of [...tabs]) {
+      if (t.kind === kind && id !== keepId) close(id);
+    }
+  }
+
   function setAddMenuOpen(open) {
     const { addBtn, addMenu } = els();
     addMenu?.classList.toggle("hidden", !open);
@@ -193,5 +222,7 @@
     registerCreator,
     activeKind,
     hasTabs,
+    getByKind,
+    closeOthersOfKind,
   };
 })();

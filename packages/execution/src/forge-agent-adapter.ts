@@ -139,7 +139,11 @@ export class ForgeAgentStepExecutor implements StepExecutor {
 
     const request = parseForgeAgentStepInput(input.input);
     const emit = (event: AgentEvent) => {
-      this.options.emitAgentEvent?.(event, {
+      const linked =
+        event.type === "session_start" || event.type === "done"
+          ? ({ ...event, runId: input.runId } as AgentEvent)
+          : event;
+      this.options.emitAgentEvent?.(linked, {
         runId: input.runId,
         stepId: input.stepId,
         attemptId: input.attemptId,

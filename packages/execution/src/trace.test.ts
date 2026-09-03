@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EventEnvelope } from "@forge/protocol";
-import { buildTrace, exportTraceEvalFixture } from "./trace.js";
+import { buildTrace, exportTraceEvalFixture, toTraceTree } from "./trace.js";
 
 describe("buildTrace", () => {
   it("links run, step and attempt spans", () => {
@@ -37,6 +37,38 @@ describe("buildTrace", () => {
     });
     expect(JSON.stringify(fixture)).not.toContain("secret-token");
   });
+
+  it("nests activity spans under the attempt", () => {
+    const events = [
+      ...runEventsFixture(),
+      event(5, "span.started", {
+        spanId: "turn-1",
+        parentSpanId: "attempt:attempt-1",
+        kind: "turn",
+        name: "turn 1",
+        status: "running",
+      }),
+      event(6, "span.started", {
+        spanId: "llm-1",
+        parentSpanId: "turn-1",
+        kind: "llm",
+        name: "gpt-test",
+        status: "running",
+      }),
+      event(7, "span.ended", {
+        spanId: "llm-1",
+        parentSpanId: "turn-1",
+        kind: "llm",
+        name: "gpt-test",
+        status: "succeeded",
+        durationMs: 12,
+      }),
+    ];
+    const tree = toTraceTree(buildTrace(events));
+    const attempt = tree.children[0]?.children[0];
+    const turn = attempt?.children.find((node) => node.kind === "turn");
+    expect(turn?.children.some((node) => node.kind === "llm")).toBe(true);
+  });
 });
 
 function runEventsFixture(): EventEnvelope[] {
@@ -66,8 +98,8 @@ function event(
     subject: { kind: "agent_profile", id: "forge-default" },
     correlationId: "corr-1",
     runId: "run-1",
-    stepId: type.startsWith("step.") ? "step-1" : undefined,
-    attemptId: type.startsWith("step.") ? "attempt-1" : undefined,
+    stepId: type.startsWith("step.") || type.startsWith("span.") ? "step-1" : undefined,
+    attemptId: type.startsWith("step.") || type.startsWith("span.") ? "attempt-1" : undefined,
     occurredAt: `2026-01-01T00:00:0${sequence}.000Z`,
     schemaVersion: 1,
     data,

@@ -1,4 +1,4 @@
-import type { RunSpec } from "@forge/protocol";
+import type { RunSpec, TraceGetResult } from "@forge/protocol";
 import { rpcFault } from "@forge/protocol";
 import type { DaemonModule } from "../host/types.js";
 import { RpcFaultError, TypedRouter } from "../host/router.js";
@@ -8,6 +8,8 @@ import type {
   ExecutionRecovery,
   ExecutionStore,
 } from "@forge/execution";
+import { buildTrace, toTraceTree } from "@forge/execution";
+import type { EventStore } from "@forge/event-store";
 import type { ForgeDaemonContext } from "./context.js";
 
 export interface ExecutionModuleContext {
@@ -35,6 +37,9 @@ export function createExecutionModule(): DaemonModule<ForgeDaemonContext> {
       );
       router.register("run.resume", async (params, rpc) =>
         handleRunResume(params, context, rpc.correlationId),
+      );
+      router.register("trace.get", async (params, rpc) =>
+        handleTraceGet(params, context, rpc.correlationId),
       );
     },
     start: async (context) => {
@@ -119,6 +124,65 @@ async function handleRunResume(
   context.executor.resumeWait(params.waitId, params.payload);
   context.wakeExecutor();
   return { ok: true as const, waitId: params.waitId };
+}
+
+const TRACE_PAGE_SIZE = 500;
+
+async function handleTraceGet(
+  params: { runId?: string; sessionId?: string },
+  context: ForgeDaemonContext,
+  correlationId: string,
+): Promise<TraceGetResult> {
+  const run = params.runId
+    ? context.executionStore.getRun(params.runId)
+    : params.sessionId
+      ? context.executionStore.findLatestRunBySessionId(params.sessionId)
+      : null;
+  if (!run) {
+    throw invalidRequest("run not found", correlationId);
+  }
+  const events = readAllRunEvents(context.eventStore, run.id);
+  const trace = buildTrace(events);
+  if (!trace.root.objective) trace.root.objective = run.spec.objective;
+  const tree = toTraceTree(trace);
+  tree.name = run.spec.objective;
+  return {
+    runId: run.id,
+    sessionId: sessionIdFromRun(run.spec),
+    state: run.state,
+    objective: run.spec.objective,
+    tree,
+    summaries: {
+      models: trace.summaries.models,
+      tools: trace.summaries.tools,
+      versions: trace.summaries.versions,
+      totalCostMinor: Number(trace.summaries.totalCostMinor),
+    },
+  };
+}
+
+function readAllRunEvents(eventStore: EventStore, runId: string) {
+  const events = [];
+  let cursor = 0;
+  for (;;) {
+    const page = eventStore.readAfter({
+      sequence: cursor,
+      filter: { runId },
+      limit: TRACE_PAGE_SIZE,
+    });
+    if (page.length === 0) break;
+    events.push(...page);
+    cursor = page[page.length - 1]!.sequence;
+    if (page.length < TRACE_PAGE_SIZE) break;
+  }
+  return events;
+}
+
+function sessionIdFromRun(spec: RunSpec): string | undefined {
+  const input = spec.steps[0]?.input;
+  if (!input || typeof input !== "object") return undefined;
+  const sessionId = (input as { sessionId?: unknown }).sessionId;
+  return typeof sessionId === "string" ? sessionId : undefined;
 }
 
 function validateRunSpec(spec: RunSpec, correlationId: string): void {

@@ -12,6 +12,7 @@ export const V2_RPC_METHODS = [
   "run.resume",
   "events.read",
   "events.cursor.ack",
+  "trace.get",
   "workspace.groups.create",
   "workspace.groups.bind",
   "workspace.groups.listBindings",
@@ -40,6 +41,8 @@ export const V2_EXECUTION_EVENT_TYPES = [
   "step.skipped",
   "step.waiting",
   "step.resumed",
+  "span.started",
+  "span.ended",
 ] as const;
 
 export type RunState =
@@ -191,6 +194,10 @@ export interface RpcContractMap {
   "events.cursor.ack": {
     params: { consumerId: string; sequence: number };
     result: { ok: true; cursor: number };
+  };
+  "trace.get": {
+    params: { runId?: string; sessionId?: string };
+    result: TraceGetResult;
   };
   "workspace.groups.create": {
     params: { id?: string; name: string; description?: string };
@@ -444,6 +451,33 @@ export interface EventEnvelope<T = unknown> {
   occurredAt: string;
   schemaVersion: number;
   data: T;
+}
+
+export interface TraceNode {
+  spanId: string;
+  parentSpanId?: string;
+  kind: string;
+  name: string;
+  status?: string;
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+  summary?: string;
+  children: TraceNode[];
+}
+
+export interface TraceGetResult {
+  runId: string;
+  sessionId?: string;
+  state: RunState;
+  objective: string;
+  tree: TraceNode;
+  summaries: {
+    models: string[];
+    tools: string[];
+    versions: string[];
+    totalCostMinor: number;
+  };
 }
 
 export const FORGE_AGENT_STEP_KIND = "forge.agent" as const;

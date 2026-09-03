@@ -76,6 +76,27 @@ describe("forge agent adapter", () => {
     );
   });
 
+  it("stamps session_start and done with the durable run id", async () => {
+    const emitAgentEvent = vi.fn();
+    const adapter = new ForgeAgentStepExecutor({
+      emitAgentEvent,
+      run: vi.fn<ForgeAgentRunFn>().mockImplementation(async (_req, emit) => {
+        emit({ type: "session_start", sessionId: "session-2", cwd: "/repo" });
+        emit({ type: "done", sessionId: "session-2", finalText: "ok" });
+        return { sessionId: "session-2", finalText: "ok" };
+      }),
+    });
+    await adapter.execute(stepInput(), new AbortController().signal);
+    expect(emitAgentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "session_start", runId: "run-1" }),
+      expect.anything(),
+    );
+    expect(emitAgentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "done", runId: "run-1" }),
+      expect.anything(),
+    );
+  });
+
   it("forwards the governed profile runtime policy to the real legacy runtime boundary", async () => {
     const runtimePolicy: RuntimePolicy = {
       model: "profile-model",
