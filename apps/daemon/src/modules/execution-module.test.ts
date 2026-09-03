@@ -102,6 +102,37 @@ describe("execution module", () => {
     expect(error).toBeInstanceOf(RpcFaultError);
     expect(error.fault.code).toBe("METHOD_NOT_FOUND");
   });
+
+  it("returns a trace tree for a created run", async () => {
+    const { router, context } = executionRouterFixture();
+    await router.handle("run.create", singleStepRunSpec(), rpcContext());
+    context.eventStore.append({
+      eventId: "span-1",
+      type: "span.started",
+      subject: { kind: "agent_profile", id: "forge-default" },
+      correlationId: "corr-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-missing",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      data: {
+        spanId: "turn-1",
+        parentSpanId: "attempt:attempt-missing",
+        kind: "turn",
+        name: "turn 1",
+      },
+    });
+
+    const result = await router.handle(
+      "trace.get",
+      { runId: "run-1" },
+      rpcContext(),
+    );
+
+    expect(result.runId).toBe("run-1");
+    expect(result.tree.kind).toBe("run");
+    expect(result.tree.name).toBe("fix it");
+  });
 });
 
 function executionRouterFixture(): {

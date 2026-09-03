@@ -78,10 +78,22 @@ export type {
 export { ExecutionStore } from "./store.js";
 export type {
   AttemptSpan,
+  ActivitySpan,
   EvalTraceFixture,
   RunSpan,
   StepSpan,
   TraceContext,
   TraceSummaries,
 } from "./trace.js";
-export { buildTrace, exportTraceEvalFixture } from "./trace.js";
+export { buildTrace, exportTraceEvalFixture, toTraceTree } from "./trace.js";
+export {
+  SpanRecorder,
+  SPAN_ENDED,
+  SPAN_STARTED,
+  summarizeSpanPayload,
+} from "./span-recorder.js";
+export type {
+  ActivitySpanKind,
+  ActivitySpanRecord,
+  SpanRecorderLinks,
+} from "./span-recorder.js";

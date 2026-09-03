@@ -148,7 +148,9 @@ export class ExecutionStore {
         }
       }
 
-      this.emitRunEvent(spec, "run.created", now);
+      this.emitRunEvent(spec, "run.created", now, undefined, {
+        objective: spec.objective,
+      });
     }, true);
 
     return this.getRun(spec.id)!;
@@ -498,6 +500,19 @@ export class ExecutionStore {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
+  }
+
+  findLatestRunBySessionId(sessionId: string): StoredRun | null {
+    if (!sessionId) return null;
+    const row = this.db
+      .prepare(
+        `SELECT id FROM core_runs
+         WHERE json_extract(spec_json, '$.steps[0].input.sessionId') = ?
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+      .get(sessionId) as { id: string } | undefined;
+    return row ? this.getRun(row.id) : null;
   }
 
   getStep(runId: string, stepId: string): StoredStep | null {

@@ -992,6 +992,16 @@ export type AgentEvent =
       /** First user message preview for sidebar title */
       preview?: string;
       clientRunId?: string;
+      /** Durable kernel run id for this chat turn, when the daemon opened one. */
+      runId?: string;
+    }
+  | { type: "llm_start"; sessionId?: string; model?: string; talent?: TalentEventInfo }
+  | {
+      type: "llm_end";
+      sessionId?: string;
+      model?: string;
+      durationMs?: number;
+      talent?: TalentEventInfo;
     }
   | { type: "text_delta"; sessionId?: string; delta: string; talent?: TalentEventInfo }
   | { type: "thinking_start"; sessionId?: string; talent?: TalentEventInfo }
@@ -1182,7 +1192,7 @@ export type AgentEvent =
       maxContextTokens: number;
       truncated?: boolean;
     }
-  | { type: "done"; sessionId: string; finalText?: string }
+  | { type: "done"; sessionId: string; finalText?: string; runId?: string }
   | {
       type: "hooks_applied";
       sessionId?: string;

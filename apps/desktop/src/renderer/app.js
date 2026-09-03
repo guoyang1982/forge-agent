@@ -432,6 +432,8 @@ const state = {
   /** sessionId -> reflection-gate state (round/status/issues) for the run. */
   reflectionBySession: new Map(),
   sessionCwdById: new Map(),
+  /** sessionId -> latest durable runId from session_start / done. */
+  runIdBySession: new Map(),
   /** Bumped on each session switch; stale async restores are ignored. */
   viewSwitchGeneration: 0,
   /** Skip structured timeline writes while rebuilding DOM from JSON. */
@@ -7685,7 +7687,13 @@ function applyRightMode() {
     : null;
   $("terminalToggleBtn")?.classList.toggle("active", activeKind === "terminal");
   $("browserToggleBtn")?.classList.toggle("active", activeKind === "browser");
+  $("traceToggleBtn")?.classList.toggle("active", activeKind === "trace");
 }
+
+window.openRight = openRight;
+window.getActiveSessionId = () => sessionRuns?.getViewingSessionId?.() ?? null;
+window.forgeTraceRunId = (sessionId) =>
+  sessionId ? state.runIdBySession.get(sessionId) : undefined;
 
 function openRight(open, mode = "code") {
   const wasOpen = state.rightOpen;
@@ -18135,6 +18143,22 @@ function bindActions() {
     openRight(true, "tools");
     window.forgeBrowserPanel?.ensureStarted?.();
   });
+  $("traceToggleBtn")?.addEventListener("click", () => {
+    if (state.activeNav !== "chat") return;
+    const isActive =
+      state.rightOpen &&
+      state.rightMode === "tools" &&
+      window.forgeToolsPanel?.activeKind?.() === "trace";
+    if (isActive) {
+      dismissRightPanel();
+      return;
+    }
+    const sessionId = sessionRuns.getViewingSessionId();
+    window.forgeTracePanel?.open?.({
+      runId: sessionId ? state.runIdBySession.get(sessionId) : undefined,
+      sessionId,
+    });
+  });
   $("toolsCloseBtn")?.addEventListener("click", () => dismissRightPanel());
   // Keep launcher highlights in sync with tab switches, and close the right
   // region when the last tools tab is closed.
@@ -18899,6 +18923,7 @@ function handleForgeAgentEvent(ev) {
     }
 
     if (ev.type === "done" && ev.sessionId) {
+      if (ev.runId) state.runIdBySession.set(ev.sessionId, ev.runId);
       sessionRuns.markSessionRunning(ev.sessionId, false);
       if (!sessionRuns.isViewingSession(ev.sessionId)) {
         state.unreadDoneSessions.add(ev.sessionId);
@@ -18931,6 +18956,7 @@ function handleForgeAgentEvent(ev) {
 
     if (ev.type === "session_start") {
       rememberSessionCwd(ev.sessionId, ev.cwd);
+      if (ev.runId) state.runIdBySession.set(ev.sessionId, ev.runId);
       state.planCardTitle = "任务清单";
       state.dispatchPlanLocked = false;
       state.runConclusionBySession.delete(ev.sessionId);
@@ -19045,6 +19071,7 @@ function handleLiveAgentEvent(ev, opts = {}) {
 
 function handleLiveAgentEventBody(ev, opts = {}) {
     if (ev.type === "session_start") return;
+    if (ev.type === "llm_start" || ev.type === "llm_end") return;
     if (ev.type === "hooks_applied") {
       finishStreamTextSegment();
       pushEvent(

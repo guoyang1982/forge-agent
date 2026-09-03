@@ -20,6 +20,7 @@ import {
   type AgentEvent,
   type ForgeConfig,
   type RunAttachment,
+  type TraceGetResult,
 } from "@forge/protocol";
 import { loadConfig, saveConfig, saveModelSelection } from "@forge/config";
 import { WorkspaceGuard, gitBranchInfo, gitSwitchBranch } from "@forge/workspace";
@@ -1386,6 +1387,17 @@ function registerIpcHandlers(): void {
     const cfg = loadConfig();
     return requestDaemonMethod(cfg, DAEMON_METHODS.STATUS);
   });
+
+  ipcMain.handle(
+    "forge:trace-get",
+    async (
+      _event,
+      payload?: { runId?: string; sessionId?: string },
+    ): Promise<TraceGetResult> => {
+      const cfg = loadConfig();
+      return requestDaemonMethod(cfg, "trace.get", payload ?? {});
+    },
+  );
 
   ipcMain.handle(
     "forge:cancel-run",

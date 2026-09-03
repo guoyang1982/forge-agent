@@ -46,6 +46,7 @@ describe("daemon business modules", () => {
         "run.get",
         "run.cancel",
         "run.resume",
+        "trace.get",
         "events.read",
         "events.cursor.ack",
         "workspace.groups.create",

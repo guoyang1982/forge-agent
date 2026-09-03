@@ -1,4 +1,6 @@
-import type { EventEnvelope } from "@forge/protocol";
+import type { EventEnvelope, TraceNode } from "@forge/protocol";
+import { SPAN_ENDED, SPAN_STARTED } from "./span-recorder.js";
+import type { ActivitySpanKind } from "./span-recorder.js";
 
 export interface AttemptSpan {
   spanId: string;
@@ -13,6 +15,19 @@ export interface AttemptSpan {
   costMinor?: bigint;
   startedAt?: string;
   finishedAt?: string;
+  activities: ActivitySpan[];
+}
+
+export interface ActivitySpan {
+  spanId: string;
+  parentSpanId: string;
+  kind: ActivitySpanKind | string;
+  name: string;
+  status?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  summary?: string;
 }
 
 export interface StepSpan {
@@ -147,11 +162,15 @@ export function buildTrace(events: EventEnvelope[]): TraceContext {
         parentSpanId: step.spanId,
         attemptId: event.attemptId,
         stepId: event.stepId,
+        activities: [],
       };
       attempts.set(event.attemptId, attempt);
       step.attempts.push(attempt);
     }
 
+    if (event.type === SPAN_STARTED || event.type === SPAN_ENDED) {
+      applyActivityEvent(event, payload, attempt, tools);
+    }
     if (event.type === "step.started") {
       attempt.startedAt = event.occurredAt;
       attempt.state = "running";
@@ -210,6 +229,133 @@ export function exportTraceEvalFixture(trace: TraceContext): EvalTraceFixture {
       totalCostMinor: Number(trace.summaries.totalCostMinor),
     },
     artifactRefs,
+  };
+}
+
+export function toTraceTree(trace: TraceContext): TraceNode {
+  const nodes = new Map<string, TraceNode>();
+  const root = nodeFrom(
+    trace.root.spanId,
+    undefined,
+    "run",
+    trace.root.objective ?? trace.root.runId,
+    trace.root.state,
+    trace.root.startedAt,
+    trace.root.finishedAt,
+  );
+  nodes.set(root.spanId, root);
+
+  for (const step of trace.steps) {
+    const stepNode = nodeFrom(
+      step.spanId,
+      step.parentSpanId,
+      "step",
+      step.kind ?? step.stepId,
+      step.state,
+    );
+    nodes.set(stepNode.spanId, stepNode);
+    for (const attempt of step.attempts) {
+      const attemptNode = nodeFrom(
+        attempt.spanId,
+        attempt.parentSpanId,
+        "attempt",
+        attempt.attemptId,
+        attempt.state,
+        attempt.startedAt,
+        attempt.finishedAt,
+      );
+      nodes.set(attemptNode.spanId, attemptNode);
+      for (const activity of attempt.activities) {
+        const activityNode = nodeFrom(
+          activity.spanId,
+          activity.parentSpanId,
+          activity.kind,
+          activity.name,
+          activity.status,
+          activity.startedAt,
+          activity.finishedAt,
+          activity.durationMs,
+          activity.summary,
+        );
+        nodes.set(activityNode.spanId, activityNode);
+      }
+    }
+  }
+
+  for (const node of nodes.values()) {
+    if (!node.parentSpanId) continue;
+    const parent = nodes.get(node.parentSpanId);
+    if (parent) parent.children.push(node);
+    else root.children.push(node);
+  }
+  return root;
+}
+
+function applyActivityEvent(
+  event: EventEnvelope,
+  payload: Record<string, unknown>,
+  attempt: AttemptSpan,
+  tools: Set<string>,
+): void {
+  const spanId = typeof payload.spanId === "string" ? payload.spanId : event.eventId;
+  let activity = attempt.activities.find((item) => item.spanId === spanId);
+  if (!activity) {
+    activity = {
+      spanId,
+      parentSpanId:
+        typeof payload.parentSpanId === "string"
+          ? payload.parentSpanId
+          : attempt.spanId,
+      kind: typeof payload.kind === "string" ? payload.kind : "span",
+      name: typeof payload.name === "string" ? payload.name : "span",
+    };
+    attempt.activities.push(activity);
+  }
+  if (typeof payload.name === "string") activity.name = payload.name;
+  if (typeof payload.kind === "string") activity.kind = payload.kind;
+  if (typeof payload.parentSpanId === "string") {
+    activity.parentSpanId = payload.parentSpanId;
+  }
+  if (typeof payload.summary === "string") activity.summary = payload.summary;
+  if (typeof payload.durationMs === "number") activity.durationMs = payload.durationMs;
+  if (event.type === SPAN_STARTED) {
+    activity.startedAt = event.occurredAt;
+    activity.status = "running";
+  }
+  if (event.type === SPAN_ENDED) {
+    activity.finishedAt = event.occurredAt;
+    activity.status =
+      typeof payload.status === "string" ? payload.status : "succeeded";
+  }
+  if (activity.kind === "tool") tools.add(activity.name);
+}
+
+function nodeFrom(
+  spanId: string,
+  parentSpanId: string | undefined,
+  kind: string,
+  name: string,
+  status?: string,
+  startedAt?: string,
+  endedAt?: string,
+  durationMs?: number,
+  summary?: string,
+): TraceNode {
+  return {
+    spanId,
+    parentSpanId,
+    kind,
+    name,
+    status,
+    startedAt,
+    endedAt,
+    durationMs:
+      durationMs ??
+      (startedAt && endedAt
+        ? Math.max(0, Date.parse(endedAt) - Date.parse(startedAt))
+        : undefined),
+    summary,
+    children: [],
   };
 }
 

@@ -165,6 +165,14 @@
                 <path d="M1.6 8h12.8M2.5 4.8h11M2.5 11.2h11" />
               </svg>
             </button>
+            <button id="traceToggleBtn" class="icon-btn subtle" type="button" title="打开 Trace" aria-label="打开 Trace">
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+                <path d="M3 3.5h6.5v3H8" />
+                <path d="M8 8.5h5v4H8z" />
+                <path d="M3 11.5h3v2H3z" />
+                <path d="M6.5 6.5v2H8" />
+              </svg>
+            </button>
             <button
               id="toggleRightBtn"
               class="icon-btn subtle"
@@ -498,6 +506,10 @@
                   </svg>
                 </span>
                 <span class="tools-add-label">浏览器</span>
+              </button>
+              <button type="button" class="browser-menu-item" data-tools-add="trace" role="menuitem">
+                <span class="tools-add-icon">Tr</span>
+                <span class="tools-add-label">Trace</span>
               </button>
             </div>
           </div>
@@ -1020,6 +1032,7 @@
     <script src="./tools-panel.js"></script>
     <script src="./terminal-panel.js"></script>
     <script src="./browser-panel.js"></script>
+    <script src="./trace-panel.js"></script>
     <script src="./slash-palette.js"></script>
     <script src="./file-mention.js"></script>
     <script src="./skills-marketplace.js"></script>

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
   bridgeAgentEvent,
+  SpanRecorder,
+  type ActivitySpanRecord,
   type EventAppendFn,
 } from "@forge/execution";
 import { EventStore } from "@forge/event-store";
@@ -22,6 +24,7 @@ export interface ProductionEventSinkOptions {
 export class ProductionEventSink {
   private readonly now: () => string;
   private pendingTransactionEvents: EventEnvelope[] = [];
+  private readonly recorders = new Map<string, SpanRecorder>();
 
   constructor(private readonly options: ProductionEventSinkOptions) {
     this.now = options.now ?? (() => new Date().toISOString());
@@ -72,7 +75,45 @@ export class ProductionEventSink {
       },
     });
     this.broadcastStoredEvent(stored);
+    this.recorderFor(links.runId).onAgentEvent(event, links);
+    if (event.type === "done" || event.type === "error") {
+      this.recorders.delete(links.runId);
+    }
   };
+
+  private recorderFor(runId: string): SpanRecorder {
+    let recorder = this.recorders.get(runId);
+    if (!recorder) {
+      recorder = new SpanRecorder({
+        now: this.now,
+        emit: (type, span, spanLinks) => this.appendSpan(type, span, spanLinks),
+      });
+      this.recorders.set(runId, recorder);
+    }
+    return recorder;
+  }
+
+  private appendSpan(
+    type: "span.started" | "span.ended",
+    span: ActivitySpanRecord,
+    links: { runId: string; stepId: string; attemptId: string },
+  ): void {
+    const correlationId = this.options.getCorrelationId(links.runId);
+    const subject = this.options.getActingSubject(links.runId);
+    if (!correlationId || !subject) return;
+    const stored = this.options.events.append({
+      eventId: randomUUID(),
+      type,
+      subject,
+      correlationId,
+      runId: links.runId,
+      stepId: links.stepId,
+      attemptId: links.attemptId,
+      occurredAt: this.now(),
+      data: span,
+    });
+    this.broadcastStoredEvent(stored);
+  }
 
   private broadcastStoredEvent(event: EventEnvelope): void {
     try {
