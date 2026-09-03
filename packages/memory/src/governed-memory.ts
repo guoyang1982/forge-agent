@@ -94,7 +94,7 @@ const RESERVED_METADATA_KEYS = new Set([
   "targetMemoryId",
 ]);
 
-export class MemoryStoreV2 {
+export class GovernedMemoryStore {
   constructor(private readonly db: Database) {}
 
   propose(input: MemoryCandidateInput): MemoryCandidateRecord {

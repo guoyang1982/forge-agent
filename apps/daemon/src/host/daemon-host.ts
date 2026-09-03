@@ -109,7 +109,7 @@ export class DaemonHost<Context extends DaemonContext = DaemonContext> {
       features: Object.fromEntries(
         this.modules
           .filter((module) => module.feature)
-          .map((module) => [module.id, module.feature!]),
+          .map((module) => [module.featureId ?? module.id, module.feature!]),
       ),
     };
   }
@@ -132,13 +132,13 @@ export class DaemonHost<Context extends DaemonContext = DaemonContext> {
   private handleRequest(
     method: string,
     params: unknown,
-    emitLegacyAgentEvent: RpcContext["emitLegacyAgentEvent"],
+    emitAgentEvent: RpcContext["emitAgentEvent"],
     request: RpcRequestContext,
   ): Promise<unknown> {
-    return this.router.handleLegacy(method, params, {
+    return this.router.handleUntyped(method, params, {
       requestId: request.requestId,
       correlationId: request.correlationId,
-      emitLegacyAgentEvent,
+      emitAgentEvent,
     });
   }
 

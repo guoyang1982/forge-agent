@@ -196,6 +196,6 @@ function rpcContext() {
   return {
     requestId: "request-1",
     correlationId: "correlation-1",
-    emitLegacyAgentEvent: () => {},
+    emitAgentEvent: () => {},
   };
 }

@@ -44,7 +44,7 @@ export {
   createWorkbenchDaemonApi,
   isTerminalRunState,
   simpleRunSpec,
-  supportsDaemonV2,
+  supportsExecutionKernel,
   waitForWorkbenchRun,
   type SimpleRunInput,
   type WorkbenchDaemonApi,

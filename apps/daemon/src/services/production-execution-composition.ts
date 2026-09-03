@@ -3,11 +3,11 @@ import {
   ExecutionRecovery,
   ExecutionStore,
   GovernedStepExecutor,
-  LegacyForgeStepExecutor,
+  ForgeAgentStepExecutor,
   StepExecutorRegistry,
   type ClaimedAttempt,
   type ExecutionClock,
-  type LegacyForgeRunFn,
+  type ForgeAgentRunFn,
   type StoredRun,
   type StoredStep,
 } from "@forge/execution";
@@ -19,7 +19,7 @@ import { WorkspaceLeaseService } from "@forge/workspace";
 import { EventStore } from "@forge/event-store";
 import type { AgentEvent, EventEnvelope } from "@forge/protocol";
 import { createProductionEventSink } from "./core-event-sink.js";
-import { persistLegacyRunResult } from "./legacy-run-results.js";
+import { persistForgeRunResult } from "./forge-run-results.js";
 
 export interface CoreEventDeliveryFailure {
   event: EventEnvelope;
@@ -35,7 +35,7 @@ export interface CoreEventDeliveryFailureSource {
 export interface ProductionExecutionCompositionOptions {
   db: ConstructorParameters<typeof EventStore>[0];
   clock: ExecutionClock;
-  run: LegacyForgeRunFn;
+  run: ForgeAgentRunFn;
   broadcast(event: EventEnvelope): void;
   onDeliveryFailure?(failure: CoreEventDeliveryFailure): void;
   governance?: {
@@ -70,13 +70,13 @@ export function createProductionExecutionComposition(
   const firstPartyEmits = new Map<string, (event: AgentEvent) => void>();
   const stepExecutors = new StepExecutorRegistry();
   stepExecutors.register(
-    new LegacyForgeStepExecutor({
-      emitLegacyAgentEvent: (event, links) => {
-        eventSink.emitLegacyAgentEvent(event, links);
+    new ForgeAgentStepExecutor({
+      emitAgentEvent: (event, links) => {
+        eventSink.emitAgentEvent(event, links);
         firstPartyEmits.get(links.runId)?.(event);
       },
       run: options.run,
-      persistResult: (result) => persistLegacyRunResult(options.db, result),
+      persistResult: (result) => persistForgeRunResult(options.db, result),
     }),
   );
   const governedExecutor = options.governance

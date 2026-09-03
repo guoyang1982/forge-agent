@@ -175,7 +175,7 @@ async function readDurableRunResult(
   }
 }
 
-export async function supportsDaemonV2(client: DaemonClient): Promise<boolean> {
+export async function supportsExecutionKernel(client: DaemonClient): Promise<boolean> {
   try {
     await createWorkbenchDaemonApi(client).assertCompatible();
     return true;
@@ -193,9 +193,7 @@ function assertExecutionFeature(capabilities: {
       `unsupported protocol version ${capabilities.protocolVersion}`,
     );
   }
-  const feature =
-    capabilities.features[REQUIRED_EXECUTION_FEATURE] ??
-    capabilities.features.execution;
+  const feature = capabilities.features[REQUIRED_EXECUTION_FEATURE];
   if (!feature?.enabled) {
     throw new Error(`missing required daemon feature: ${REQUIRED_EXECUTION_FEATURE}`);
   }

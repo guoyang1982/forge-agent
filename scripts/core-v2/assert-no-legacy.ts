@@ -36,7 +36,7 @@ const FORBIDDEN_SYMBOLS: Array<{
 
 const DEFAULT_ALLOW_PATHS = [
   "apps/daemon/",
-  "packages/execution/src/legacy-run-adapter",
+  "packages/execution/src/forge-agent-adapter",
   "packages/bus/",
   "packages/daemon-client/",
   "packages/protocol/",

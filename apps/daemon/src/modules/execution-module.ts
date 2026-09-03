@@ -21,6 +21,7 @@ export interface ExecutionModuleContext {
 export function createExecutionModule(): DaemonModule<ForgeDaemonContext> {
   return {
     id: "execution",
+    featureId: "core.execution.v2",
     feature: { version: 1, enabled: true },
     register(router, context) {
       router.register("run.create", async (spec, rpc) =>

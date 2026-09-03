@@ -27,7 +27,7 @@ import type { SessionStore } from "@forge/session";
 import type { Database } from "@forge/store";
 import {
   AutomationStore,
-  automationLegacyRunInput,
+  automationRunInput,
   automationToWorkflow,
   buildAutomationDraftParsePrompt,
   computeNextRun,
@@ -50,7 +50,7 @@ import {
 } from "@forge/workflows";
 import type { AutomationSchedulerHost } from "./automation-scheduler-host.js";
 import type { AutomationGovernanceService } from "./automation-governance.js";
-import { readLegacyRunResult } from "./legacy-run-results.js";
+import { readForgeRunResult } from "./forge-run-results.js";
 
 export interface DurableAutomationDeps {
   db: Database;
@@ -550,7 +550,7 @@ async function executeDurableOccurrence(
     ...compiled,
     steps: compiled.steps.map((step) => ({
       ...step,
-      input: automationLegacyRunInput(auto, sessionId),
+      input: automationRunInput(auto, sessionId),
       idempotencyKey: `automation-occurrence:${triggerRef}`,
     })),
   };
@@ -651,7 +651,7 @@ function durableAutomationResult(
     .listAttempts(runId, "agent")
     .find((attempt) => attempt.state === "succeeded")?.outputRef;
   return (
-    readLegacyRunResult(db, outputRef) ?? {
+    readForgeRunResult(db, outputRef) ?? {
       sessionId: fallbackSessionId,
       finalText: "",
     }

@@ -3,13 +3,13 @@ import type { RunRequest } from "@forge/protocol";
 import type { RuntimePolicy } from "@forge/agent-profile";
 import {
   finalTextToArtifactRef,
-  LegacyForgeStepExecutor,
+  ForgeAgentStepExecutor,
   runRequestToRunSpec,
-  type LegacyForgeRunFn,
-} from "./legacy-run-adapter.js";
+  type ForgeAgentRunFn,
+} from "./forge-agent-adapter.js";
 import type { StepExecutionInput } from "./executor-types.js";
 
-describe("legacy run adapter", () => {
+describe("forge agent adapter", () => {
   it("maps cwd + message to one forge.agent step", () => {
     expect(
       runRequestToRunSpec({ cwd: "/repo", message: "fix it" }, fixedIds()),
@@ -21,8 +21,8 @@ describe("legacy run adapter", () => {
   });
 
   it("stores finalText as an output artifact reference", async () => {
-    const adapter = new LegacyForgeStepExecutor({
-      run: vi.fn<LegacyForgeRunFn>().mockResolvedValue({
+    const adapter = new ForgeAgentStepExecutor({
+      run: vi.fn<ForgeAgentRunFn>().mockResolvedValue({
         sessionId: "session-1",
         finalText: "done",
       }),
@@ -35,16 +35,16 @@ describe("legacy run adapter", () => {
   });
 
   it("forwards legacy agent events through the optional bridge", async () => {
-    const emitLegacyAgentEvent = vi.fn();
-    const adapter = new LegacyForgeStepExecutor({
-      emitLegacyAgentEvent,
-      run: vi.fn<LegacyForgeRunFn>().mockImplementation(async (_req, emit) => {
+    const emitAgentEvent = vi.fn();
+    const adapter = new ForgeAgentStepExecutor({
+      emitAgentEvent,
+      run: vi.fn<ForgeAgentRunFn>().mockImplementation(async (_req, emit) => {
         emit({ type: "status", phase: "model", message: "working" });
         return { sessionId: "session-2", finalText: "ok" };
       }),
     });
     await adapter.execute(stepInput(), new AbortController().signal);
-    expect(emitLegacyAgentEvent).toHaveBeenCalledWith(
+    expect(emitAgentEvent).toHaveBeenCalledWith(
       expect.objectContaining({ type: "status", message: "working" }),
       expect.objectContaining({
         runId: "run-1",
@@ -55,10 +55,10 @@ describe("legacy run adapter", () => {
   });
 
   it("supplies durable execution links to the production event bridge", async () => {
-    const emitLegacyAgentEvent = vi.fn();
-    const adapter = new LegacyForgeStepExecutor({
-      emitLegacyAgentEvent,
-      run: vi.fn<LegacyForgeRunFn>().mockImplementation(async (_req, emit) => {
+    const emitAgentEvent = vi.fn();
+    const adapter = new ForgeAgentStepExecutor({
+      emitAgentEvent,
+      run: vi.fn<ForgeAgentRunFn>().mockImplementation(async (_req, emit) => {
         emit({ type: "text_delta", sessionId: "session-2", delta: "pong" });
         return { sessionId: "session-2", finalText: "pong" };
       }),
@@ -66,7 +66,7 @@ describe("legacy run adapter", () => {
 
     await adapter.execute(stepInput(), new AbortController().signal);
 
-    expect(emitLegacyAgentEvent).toHaveBeenCalledWith(
+    expect(emitAgentEvent).toHaveBeenCalledWith(
       { type: "text_delta", sessionId: "session-2", delta: "pong" },
       {
         runId: "run-1",
@@ -83,7 +83,7 @@ describe("legacy run adapter", () => {
       contextCompression: { triggerTokenEstimate: 100, tokenBudget: 50 },
     };
     let receivedPolicy: RuntimePolicy | undefined;
-    const adapter = new LegacyForgeStepExecutor({
+    const adapter = new ForgeAgentStepExecutor({
       run: async (_request, _emit, _signal, policy) => {
         receivedPolicy = policy;
         return { sessionId: "session-policy", finalText: "done" };

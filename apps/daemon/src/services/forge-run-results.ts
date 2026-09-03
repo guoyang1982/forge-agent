@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { RunResult } from "@forge/protocol";
 import type { Database } from "@forge/store";
 
-export function persistLegacyRunResult(db: Database, result: RunResult): string {
+export function persistForgeRunResult(db: Database, result: RunResult): string {
   const digest = createHash("sha256")
     .update(result.sessionId)
     .update("\0")
@@ -17,7 +17,7 @@ export function persistLegacyRunResult(db: Database, result: RunResult): string 
   return outputRef;
 }
 
-export function readLegacyRunResult(
+export function readForgeRunResult(
   db: Database,
   outputRef: string | null | undefined,
 ): RunResult | null {

@@ -18,34 +18,29 @@ export function createRuntimeModule(): DaemonModule<ForgeDaemonContext> {
     id: "runtime",
     feature: { version: 1, enabled: true },
     register(router, context) {
-      router.registerLegacy(DAEMON_METHODS.PING, async () => ({
-        ok: true,
-        version: context.serverVersion,
-        build: context.build,
-      }));
-      router.registerLegacy(DAEMON_METHODS.STATUS, async () => handleStatus({
+      router.registerProduct(DAEMON_METHODS.STATUS, async () => handleStatus({
         version: context.serverVersion,
         sessions: context.sessions,
         getRuntime: context.getRuntime,
         cancelService: context.cancelService,
       }));
-      router.registerLegacy(DAEMON_METHODS.CANCEL_RUN, async (params) => {
+      router.registerProduct(DAEMON_METHODS.CANCEL_RUN, async (params) => {
         const request = params as { sessionId?: string } | undefined;
         return context.firstPartyRuns.cancel(request?.sessionId);
       });
-      router.registerLegacy(DAEMON_METHODS.PERMISSION_RESPONSE, async (params) =>
+      router.registerProduct(DAEMON_METHODS.PERMISSION_RESPONSE, async (params) =>
         handlePermissionResponse(params));
-      router.registerLegacy(DAEMON_METHODS.RUN, async (params, rpc) =>
-        context.firstPartyRuns.start(params, rpc.emitLegacyAgentEvent));
-      router.registerLegacy(DAEMON_METHODS.LIST_CODEX_MODELS, async (params) =>
+      router.registerProduct(DAEMON_METHODS.RUN, async (params, rpc) =>
+        context.firstPartyRuns.start(params, rpc.emitAgentEvent));
+      router.registerProduct(DAEMON_METHODS.LIST_CODEX_MODELS, async (params) =>
         listCodexModels(cwdFromParams(params)));
-      router.registerLegacy(DAEMON_METHODS.LIST_CURSOR_MODELS, async (params) =>
+      router.registerProduct(DAEMON_METHODS.LIST_CURSOR_MODELS, async (params) =>
         listCursorModels(cwdFromParams(params)));
-      router.registerLegacy(DAEMON_METHODS.PROBE_CURSOR_RUNTIME, async (params) =>
+      router.registerProduct(DAEMON_METHODS.PROBE_CURSOR_RUNTIME, async (params) =>
         probeCursorRuntime(cwdFromParams(params)));
-      router.registerLegacy(DAEMON_METHODS.LIST_RUNTIMES, async (params) =>
+      router.registerProduct(DAEMON_METHODS.LIST_RUNTIMES, async (params) =>
         listRuntimes(cwdFromParams(params)));
-      router.registerLegacy(DAEMON_METHODS.CLOSE_ACP_SESSION, async (params) => {
+      router.registerProduct(DAEMON_METHODS.CLOSE_ACP_SESSION, async (params) => {
         const payload = isObject(params)
           ? params as { provider?: unknown; sessionId?: unknown }
           : {};
@@ -56,16 +51,16 @@ export function createRuntimeModule(): DaemonModule<ForgeDaemonContext> {
           : String(payload.provider);
         return closeAcpSession({ provider, sessionId });
       });
-      router.registerLegacy(DAEMON_METHODS.RELEASE_ACP_FORGE_SESSION, async (params) => {
+      router.registerProduct(DAEMON_METHODS.RELEASE_ACP_FORGE_SESSION, async (params) => {
         const payload = isObject(params) ? params as { sessionId?: unknown } : {};
         const sessionId = String(payload.sessionId ?? "");
         if (!sessionId) throw new Error("sessionId required");
         return releaseAcpForgeSession(sessionId);
       });
-      router.registerLegacy(DAEMON_METHODS.LIST_WARM_ACP_SESSIONS, async () => ({
+      router.registerProduct(DAEMON_METHODS.LIST_WARM_ACP_SESSIONS, async () => ({
         sessions: listWarmAcpSessions(),
       }));
-      router.registerLegacy(DAEMON_METHODS.PREWARM_ACP_SESSION, async (params) => {
+      router.registerProduct(DAEMON_METHODS.PREWARM_ACP_SESSION, async (params) => {
         const payload = isObject(params)
           ? params as {
               provider?: unknown;

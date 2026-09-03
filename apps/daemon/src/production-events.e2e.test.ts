@@ -104,7 +104,7 @@ describe("production v2 events", () => {
     });
 
     expect(() =>
-      sink.emitLegacyAgentEvent(
+      sink.emitAgentEvent(
         { type: "done", sessionId: "session-pong", finalText: "pong" },
         { runId: "run-pong", stepId: "reply", attemptId: "attempt-pong" },
       ),

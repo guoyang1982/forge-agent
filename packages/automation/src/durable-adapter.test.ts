@@ -9,7 +9,7 @@ import {
   TriggerScheduleClaimStore,
   automationToWorkflow,
   processScheduledAutomationCatchUp,
-} from "./v2-adapter.js";
+} from "./durable-adapter.js";
 
 const migrationsDir = join(import.meta.dirname, "..", "..", "..", "migrations");
 const fixtureRoots: string[] = [];

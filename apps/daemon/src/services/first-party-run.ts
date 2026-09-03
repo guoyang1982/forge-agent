@@ -13,7 +13,7 @@ import type { SessionStore } from "@forge/session";
 import type { Database } from "@forge/store";
 import { RpcFaultError } from "../host/router.js";
 import type { CancelService } from "./cancel-service.js";
-import { readLegacyRunResult } from "./legacy-run-results.js";
+import { readForgeRunResult } from "./forge-run-results.js";
 
 export { FIRST_PARTY_RUN_ORIGIN } from "@forge/execution";
 
@@ -138,7 +138,7 @@ export class FirstPartyRunCoordinator {
         .reverse()
         .find((item) => item.outputRef)?.outputRef;
       return (
-        readLegacyRunResult(this.deps.db, outputRef) ?? {
+        readForgeRunResult(this.deps.db, outputRef) ?? {
           sessionId,
           finalText: "",
         }

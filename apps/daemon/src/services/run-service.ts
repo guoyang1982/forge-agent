@@ -99,7 +99,7 @@ export interface RunServiceDeps {
 }
 
 /** Bridge used by the durable execution legacy adapter. */
-export async function executeLegacyForgeRun(
+export async function executeForgeRun(
   request: RunRequest,
   emit: (event: AgentEvent) => void,
   deps: RunServiceDeps,

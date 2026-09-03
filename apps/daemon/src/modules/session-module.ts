@@ -69,27 +69,27 @@ export function createSessionModule(): DaemonModule<SessionModuleContext> {
         return { ok: true as const };
       });
 
-      router.registerLegacy(DAEMON_METHODS.LIST_SESSIONS, async (params) =>
+      router.registerProduct(DAEMON_METHODS.LIST_SESSIONS, async (params) =>
         handleListSessions(params, { sessions: context.sessions }));
-      router.registerLegacy(DAEMON_METHODS.LIST_PROJECTS, async () => ({
+      router.registerProduct(DAEMON_METHODS.LIST_PROJECTS, async () => ({
         projects: sharedProjects(),
       }));
-      router.registerLegacy(DAEMON_METHODS.REGISTER_PROJECT, async (params) =>
+      router.registerProduct(DAEMON_METHODS.REGISTER_PROJECT, async (params) =>
         registerSharedProject(params));
-      router.registerLegacy(DAEMON_METHODS.SEARCH_SESSIONS, async (params) =>
+      router.registerProduct(DAEMON_METHODS.SEARCH_SESSIONS, async (params) =>
         handleSearchSessions(params, { sessions: context.sessions }));
-      router.registerLegacy(DAEMON_METHODS.GET_SESSION_MESSAGES, async (params) =>
+      router.registerProduct(DAEMON_METHODS.GET_SESSION_MESSAGES, async (params) =>
         handleGetSessionMessages(params, { sessions: context.sessions }));
-      router.registerLegacy(DAEMON_METHODS.APPLY_PATCH, async (params) =>
+      router.registerProduct(DAEMON_METHODS.APPLY_PATCH, async (params) =>
         handleApplyPatch(params));
-      router.registerLegacy(DAEMON_METHODS.RESTORE_CHECKPOINT, async (params) =>
+      router.registerProduct(DAEMON_METHODS.RESTORE_CHECKPOINT, async (params) =>
         handleRestoreCheckpoint(params, { sessions: context.sessions }));
-      router.registerLegacy(DAEMON_METHODS.PLAN, async (params, rpc) =>
-        handlePlan(params, rpc.emitLegacyAgentEvent));
-      router.registerLegacy(DAEMON_METHODS.REVIEW, async (params, rpc) =>
-        handleReview(params, rpc.emitLegacyAgentEvent));
-      router.registerLegacy(DAEMON_METHODS.COMPACT_SESSION, async (params, rpc) =>
-        handleCompactSession(params, rpc.emitLegacyAgentEvent, {
+      router.registerProduct(DAEMON_METHODS.PLAN, async (params, rpc) =>
+        handlePlan(params, rpc.emitAgentEvent));
+      router.registerProduct(DAEMON_METHODS.REVIEW, async (params, rpc) =>
+        handleReview(params, rpc.emitAgentEvent));
+      router.registerProduct(DAEMON_METHODS.COMPACT_SESSION, async (params, rpc) =>
+        handleCompactSession(params, rpc.emitAgentEvent, {
           sessions: context.sessions,
           getRuntime: context.getRuntime,
         }));
