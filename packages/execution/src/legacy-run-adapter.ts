@@ -7,12 +7,6 @@ import type { RunSpec, StepSpec } from "./types.js";
 export const FORGE_AGENT_STEP_KIND = "forge.agent" as const;
 export const FIRST_PARTY_RUN_ORIGIN = "first-party-chat";
 
-export function isCompatibilityPolicyContext(
-  policyContext: Record<string, unknown>,
-): boolean {
-  return policyContext.compatibility === true;
-}
-
 export function isFirstPartyChatPolicyContext(
   policyContext: Record<string, unknown>,
 ): boolean {
@@ -54,12 +48,12 @@ export function runRequestToRunSpec(
     requestedBy: { kind: "human", id: "local-user" },
     actingSubject: { kind: "agent_profile", id: "forge-default" },
     correlationId: ids.correlationId(),
-    policyContext: { compatibility: true },
-    steps: [compatibilityStep(runId, request, ids)],
+    policyContext: {},
+    steps: [forgeAgentStep(runId, request, ids)],
   };
 }
 
-export function compatibilityStep(
+function forgeAgentStep(
   runId: string,
   request: RunRequest,
   ids: IdFactory,
@@ -115,6 +109,7 @@ export function bridgeLegacyAgentEvent(
   links: { runId: string; stepId: string; attemptId: string; correlationId: string },
 ): Record<string, unknown> {
   return {
+    // Marks a bridged AgentEvent payload; not a governance bypass.
     compatibility: true,
     legacyEventType: event.type,
     runId: links.runId,

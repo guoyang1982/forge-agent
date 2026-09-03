@@ -97,7 +97,6 @@ export class AutomationGovernanceService {
           budget: { accountId: budgetAccountId, amountMinor: 1 },
           delivery: { id: "agent" },
         },
-        compatibility: true,
         automationId: automation.id,
       },
       qualityGate: {

@@ -53,11 +53,9 @@ export { mapGovernedOutcome } from "./governed-types.js";
 export { ExecutionRecovery } from "./recovery.js";
 export {
   bridgeLegacyAgentEvent,
-  compatibilityStep,
   finalTextToArtifactRef,
   FIRST_PARTY_RUN_ORIGIN,
   FORGE_AGENT_STEP_KIND,
-  isCompatibilityPolicyContext,
   isFirstPartyChatPolicyContext,
   LegacyForgeStepExecutor,
   legacyRunInputFromRequest,
