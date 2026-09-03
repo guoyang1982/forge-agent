@@ -1,4 +1,7 @@
 import type { ExecutionClock } from "./clock.js";
+import {
+  isCompatibilityPolicyContext,
+} from "./legacy-run-adapter.js";
 import type {
   StepExecutionInput,
   StepExecutorRegistry,
@@ -115,15 +118,20 @@ export class DurableExecutor {
         : null;
 
     if (this.requireGovernance && !governedInput) {
-      this.store.finishAttempt(
-        claimed.id,
-        {
-          state: "failed",
-          error: { code: "GOVERNANCE_CONFIGURATION_MISSING" },
-        },
-        this.clock.now(),
-      );
-      return;
+      const compatibilityRun =
+        run?.spec.policyContext &&
+        isCompatibilityPolicyContext(run.spec.policyContext);
+      if (!compatibilityRun) {
+        this.store.finishAttempt(
+          claimed.id,
+          {
+            state: "failed",
+            error: { code: "GOVERNANCE_CONFIGURATION_MISSING" },
+          },
+          this.clock.now(),
+        );
+        return;
+      }
     }
 
     if (input.idempotencyKey && !governedInput) {
@@ -183,6 +191,13 @@ export class DurableExecutor {
     }
 
     if (this.store.getRun(claimed.runId)?.state === "cancelled") {
+      if (input.idempotencyKey && !governedInput) {
+        this.store.failIdempotencyKey(
+          input.idempotencyKey,
+          input.attemptId,
+          this.clock.now(),
+        );
+      }
       return;
     }
     if (outcome.state === "succeeded" && input.idempotencyKey && !governedInput) {
@@ -190,6 +205,12 @@ export class DurableExecutor {
         input.idempotencyKey,
         input.attemptId,
         outcome.outputRef,
+      );
+    } else if (outcome.state !== "succeeded" && input.idempotencyKey && !governedInput) {
+      this.store.failIdempotencyKey(
+        input.idempotencyKey,
+        input.attemptId,
+        this.clock.now(),
       );
     }
     await this.applyOutcome(claimed, step.retry, outcome);

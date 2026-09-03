@@ -1,6 +1,7 @@
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { createCoreV1Fixture } from "../../../apps/daemon/test-fixtures/core-v1-data.js";
 import * as backupData from "../../../scripts/core-v2/backup-data.js";
@@ -62,9 +63,86 @@ describe("Core v1 database upgrade", () => {
         "017_core_knowledge_memory.sql",
         "018_core_connectors.sql",
         "019_automation_durable_links.sql",
+        "020_execution_idempotency_state.sql",
+        "021_automation_recovery.sql",
+        "022_outbox_delivery_leases.sql",
+        "023_workspace_canonical_root_unique.sql",
+        "024_core_remediation.sql",
       ]);
     } finally {
       store?.close();
+    }
+  });
+
+  it("remediates duplicate workflow trigger references before migration 019", () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-core-v1-duplicate-occurrence-"));
+    fixtureRoots.push(root);
+    const fixture = createCoreV1Fixture({ root, migrationsDir });
+    const partialMigrationsDir = join(root, "migrations-through-018");
+    mkdirSync(partialMigrationsDir);
+    for (const name of readdirSync(migrationsDir).sort()) {
+      if (name >= "019_automation_durable_links.sql") break;
+      copyFileSync(join(migrationsDir, name), join(partialMigrationsDir, name));
+    }
+
+    ForgeStore.open({
+      ...fixture.options,
+      migrationsDir: partialMigrationsDir,
+    }).close();
+
+    const db = new Database(fixture.options.dbPath);
+    try {
+      db.exec(`
+        INSERT INTO core_workflow_versions (
+          id, workflow_id, version, definition_json, created_at
+        ) VALUES (
+          'wf-version-dup', 'workflow:dup', 1, '{}', '2026-01-01T00:00:00.000Z'
+        );
+        INSERT INTO core_runs (
+          id, state, spec_json, correlation_id, requested_by_json,
+          acting_subject_json, objective, policy_context_json, created_at, updated_at
+        ) VALUES (
+          'run-canonical', 'succeeded', '{}', 'corr-canonical',
+          '{"kind":"human","id":"local-user"}',
+          '{"kind":"agent_profile","id":"profile-1"}',
+          'duplicate remediation fixture', '{}',
+          '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+        );
+        INSERT INTO core_workflow_instances (
+          id, workflow_id, workflow_version_id, run_id, state, trigger_kind,
+          trigger_ref, input_json, created_at, updated_at
+        ) VALUES
+          ('instance-canonical', 'workflow:dup', 'wf-version-dup', 'run-canonical',
+           'succeeded', 'manual', 'occurrence:1', '{}',
+           '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+          ('instance-duplicate', 'workflow:dup', 'wf-version-dup', NULL,
+           'failed', 'manual', 'occurrence:1', '{}',
+           '2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z');
+      `);
+    } finally {
+      db.close();
+    }
+
+    const store = ForgeStore.open(fixture.options);
+    try {
+      expect(
+        store.db
+          .prepare(
+            `SELECT id, trigger_ref AS triggerRef
+             FROM core_workflow_instances
+             WHERE workflow_id = 'workflow:dup'
+             ORDER BY id`,
+          )
+          .all(),
+      ).toEqual([
+        { id: "instance-canonical", triggerRef: "occurrence:1" },
+        {
+          id: "instance-duplicate",
+          triggerRef: "occurrence:1:remediated:instance-duplicate",
+        },
+      ]);
+    } finally {
+      store.close();
     }
   });
 

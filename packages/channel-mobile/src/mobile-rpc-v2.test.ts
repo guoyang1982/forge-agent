@@ -17,17 +17,24 @@ function event(sequence: number): EventEnvelope {
 }
 
 describe("MobileRpcV2Router", () => {
-  it("resumes mobile events from the last sequence", async () => {
+  it("resumes mobile events from the last sequence and acks the consumer cursor", async () => {
+    const acked: number[] = [];
     const emitted: number[] = [];
     const router = new MobileRpcV2Router({
       daemon: {
-        async request(method, params) {
-          expect(method).toBe("events.read");
-          expect(params).toMatchObject({
-            cursor: 12,
-            filter: { runId: "run_12345678" },
-          });
-          return { events: [event(13), event(14)] };
+        async request(method: string, params?: unknown) {
+          if (method === "events.read") {
+            expect(params).toMatchObject({
+              cursor: 12,
+              filter: { runId: "run_12345678" },
+            });
+            return { events: [event(13), event(14)] };
+          }
+          if (method === "events.cursor.ack") {
+            acked.push((params as { sequence: number }).sequence);
+            return { ok: true, cursor: (params as { sequence: number }).sequence };
+          }
+          throw new Error(`unexpected method: ${method}`);
         },
       },
     });
@@ -45,5 +52,6 @@ describe("MobileRpcV2Router", () => {
 
     expect(result.sequences).toEqual([13, 14]);
     expect(emitted).toEqual([13, 14]);
+    expect(acked).toEqual([13, 14]);
   });
 });

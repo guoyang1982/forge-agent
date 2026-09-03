@@ -83,15 +83,13 @@ describe("EventStore", () => {
     const first = events.append(event("run.created", "r1", "event-1"));
     const second = events.append(event("step.started", "r1", "event-2"));
 
-    events.ackCursor("desktop", 3, NOW);
-    expect(events.getCursor("desktop")).toBe(3);
     events.ackCursor("desktop", second.sequence, NOW);
-    expect(events.getCursor("desktop")).toBe(3);
+    expect(events.getCursor("desktop")).toBe(second.sequence);
     events.ackCursor("desktop", first.sequence, NOW);
-    expect(events.getCursor("desktop")).toBe(3);
+    expect(events.getCursor("desktop")).toBe(second.sequence);
   });
 
-  it("claims pending outbox entries for a destination", () => {
+  it("claims pending outbox entries under a worker lease", () => {
     const events = eventFixture();
     events.append({
       ...event("run.created", "r1", "event-outbox"),
@@ -102,13 +100,51 @@ describe("EventStore", () => {
       destination: "relay",
       limit: 10,
       now: NOW,
+      workerId: "worker-a",
     });
     expect(claims).toHaveLength(1);
     expect(claims[0]).toMatchObject({
       eventId: "event-outbox",
       destination: "relay",
+      leasedUntil: "2026-01-01T00:00:30.000Z",
     });
+    expect(events.getOutboxState(claims[0]!.id)).toBe("pending");
+
+    events.ackOutbox(claims[0]!.id, "worker-a", NOW);
     expect(events.getOutboxState(claims[0]!.id)).toBe("published");
+  });
+
+  it("reclaims an outbox delivery when the publisher crashes before ack", () => {
+    const events = eventFixture();
+    events.append({
+      ...event("run.created", "r1", "event-outbox-reclaim"),
+      destination: "relay",
+    });
+
+    const first = events.claimOutbox({
+      destination: "relay",
+      limit: 10,
+      now: NOW,
+      workerId: "worker-a",
+      leaseMs: 1_000,
+    });
+    expect(first).toHaveLength(1);
+
+    const reclaimed = events.claimOutbox({
+      destination: "relay",
+      limit: 10,
+      now: "2026-01-01T00:00:02.000Z",
+      workerId: "worker-b",
+    });
+    expect(reclaimed).toHaveLength(1);
+    expect(reclaimed[0]?.id).toBe(first[0]?.id);
+    expect(reclaimed[0]?.eventId).toBe("event-outbox-reclaim");
+  });
+
+  it("rejects cursor acknowledgments beyond the stored stream maximum", () => {
+    const events = eventFixture();
+    events.append(event("run.created", "r1", "event-cursor-max"));
+    expect(() => events.ackCursor("desktop", 99, NOW)).toThrow(/stream maximum/i);
   });
 
   it("supports appendInTransaction with caller transactions", () => {

@@ -33,8 +33,8 @@ export interface KnowledgeSourceInput {
 
 export interface KnowledgeQualityGateInput {
   validationIds: string[];
-  permissionReviewed?: boolean;
-  securityValidationId?: string;
+  permissionReviewId: string;
+  securityValidationId: string;
   description?: string;
 }
 
@@ -87,7 +87,7 @@ export class KnowledgeStore {
     private readonly assets: AssetRegistry,
     private readonly gate: KnowledgeQualityGateInput = {
       validationIds: ["validation-pass"],
-      permissionReviewed: true,
+      permissionReviewId: "grant:publish:knowledge",
       securityValidationId: "security-pass",
     },
   ) {}
@@ -252,7 +252,10 @@ export class KnowledgeStore {
       .slice(0, limit);
   }
 
-  getCitation(chunkId: string): KnowledgeCitation | null {
+  getCitation(
+    chunkId: string,
+    scope?: KnowledgeAccessScope,
+  ): KnowledgeCitation | null {
     const row = this.db
       .prepare(
         `SELECT
@@ -261,7 +264,8 @@ export class KnowledgeStore {
           chunk.locator AS locator,
           chunk.content_hash AS content_hash,
           source.id AS source_id,
-          version.id AS source_version_id
+          version.id AS source_version_id,
+          source.access_scope_json AS access_scope_json
          FROM core_knowledge_chunks chunk
          INNER JOIN core_knowledge_source_versions version
            ON version.id = chunk.source_version_id
@@ -271,6 +275,9 @@ export class KnowledgeStore {
       )
       .get(chunkId) as CitationRow | undefined;
     if (!row) {
+      return null;
+    }
+    if (!matchesScope(row.access_scope_json, scope)) {
       return null;
     }
     return {
@@ -336,7 +343,7 @@ export class KnowledgeStore {
     }
     return this.assets.publish(assetId, {
       validationIds: this.gate.validationIds,
-      permissionReviewed: this.gate.permissionReviewed,
+      permissionReviewId: this.gate.permissionReviewId,
       securityValidationId: this.gate.securityValidationId,
       description: this.gate.description ?? input.name,
     });
@@ -444,7 +451,7 @@ function matchesScope(
     return true;
   }
   if (!requested) {
-    return true;
+    return false;
   }
   if (stored.companyId && stored.companyId !== requested.companyId) {
     return false;
@@ -503,6 +510,7 @@ interface CitationRow {
   content_hash: string;
   source_id: string;
   source_version_id: string;
+  access_scope_json: string;
 }
 
 export type { AssetVersionRef };

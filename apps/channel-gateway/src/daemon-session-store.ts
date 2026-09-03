@@ -1,23 +1,27 @@
 import type {
   AppendSessionMessageInput,
+  RpcMethod,
+  RpcParams,
+  RpcResult,
   SessionDto,
 } from "@forge/protocol";
 
 export interface DaemonSessionClient {
-  request(method: string, params?: unknown): Promise<unknown>;
+  request<M extends RpcMethod>(
+    method: M,
+    params: RpcParams<M>,
+  ): Promise<RpcResult<M>>;
 }
 
 export class DaemonSessionStore {
   constructor(private readonly client: DaemonSessionClient) {}
 
   async create(cwd: string): Promise<{ sessionId: string }> {
-    return (await this.client.request("session.create", { cwd })) as {
-      sessionId: string;
-    };
+    return this.client.request("session.create", { cwd });
   }
 
   async get(sessionId: string): Promise<SessionDto> {
-    return (await this.client.request("session.get", { sessionId })) as SessionDto;
+    return this.client.request("session.get", { sessionId });
   }
 
   async appendMessage(input: AppendSessionMessageInput): Promise<void> {

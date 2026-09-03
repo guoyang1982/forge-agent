@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AssetRegistry } from "@forge/asset-registry";
+import { seedPublishEvidence } from "@forge/asset-registry/test-evidence";
 import { ForgeStore } from "@forge/store";
 import {
   KnowledgeStore,
@@ -72,6 +73,39 @@ describe("KnowledgeStore", () => {
     ).toBeGreaterThan(0);
   });
 
+  it("does not return scoped knowledge when access scope context is absent", async () => {
+    const store = knowledgeFixture();
+    await store.syncSource({
+      ...source("scoped", "company secret playbook"),
+      accessScope: { companyId: "company-a" },
+    });
+    expect(await store.search({ query: "playbook" })).toEqual([]);
+  });
+
+  it("rejects scoped citations without matching access scope", async () => {
+    const store = knowledgeFixture();
+    await store.syncSource({
+      ...source("scoped", "company secret playbook"),
+      accessScope: { companyId: "company-a" },
+      chunks: [
+        {
+          locator: "policy.md:chunk:0",
+          text: "company secret playbook",
+        },
+      ],
+    });
+    const hit = (
+      await store.search({
+        query: "playbook",
+        scope: { companyId: "company-a" },
+      })
+    )[0]!;
+    expect(store.getCitation(hit.chunkId)).toBeNull();
+    expect(
+      store.getCitation(hit.chunkId, { companyId: "company-a" }),
+    ).toMatchObject({ chunkId: hit.chunkId });
+  });
+
   it("removes deleted sources from search results", async () => {
     const store = knowledgeFixture();
     const synced = await store.syncSource(source("guide", "alpha content"));
@@ -103,6 +137,11 @@ function knowledgeFixture(): KnowledgeStore {
     migrationsDir,
     owner: "test",
   });
+  seedPublishEvidence(forgeStore.db, {
+    grantId: "grant:publish:knowledge",
+    validationIds: ["validation-pass"],
+    securityValidationId: "security-pass",
+  });
   const assets = new AssetRegistry(forgeStore.db);
   return new KnowledgeStore(forgeStore.db, assets, passingQualityGate());
 }
@@ -133,7 +172,7 @@ function source(name: string, content: string): KnowledgeSourceInput {
 function passingQualityGate(): KnowledgeQualityGateInput {
   return {
     validationIds: ["validation-pass"],
-    permissionReviewed: true,
+    permissionReviewId: "grant:publish:knowledge",
     securityValidationId: "security-pass",
   };
 }

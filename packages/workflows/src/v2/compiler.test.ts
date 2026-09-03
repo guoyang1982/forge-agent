@@ -73,4 +73,10 @@ describe("compileWorkflowRun", () => {
       compileWorkflowRun(invalid, { topic: "launch" }, context),
     ).toThrow(/unknown dependency/);
   });
+
+  it("rejects workflow definitions without a published version number", () => {
+    expect(() =>
+      compileWorkflowRun({ ...definition, version: 0 }, { topic: "launch" }, context),
+    ).toThrow(/published workflow version is required/);
+  });
 });

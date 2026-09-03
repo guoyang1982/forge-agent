@@ -90,6 +90,26 @@ describe("DurableExecutor", () => {
     expect(store.getRun("run-2")?.state).toBe("succeeded");
   });
 
+  it("reclaims an idempotency key after a retryable owner failure", async () => {
+    const fx = executorFixture({
+      outcomes: [retryable("transient"), succeeded("artifact:retry")],
+      retry: { maxAttempts: 2, backoffMs: 0, maxBackoffMs: 0 },
+    });
+    fx.store.createRun(
+      {
+        ...fx.runSpec,
+        steps: [{ ...fx.runSpec.steps[0]!, idempotencyKey: "retry-owner" }],
+      },
+      fx.clock.now(),
+    );
+
+    await fx.executor.tick();
+    await fx.executor.tick();
+
+    expect(fx.store.getRun("run-1")?.state).toBe("succeeded");
+    expect(fx.store.listAttempts("run-1", "step-1")).toHaveLength(2);
+  });
+
   it("aborts active execution and keeps a cancelled run terminal", async () => {
     const { store, clock } = baseFixture();
     const registry = new StepExecutorRegistry();
@@ -124,6 +144,61 @@ describe("DurableExecutor", () => {
     expect(observedSignal?.aborted).toBe(true);
     expect(store.getRun("run-1")?.state).toBe("cancelled");
     expect(store.getStep("run-1", "step-1")?.state).toBe("cancelled");
+  });
+
+  it("fails governed runs when governance configuration is missing", async () => {
+    const { store, clock } = baseFixture();
+    const registry = new StepExecutorRegistry();
+    registry.register({
+      kind: "forge.agent",
+      async execute() {
+        return succeeded("artifact:session:test:abc");
+      },
+    });
+    const executor = new DurableExecutor(store, registry, clock, {
+      requireGovernance: true,
+      governedExecutor: {} as never,
+      buildGovernedInput: () => null,
+    });
+    store.createRun(singleStepRunSpec(), clock.now());
+    await executor.tick();
+    expect(store.getRun("run-1")?.state).toBe("failed");
+    expect(store.getStep("run-1", "step-1")?.state).toBe("failed");
+  });
+
+  it("runs compatibility forge.agent steps without governance configuration", async () => {
+    const { store, clock } = baseFixture();
+    const registry = new StepExecutorRegistry();
+    let executed = false;
+    registry.register({
+      kind: "forge.agent",
+      async execute() {
+        executed = true;
+        return succeeded("artifact:session:test:abc");
+      },
+    });
+    const executor = new DurableExecutor(store, registry, clock, {
+      requireGovernance: true,
+      governedExecutor: {} as never,
+      buildGovernedInput: () => null,
+    });
+    store.createRun(
+      {
+        ...singleStepRunSpec(),
+        policyContext: { compatibility: true },
+        steps: [
+          {
+            ...singleStepRunSpec().steps[0]!,
+            kind: "forge.agent",
+            input: { cwd: "/repo", message: "hi" },
+          },
+        ],
+      },
+      clock.now(),
+    );
+    await executor.tick();
+    expect(executed).toBe(true);
+    expect(store.getRun("run-1")?.state).toBe("succeeded");
   });
 });
 

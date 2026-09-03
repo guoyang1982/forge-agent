@@ -53,6 +53,22 @@ export class WorkspaceLeaseService {
     const acquiredAt = new Date().toISOString();
     const leaseId = input.id ?? randomUUID();
 
+    const workspace = this.db
+      .prepare(
+        `SELECT canonical_root_path
+         FROM core_workspaces
+         WHERE id = ?`,
+      )
+      .get(input.workspaceId) as { canonical_root_path: string } | undefined;
+    if (!workspace) {
+      throw new Error(`workspace not found: ${input.workspaceId}`);
+    }
+    if (workspace.canonical_root_path !== rootPath) {
+      throw new WorkspaceConflictError(
+        `requested root path does not match registered workspace canonical root`,
+      );
+    }
+
     return this.db.transaction(() => {
       if (input.mode === "write") {
         const active = this.db

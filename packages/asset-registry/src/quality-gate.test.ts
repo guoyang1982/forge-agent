@@ -2,63 +2,54 @@ import { describe, expect, it } from "vitest";
 import { assertQualityGate, AssetQualityGateError } from "./quality-gate.js";
 
 describe("assertQualityGate", () => {
-  it("passes when description permissions security and validations succeed", () => {
+  it("passes when description validations and dependencies succeed", () => {
     expect(() =>
       assertQualityGate({
         description: "launch workflow",
         validationIds: ["validation-pass"],
         dependencies: [],
-        permissionReviewed: true,
-        securityValidationId: "security-pass",
         resolveDependency: () => true,
       }),
     ).not.toThrow();
   });
 
-  it("blocks publish when security or evaluation validation fails", () => {
+  it("blocks publish when validation fails", () => {
     expect(() =>
       assertQualityGate({
         description: "launch workflow",
         validationIds: ["validation-failed"],
         dependencies: [],
-        permissionReviewed: true,
-        securityValidationId: "security-pass",
         resolveDependency: () => true,
       }),
     ).toThrow(AssetQualityGateError);
-    expect(() =>
-      assertQualityGate({
-        description: "launch workflow",
-        validationIds: ["validation-pass"],
-        dependencies: [],
-        permissionReviewed: true,
-        securityValidationId: "validation-failed",
-        resolveDependency: () => true,
-      }),
-    ).toThrow(/asset quality gate failed/);
   });
 
-  it("requires permission review and dependency resolution", () => {
+  it("requires description, validations, and dependency resolution", () => {
     expect(() =>
       assertQualityGate({
         description: "launch workflow",
         validationIds: ["validation-pass"],
         dependencies: [{ assetId: "missing" }],
-        permissionReviewed: true,
-        securityValidationId: "security-pass",
         resolveDependency: () => false,
       }),
     ).toThrow(/unresolved dependency/);
 
     expect(() =>
       assertQualityGate({
-        description: "launch workflow",
+        description: "",
         validationIds: ["validation-pass"],
         dependencies: [],
-        permissionReviewed: false,
-        securityValidationId: "security-pass",
         resolveDependency: () => true,
       }),
-    ).toThrow(/permission review required/);
+    ).toThrow(/description is required/);
+
+    expect(() =>
+      assertQualityGate({
+        description: "launch workflow",
+        validationIds: [],
+        dependencies: [],
+        resolveDependency: () => true,
+      }),
+    ).toThrow(/validation evidence is required/);
   });
 });

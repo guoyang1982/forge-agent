@@ -6,8 +6,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { EventEnvelope } from "@forge/protocol";
 import { CORE_EVENT_METHOD } from "@forge/protocol";
 import { connectDaemon } from "./index.js";
-import type { TestEventSubscription } from "./subscription.js";
-import { matchesEventFilter } from "./subscription.js";
+import type {
+  SubscriptionTransport,
+  TestEventSubscription,
+} from "./subscription.js";
+import { createEventSubscription, matchesEventFilter } from "./subscription.js";
 
 const servers: Server[] = [];
 const socketPaths: string[] = [];
@@ -84,6 +87,147 @@ describe("event subscriptions", () => {
     fx.client.close();
   });
 
+  it("does not dedupe or ack when the handler fails", async () => {
+    const fx = await reconnectingClientFixture([event(1)], [event(1)]);
+    const acked: number[] = [];
+    fx.onAck = (sequence) => acked.push(sequence);
+    let attempts = 0;
+    const sub = fx.client.subscribe({ runId: "r1" }, async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("handler failed");
+      }
+    }) as TestEventSubscription;
+
+    await waitFor(() => attempts === 1);
+    expect(acked).toEqual([]);
+
+    await fx.disconnectAndReconnect();
+    await sub.settledAfter(1);
+    expect(attempts).toBe(2);
+    expect(acked).toEqual([1]);
+    await sub.close();
+    fx.client.close();
+  });
+
+  it("does not advance past a failed live event and replays it after reconnect", async () => {
+    const fx = await reconnectingClientFixture([], [event(1)]);
+    const acked: number[] = [];
+    const seen: number[] = [];
+    fx.onAck = (sequence) => acked.push(sequence);
+    const sub = fx.client.subscribe({ runId: "r1" }, async (evt) => {
+      seen.push(evt.sequence);
+      if (
+        evt.sequence === 1 &&
+        seen.filter((sequence) => sequence === 1).length === 1
+      ) {
+        throw new Error("first event failed");
+      }
+    }) as TestEventSubscription;
+
+    try {
+      fx.pushLive(event(1));
+      fx.pushLive(event(2));
+      await waitFor(() => seen.includes(1));
+      await sleep(25);
+
+      expect(seen).toEqual([1]);
+      expect(sub.cursor).toBe(0);
+      expect(acked).toEqual([]);
+
+      await fx.disconnectAndReconnect();
+      await sub.settledAfter(1);
+      expect(seen).toEqual([1, 1]);
+      expect(fx.readCursors).toEqual([0, 0]);
+      expect(acked).toEqual([1]);
+    } finally {
+      await sub.close();
+      fx.client.close();
+    }
+  });
+
+  it("does not queue failed-subscription live events ahead of reconnect", async () => {
+    const fx = inMemorySubscriptionTransport();
+    let failed = false;
+    const sub = createEventSubscription(
+      fx.transport,
+      { runId: "r1" },
+      async (evt) => {
+        if (evt.sequence === 1 && !failed) {
+          failed = true;
+          throw new Error("first event failed");
+        }
+      },
+      { reconnectDelayMs: 1 },
+    );
+
+    try {
+      fx.pushLive(event(1));
+      await waitFor(() => failed);
+      await sleep(0);
+
+      const laterEvent = event(2);
+      const started = Date.now();
+      for (let index = 0; index < 1_000_000; index += 1) {
+        fx.pushLive(laterEvent);
+      }
+      fx.disconnect();
+
+      await waitFor(() => fx.reconnects === 1, 100);
+      expect(fx.reconnects).toBe(1);
+      expect(Date.now() - started).toBeLessThan(250);
+    } finally {
+      await sub.close();
+    }
+  });
+
+  it("does not advance past a failed event in the same replay batch", async () => {
+    const fx = await reconnectingClientFixture([event(1), event(2)], []);
+    const acked: number[] = [];
+    const seen: number[] = [];
+    fx.onAck = (sequence) => acked.push(sequence);
+    const sub = fx.client.subscribe({ runId: "r1" }, async (evt) => {
+      seen.push(evt.sequence);
+      if (evt.sequence === 1) {
+        throw new Error("first batch event failed");
+      }
+    }) as TestEventSubscription;
+
+    try {
+      await waitFor(() => seen.includes(1));
+      await sleep(25);
+      expect(seen).toEqual([1]);
+      expect(sub.cursor).toBe(0);
+      expect(acked).toEqual([]);
+    } finally {
+      await sub.close();
+      fx.client.close();
+    }
+  });
+
+  it("does not redeliver an acknowledged sequence after event-id eviction", async () => {
+    const fx = inMemorySubscriptionTransport();
+    const seen: number[] = [];
+    const sub = createEventSubscription(fx.transport, { runId: "r1" }, (evt) => {
+      seen.push(evt.sequence);
+    }) as TestEventSubscription;
+
+    try {
+      for (let sequence = 1; sequence <= 2_049; sequence += 1) {
+        fx.pushLive(event(sequence));
+      }
+      await sub.settledAfter(2_049);
+
+      fx.pushLive(event(1));
+      await sleep(25);
+      expect(seen).toHaveLength(2_049);
+      expect(fx.acked).toHaveLength(2_049);
+      expect(sub.cursor).toBe(2_049);
+    } finally {
+      await sub.close();
+    }
+  });
+
   it("matches subscription filters on live notifications", () => {
     const envelope = event(4, "r2");
     expect(matchesEventFilter(envelope, { runId: "r1" })).toBe(false);
@@ -118,6 +262,7 @@ async function reconnectingClientFixture(
   client: Awaited<ReturnType<typeof connectDaemon>>;
   disconnectAndReconnect: () => Promise<void>;
   pushLive: (event: EventEnvelope) => void;
+  readCursors: number[];
   onAck?: (sequence: number) => void;
 }> {
   const socketPath = socketName();
@@ -125,6 +270,7 @@ async function reconnectingClientFixture(
   let generation = 0;
   let activeSocket: Socket | undefined;
   let ackHandler: ((sequence: number) => void) | undefined;
+  const readCursors: number[] = [];
 
   const server = createServer((socket) => {
     activeSocket = socket;
@@ -153,6 +299,7 @@ async function reconnectingClientFixture(
 
         if (request.method === "events.read") {
           const cursor = request.params?.cursor ?? 0;
+          readCursors.push(cursor);
           const batch = generation === 0 ? initialBatch : replayBatch;
           const events = batch.filter(
             (entry) =>
@@ -195,6 +342,7 @@ async function reconnectingClientFixture(
   const client = await connectDaemon(socketPath);
   return {
     client,
+    readCursors,
     get onAck() {
       return ackHandler;
     },
@@ -215,6 +363,56 @@ async function reconnectingClientFixture(
       activeSocket?.destroy();
       await sleep(50);
     },
+  };
+}
+
+function inMemorySubscriptionTransport(): {
+  transport: SubscriptionTransport;
+  acked: number[];
+  reconnects: number;
+  pushLive: (event: EventEnvelope) => void;
+  disconnect: () => void;
+} {
+  const acked: number[] = [];
+  let reconnects = 0;
+  let notificationListener: ((event: EventEnvelope) => void) | undefined;
+  let closeListener: (() => void) | undefined;
+  const transport = {
+    request: async (method: string, params: { sequence?: number }) => {
+      if (method === "events.read") {
+        return { events: [] };
+      }
+      if (method === "events.cursor.ack") {
+        acked.push(params.sequence ?? 0);
+        return { ok: true, cursor: params.sequence ?? 0 };
+      }
+      throw new Error(`unexpected method ${method}`);
+    },
+    addNotificationListener: (listener: (event: EventEnvelope) => void) => {
+      notificationListener = listener;
+      return () => {
+        notificationListener = undefined;
+      };
+    },
+    addCloseListener: (listener: () => void) => {
+      closeListener = listener;
+      return () => {
+        closeListener = undefined;
+      };
+    },
+    reconnect: async () => {
+      reconnects += 1;
+    },
+  } as unknown as SubscriptionTransport;
+
+  return {
+    transport,
+    acked,
+    get reconnects() {
+      return reconnects;
+    },
+    pushLive: (event) => notificationListener?.(event),
+    disconnect: () => closeListener?.(),
   };
 }
 

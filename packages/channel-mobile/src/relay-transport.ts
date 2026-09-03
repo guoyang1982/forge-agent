@@ -122,7 +122,14 @@ export class RelayTransport {
   }
 
   async revokeInvite(inviteId: string): Promise<void> {
-    await this.request({ type: "invite.revoke", inviteId });
+    try {
+      await this.request({ type: "invite.revoke", inviteId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Relay may have already expired/revoked the invite; treat that as success.
+      if (/invite not found/i.test(message)) return;
+      throw error;
+    }
   }
 
   async installDevice(

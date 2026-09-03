@@ -11,6 +11,11 @@ import type {
 export class MockConnectorAdapter implements ConnectorAdapter {
   readonly kind = "mock";
   executeCalls = 0;
+  executeDelayMs = 0;
+  executeImpl?: (
+    input: ApprovedConnectorAction,
+    credential: ResolvedCredential,
+  ) => Promise<AdapterResult>;
 
   async propose(input: ConnectorActionInput): Promise<ConnectorProposalPreview> {
     return {
@@ -25,6 +30,12 @@ export class MockConnectorAdapter implements ConnectorAdapter {
     credential: ResolvedCredential,
   ): Promise<AdapterResult> {
     this.executeCalls += 1;
+    if (this.executeImpl) {
+      return this.executeImpl(input, credential);
+    }
+    if (this.executeDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.executeDelayMs));
+    }
     return {
       ok: true,
       externalId: `mock:${input.action}:${credential.ref}`,

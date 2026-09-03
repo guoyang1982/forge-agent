@@ -56,6 +56,7 @@ export {
   compatibilityStep,
   finalTextToArtifactRef,
   FORGE_AGENT_STEP_KIND,
+  isCompatibilityPolicyContext,
   LegacyForgeStepExecutor,
   legacyRunInputFromRequest,
   parseLegacyRunRequest,

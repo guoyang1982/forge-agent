@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ForgeStore } from "@forge/store";
 import { WorkspaceGroupService } from "./groups.js";
+import { WorkspaceConflictError } from "./leases.js";
 
 const migrationsDir = join(import.meta.dirname, "..", "..", "..", "migrations");
 const fixtureRoots: string[] = [];
@@ -37,6 +38,19 @@ describe("WorkspaceGroupService", () => {
         expect.arrayContaining([frontendBinding, backendBinding]),
       );
       expect(frontendBinding.rootPath).toBe(frontend.canonicalRootPath);
+    } finally {
+      close();
+    }
+  });
+
+  it("rejects registering two workspace ids for the same canonical root", () => {
+    const { groups, frontend, close } = groupFixture();
+    try {
+      const aliasPath = join(dirname(frontend.rootPath), "frontend-alias");
+      symlinkSync(frontend.rootPath, aliasPath);
+      expect(() =>
+        groups.registerWorkspace({ id: "frontend-alias", rootPath: aliasPath }),
+      ).toThrow(WorkspaceConflictError);
     } finally {
       close();
     }

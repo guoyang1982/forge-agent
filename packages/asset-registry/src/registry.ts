@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "@forge/store";
-import { assertQualityGate } from "./quality-gate.js";
+import { assertQualityGate, AssetQualityGateError } from "./quality-gate.js";
 import type {
   AssetKind,
   AssetRecord,
@@ -9,6 +9,7 @@ import type {
   AssetVersionRef,
   CreateDraftInput,
   PublishInput,
+  RollbackInput,
 } from "./types.js";
 
 export class ImmutableAssetVersionError extends Error {
@@ -98,46 +99,48 @@ export class AssetRegistry {
   ): AssetVersion {
     const asset = this.requireAsset(assetId);
     const now = new Date().toISOString();
-    const nextVersion =
-      (this.db
-        .prepare(
-          `SELECT COALESCE(MAX(version), 0) AS maxVersion
-           FROM core_asset_versions WHERE asset_id = ?`,
-        )
-        .get(assetId) as { maxVersion: number }).maxVersion + 1;
-
-    const versionId = randomUUID();
     const ownerSubjectId = formatOwnerSubjectId(
       asset.ownerSubjectKind,
       asset.ownerSubjectId,
     );
 
-    this.db
-      .prepare(
-        `INSERT INTO core_asset_versions (
+    return this.db.transaction(() => {
+      const nextVersion =
+        (this.db
+          .prepare(
+            `SELECT COALESCE(MAX(version), 0) AS maxVersion
+           FROM core_asset_versions WHERE asset_id = ?`,
+          )
+          .get(assetId) as { maxVersion: number }).maxVersion + 1;
+
+      const versionId = randomUUID();
+      this.db
+        .prepare(
+          `INSERT INTO core_asset_versions (
           id, asset_id, version, state, owner_subject_id, source_ref,
           content_hash, dependencies_json, validation_ids_json, content_json,
           created_at
         ) VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, '[]', ?, ?)`,
-      )
-      .run(
-        versionId,
-        assetId,
-        nextVersion,
-        ownerSubjectId,
-        input.sourceRef,
-        input.contentHash,
-        JSON.stringify(input.dependencies ?? []),
-        input.content ? JSON.stringify(input.content) : null,
-        now,
-      );
+        )
+        .run(
+          versionId,
+          assetId,
+          nextVersion,
+          ownerSubjectId,
+          input.sourceRef,
+          input.contentHash,
+          JSON.stringify(input.dependencies ?? []),
+          input.content ? JSON.stringify(input.content) : null,
+          now,
+        );
 
-    this.persistDependencies(versionId, input.dependencies ?? [], now);
-    this.db
-      .prepare(`UPDATE core_assets SET state = 'draft', updated_at = ? WHERE id = ?`)
-      .run(now, assetId);
+      this.persistDependencies(versionId, input.dependencies ?? [], now);
+      this.db
+        .prepare(`UPDATE core_assets SET state = 'draft', updated_at = ? WHERE id = ?`)
+        .run(now, assetId);
 
-    return this.getVersion(versionId);
+      return this.getVersion(versionId);
+    })();
   }
 
   publish(assetId: string, input: PublishInput): AssetVersion {
@@ -151,12 +154,19 @@ export class AssetRegistry {
       (this.readVersionContent(draft.id)?.description as string | undefined);
     const dependencies = draft.dependencies;
 
+    if (!input.permissionReviewId?.trim()) {
+      throw new AssetQualityGateError("permission review evidence is required");
+    }
+    if (!input.securityValidationId?.trim()) {
+      throw new AssetQualityGateError("security validation evidence is required");
+    }
+
+    this.assertDurableQualityEvidence(assetId, draft.id, input);
+
     assertQualityGate({
       description,
       validationIds: input.validationIds,
       dependencies,
-      permissionReviewed: input.permissionReviewed ?? true,
-      securityValidationId: input.securityValidationId ?? "validation-pass",
       resolveDependency: (ref) => this.resolveDependencyRef(ref),
     });
 
@@ -184,6 +194,67 @@ export class AssetRegistry {
     })();
   }
 
+  private assertDurableQualityEvidence(
+    assetId: string,
+    assetVersionId: string,
+    input: PublishInput,
+  ): void {
+    const permission = this.db
+      .prepare(
+        `SELECT effect, expires_at FROM core_grants
+         WHERE id = ? AND effect = 'allow'`,
+      )
+      .get(input.permissionReviewId) as
+      | { effect: string; expires_at: string | null }
+      | undefined;
+    if (!permission) {
+      throw new AssetQualityGateError("durable permission review evidence is missing or denied");
+    }
+    if (permission.expires_at && permission.expires_at <= new Date().toISOString()) {
+      throw new AssetQualityGateError("permission review evidence expired");
+    }
+
+    const validationIds = new Set([
+      ...input.validationIds,
+      input.securityValidationId,
+    ]);
+    for (const validationId of validationIds) {
+      const validation = this.db
+        .prepare(
+          `SELECT status, severity, validator_id, created_at, details_json
+           FROM core_validations WHERE id = ?`,
+        )
+        .get(validationId) as
+        | {
+            status: string;
+            severity: string;
+            validator_id: string;
+            created_at: string;
+            details_json: string;
+          }
+        | undefined;
+      if (!validation || validation.status !== "passed") {
+        throw new AssetQualityGateError(
+          `durable validation evidence is missing or failed: ${validationId}`,
+        );
+      }
+      const details = safeParseRecord(validation.details_json);
+      if (details.assetId && details.assetId !== assetId) {
+        throw new AssetQualityGateError(
+          `validation evidence is bound to another asset: ${validationId}`,
+        );
+      }
+      if (details.assetVersionId && details.assetVersionId !== assetVersionId) {
+        throw new AssetQualityGateError(
+          `validation evidence is bound to another asset version: ${validationId}`,
+        );
+      }
+      if (details.expiresAt && details.expiresAt <= new Date().toISOString()) {
+        throw new AssetQualityGateError(`validation evidence expired: ${validationId}`);
+      }
+    }
+  }
+
   deprecate(assetId: string): AssetRecord {
     const asset = this.requireAsset(assetId);
     const now = new Date().toISOString();
@@ -200,11 +271,33 @@ export class AssetRegistry {
     return { ...asset, state: "deprecated", updatedAt: now };
   }
 
-  rollback(assetId: string, targetVersionId: string): AssetVersion {
+  rollback(assetId: string, targetVersionId: string, input: RollbackInput): AssetVersion {
     const asset = this.requireAsset(assetId);
     const target = this.getVersion(targetVersionId);
     if (target.assetId !== assetId) {
       throw new Error("rollback target must belong to the same asset");
+    }
+    if (target.state !== "published") {
+      throw new AssetQualityGateError("rollback target must be a published version");
+    }
+
+    const grant = this.db
+      .prepare(
+        `SELECT effect, expires_at FROM core_grants
+         WHERE id = ? AND action = 'asset.rollback' AND effect = 'allow'`,
+      )
+      .get(input.grantId) as { effect: string; expires_at: string | null } | undefined;
+    if (!grant) {
+      throw new AssetQualityGateError("rollback grant is missing or denied");
+    }
+    if (grant.expires_at && grant.expires_at <= new Date().toISOString()) {
+      throw new AssetQualityGateError("rollback grant expired");
+    }
+    if (!input.actor.kind?.trim() || !input.actor.id?.trim()) {
+      throw new AssetQualityGateError("rollback actor is required");
+    }
+    if (!input.reason.trim()) {
+      throw new AssetQualityGateError("rollback reason is required");
     }
 
     const now = new Date().toISOString();
@@ -216,14 +309,15 @@ export class AssetRegistry {
         )
         .get(assetId) as { maxVersion: number }).maxVersion + 1;
 
+    const targetContent = this.readVersionContent(targetVersionId);
     const versionId = randomUUID();
     return this.db.transaction(() => {
       this.db
         .prepare(
           `INSERT INTO core_asset_versions (
             id, asset_id, version, state, owner_subject_id, source_ref,
-            content_hash, dependencies_json, validation_ids_json, created_at
-          ) VALUES (?, ?, ?, 'published', ?, ?, ?, ?, ?, ?)`,
+            content_hash, dependencies_json, validation_ids_json, content_json, created_at
+          ) VALUES (?, ?, ?, 'published', ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           versionId,
@@ -234,6 +328,17 @@ export class AssetRegistry {
           target.contentHash,
           JSON.stringify(target.dependencies),
           JSON.stringify(target.validationIds),
+          JSON.stringify({
+            ...(targetContent ?? {}),
+            rollbackFromVersionId: target.id,
+            rollbackFromVersion: target.version,
+            rollbackAudit: {
+              actor: input.actor,
+              reason: input.reason,
+              grantId: input.grantId,
+              rolledBackAt: now,
+            },
+          }),
           now,
         );
 
@@ -249,9 +354,21 @@ export class AssetRegistry {
         .prepare(`UPDATE core_assets SET state = 'published', updated_at = ? WHERE id = ?`)
         .run(now, assetId);
 
-    void asset;
       return this.getVersion(versionId);
     })();
+  }
+
+  getPublished(
+    assetId: string,
+  ): (AssetVersion & { content: Record<string, unknown> | null }) | null {
+    const version = this.getLatestPublishedVersion(assetId);
+    if (!version) {
+      return null;
+    }
+    return {
+      ...version,
+      content: this.readVersionContent(version.id),
+    };
   }
 
   resolveVersion(assetId: string, version?: number): AssetVersion {
@@ -265,7 +382,7 @@ export class AssetRegistry {
       : (this.db
           .prepare(
             `SELECT id FROM core_asset_versions
-             WHERE asset_id = ?
+             WHERE asset_id = ? AND state IN ('published', 'deprecated', 'rolled_back')
              ORDER BY version DESC
              LIMIT 1`,
           )
@@ -311,6 +428,22 @@ export class AssetRegistry {
          FROM core_asset_versions v
          JOIN core_assets a ON a.id = v.asset_id
          WHERE v.asset_id = ? AND v.state = 'draft'
+         ORDER BY v.version DESC
+         LIMIT 1`,
+      )
+      .get(assetId) as VersionRow | undefined;
+    return row ? mapVersion(row) : null;
+  }
+
+  private getLatestPublishedVersion(assetId: string): AssetVersion | null {
+    const row = this.db
+      .prepare(
+        `SELECT v.id, v.asset_id, a.kind, v.version, v.state, v.owner_subject_id,
+                v.source_ref, v.content_hash, v.dependencies_json,
+                v.validation_ids_json, v.created_at
+         FROM core_asset_versions v
+         JOIN core_assets a ON a.id = v.asset_id
+         WHERE v.asset_id = ? AND v.state IN ('published', 'deprecated', 'rolled_back')
          ORDER BY v.version DESC
          LIMIT 1`,
       )
@@ -509,4 +642,16 @@ export function formatOwnerSubjectId(kind: string, id: string): string {
 
 export function hashAssetContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
+}
+
+function safeParseRecord(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    /* ignore malformed evidence metadata */
+  }
+  return {};
 }

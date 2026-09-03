@@ -181,11 +181,7 @@ export async function runReActLoop(
   input: RunAgentInput,
 ): Promise<RunAgentOutput> {
   const { config, guard, tools, autoApply, onEvent, signal } = input;
-  const messages = compressRuntimeMessages(
-    input.messages,
-    input.runtimePolicy,
-    onEvent,
-  );
+  const messages = [...input.messages];
   const llm = new LlmClient(config.model);
   const maxSteps = config.limits.maxSteps;
   const maxTool = config.limits.toolResultMaxChars;
@@ -278,8 +274,13 @@ export async function runReActLoop(
     let thinkingStartedAt = 0;
     let thinkingChars = 0;
     try {
-      response = await llm.chat({
+      const requestMessages = compressRuntimeMessages(
         messages,
+        input.runtimePolicy,
+        onEvent,
+      );
+      response = await llm.chat({
+        messages: requestMessages,
         supportsVision: input.supportsVision,
         tools: visibleToolDefs,
         signal,
@@ -482,16 +483,57 @@ function compressRuntimeMessages(
   if (policy?.enabled !== true || input.length < 3) {
     return [...input];
   }
-  const sections = input.map((message, index) => ({
-    id: `message-${index}`,
-    kind:
-      index === 0 && message.role === "system"
-        ? "decision"
-        : index === input.length - 1
-          ? "remaining"
-          : "history",
-    text: plainTextFromChatContent(message.content),
-    priority: index === 0 || index === input.length - 1 ? 100 : index,
+  let lastUserIndex = -1;
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    if (input[index].role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  const units: Array<{
+    id: string;
+    indexes: number[];
+    kind: string;
+    text: string;
+    priority: number;
+  }> = [];
+  for (let index = 0; index < input.length; index += 1) {
+    const message = input[index];
+    if (message.role === "tool") {
+      // An already-orphaned tool result is never safe to send after pruning.
+      continue;
+    }
+    const indexes = [index];
+    if (message.role === "assistant" && message.tool_calls?.length) {
+      const expectedCallIds = new Set(message.tool_calls.map((call) => call.id));
+      let toolIndex = index + 1;
+      while (toolIndex < input.length && input[toolIndex].role === "tool") {
+        const toolCallId = input[toolIndex].tool_call_id;
+        if (!toolCallId || !expectedCallIds.has(toolCallId)) break;
+        indexes.push(toolIndex);
+        toolIndex += 1;
+      }
+      index = toolIndex - 1;
+    }
+    const criticalSystem = indexes.includes(0) && message.role === "system";
+    const criticalUser = indexes.includes(lastUserIndex);
+    units.push({
+      id: `message-group-${indexes[0]}`,
+      indexes,
+      kind: criticalSystem ? "decision" : criticalUser ? "remaining" : "history",
+      text: indexes
+        .map((messageIndex) =>
+          plainTextFromChatContent(input[messageIndex].content),
+        )
+        .join("\n"),
+      priority: criticalSystem || criticalUser ? 100 : indexes[0],
+    });
+  }
+  const sections = units.map(({ id, kind, text, priority }) => ({
+    id,
+    kind,
+    text,
+    priority,
   }));
   const totalTokenEstimate = sections.reduce(
     (total, section) => total + Math.ceil(section.text.length / 4),
@@ -509,7 +551,12 @@ function compressRuntimeMessages(
     tokenBudget: policy.tokenBudget,
   });
   const retained = new Set(compressed.retainedRefs);
-  const messages = input.filter((_message, index) => retained.has(`message-${index}`));
+  const retainedIndexes = new Set(
+    units
+      .filter((unit) => retained.has(unit.id))
+      .flatMap((unit) => unit.indexes),
+  );
+  const messages = input.filter((_message, index) => retainedIndexes.has(index));
   onEvent?.({
     type: "status",
     phase: "runtime",

@@ -13,6 +13,7 @@ import {
 } from "@forge/execution";
 import { EventStore } from "@forge/event-store";
 import { ForgeStore } from "@forge/store";
+import { CancelService } from "../services/cancel-service.js";
 import { RpcFaultError, TypedRouter } from "../host/router.js";
 import type { ForgeDaemonContext } from "./context.js";
 import { registerExecutionHandlers } from "./execution-module.js";
@@ -135,7 +136,11 @@ function executionRouterFixture(): {
     sessions: {} as ForgeDaemonContext["sessions"],
     automationStore: {} as ForgeDaemonContext["automationStore"],
     channelStore: {} as ForgeDaemonContext["channelStore"],
-    cancelService: {} as ForgeDaemonContext["cancelService"],
+    cancelService: new CancelService(),
+    firstPartyRuns: {
+      start: async () => ({ sessionId: "", finalText: "" }),
+      cancel: () => ({ ok: true as const, canceled: false }),
+    } as ForgeDaemonContext["firstPartyRuns"],
     schedulerHost: {} as ForgeDaemonContext["schedulerHost"],
     channelGatewayHost: {} as ForgeDaemonContext["channelGatewayHost"],
     executionStore,
@@ -146,6 +151,7 @@ function executionRouterFixture(): {
     agentProfiles: {} as ForgeDaemonContext["agentProfiles"],
     artifacts: {} as ForgeDaemonContext["artifacts"],
     validations: {} as ForgeDaemonContext["validations"],
+    automationGovernance: {} as ForgeDaemonContext["automationGovernance"],
     executor,
     executionRecovery,
     executionClock: clock,

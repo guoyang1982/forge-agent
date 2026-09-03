@@ -173,7 +173,7 @@ export interface RpcContractMap {
     };
   };
   "run.cancel": {
-    params: { runId: string; reason?: string };
+    params: { runId?: string; sessionId?: string; reason?: string };
     result: { ok: true; runId: string; state: RunState };
   };
   "run.resume": {

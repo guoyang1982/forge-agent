@@ -34,7 +34,7 @@ function fakeClient(
   const manifest: CapabilityManifest = {
     protocolVersion: RPC_PROTOCOL_VERSION,
     serverVersion: "0.2.0-test",
-    methods: ["system.capabilities", "run.create", "run.cancel", "run.get"],
+    methods: ["system.capabilities", "run.create", "run.cancel", "run.get", "events.read"],
     eventTypes: ["run.succeeded"],
     features: {
       [REQUIRED_EXECUTION_FEATURE]: { version: 1, enabled: true },
@@ -69,6 +69,24 @@ function fakeClient(
           steps: [],
           createdAt: "2026-01-01T00:00:00.000Z",
           updatedAt: "2026-01-01T00:00:00.000Z",
+        });
+      }
+      if (method === "events.read") {
+        return Promise.resolve({
+          events: [
+            {
+              sequence: 1,
+              type: "run.succeeded",
+              eventId: "event-1",
+              runId: "r1",
+              data: {
+                compatibility: true,
+                legacyEventType: "done",
+                sessionId: "session-1",
+                finalText: "ok",
+              },
+            },
+          ],
         });
       }
       return Promise.reject(new Error(`unexpected method: ${method}`));

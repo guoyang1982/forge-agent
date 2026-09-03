@@ -1,6 +1,8 @@
 export * from "./types.js";
 export {
   ArtifactAccessError,
+  ArtifactDuplicateError,
+  ArtifactIdError,
   ArtifactService,
   ArtifactTamperError,
   hashContent,

@@ -36,16 +36,18 @@ export interface InsertRunInput {
   trigger: AutomationRunTrigger;
   error?: string;
   preview?: string;
+  triggerRef?: string;
 }
 
 export interface UpdateRunPatch {
   status?: AutomationRunStatus;
   sessionId?: string;
-  finishedAt?: string;
-  error?: string;
+  finishedAt?: string | null;
+  error?: string | null;
   preview?: string;
   workflowInstanceId?: string;
   durableRunId?: string;
+  triggerRef?: string;
 }
 
 export interface FinishRunPatch {
@@ -90,6 +92,7 @@ interface AutomationRunRow {
   preview: string | null;
   workflow_instance_id?: string | null;
   durable_run_id?: string | null;
+  trigger_ref?: string | null;
 }
 
 function rowToRecord(row: AutomationRow): AutomationRecord {
@@ -145,6 +148,7 @@ function rowToRun(row: AutomationRunRow): AutomationRunRecord {
     preview: row.preview ?? undefined,
     workflowInstanceId: row.workflow_instance_id ?? undefined,
     durableRunId: row.durable_run_id ?? undefined,
+    triggerRef: row.trigger_ref ?? undefined,
   };
 }
 
@@ -206,6 +210,14 @@ export class AutomationStore {
     if (!names.has("durable_run_id")) {
       this.db.exec("ALTER TABLE automation_runs ADD COLUMN durable_run_id TEXT");
     }
+    if (!names.has("trigger_ref")) {
+      this.db.exec("ALTER TABLE automation_runs ADD COLUMN trigger_ref TEXT");
+    }
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_automation_run_occurrence
+        ON automation_runs(automation_id, trigger_ref)
+        WHERE trigger_ref IS NOT NULL
+    `);
   }
 
   create(input: CreateAutomationInput | (AutomationDraft & { cwd: string })): AutomationRecord {
@@ -361,8 +373,9 @@ export class AutomationStore {
     this.db
       .prepare(
         `INSERT INTO automation_runs (
-          id, automation_id, session_id, status, trigger, started_at, finished_at, error, preview
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, automation_id, session_id, status, trigger, started_at, finished_at, error, preview,
+          trigger_ref
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -374,9 +387,23 @@ export class AutomationStore {
         finishedAt,
         input.error ?? null,
         input.preview ?? null,
+        input.triggerRef ?? null,
       );
 
     return this.listRuns(input.automationId, 1)[0]!;
+  }
+
+  getRunByTriggerRef(
+    automationId: string,
+    triggerRef: string,
+  ): AutomationRunRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM automation_runs
+         WHERE automation_id = ? AND trigger_ref = ?`,
+      )
+      .get(automationId, triggerRef) as AutomationRunRow | undefined;
+    return row ? rowToRun(row) : null;
   }
 
   updateRun(id: string, patch: UpdateRunPatch): AutomationRunRecord | null {
@@ -440,6 +467,19 @@ export class AutomationStore {
          LIMIT ?`,
       )
       .all(automationId, limit) as AutomationRunRow[];
+    return rows.map(rowToRun);
+  }
+
+  listRunningDurableRuns(): AutomationRunRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM automation_runs
+         WHERE status = 'running'
+           AND workflow_instance_id IS NOT NULL
+           AND durable_run_id IS NOT NULL
+         ORDER BY started_at`,
+      )
+      .all() as AutomationRunRow[];
     return rows.map(rowToRun);
   }
 

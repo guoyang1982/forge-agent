@@ -141,6 +141,7 @@ const gitSwitchParams = cwdParams.extend({
 
 interface ActiveRun {
   deviceId: string;
+  runId?: string;
   subscribers: Map<string, EventSink>;
   nextSeq: number;
 }
@@ -317,7 +318,11 @@ export class MobileRpcRouter {
         // devices with session access should always be able to interrupt.
         const params = cancelParams.parse(frame.params);
         await this.assertCancelAccess(deviceId, params.sessionId);
-        return this.options.daemon.request(DAEMON_METHODS.CANCEL_RUN, {
+        const run = this.activeRuns.get(params.sessionId);
+        if (run?.runId) {
+          return this.options.daemon.request("run.cancel", { runId: run.runId });
+        }
+        return this.options.daemon.request("run.cancel", {
           sessionId: params.sessionId,
         });
       }
@@ -528,6 +533,37 @@ export class MobileRpcRouter {
     }
   }
 
+  private async executeFirstPartyRun(
+    input: {
+      cwd: string;
+      message: string;
+      sessionId?: string | null;
+      runtime?: { provider?: string; model?: string };
+      autoApply?: boolean;
+      files?: string[];
+      attachments?: unknown;
+    },
+    onLegacyEvent: (event: unknown) => void,
+  ): Promise<{ sessionId: string; finalText: string }> {
+    const result = (await this.options.daemon.request(
+      DAEMON_METHODS.RUN,
+      {
+        cwd: input.cwd,
+        message: input.message,
+        sessionId: input.sessionId ?? null,
+        runtime: input.runtime,
+        attachments: input.attachments,
+        files: input.files,
+        autoApply: input.autoApply,
+      },
+      onLegacyEvent,
+    )) as { sessionId?: string; finalText?: string };
+    return {
+      sessionId: String(result.sessionId ?? ""),
+      finalText: String(result.finalText ?? ""),
+    };
+  }
+
   private async startRun(
     deviceId: string,
     rawParams: unknown,
@@ -605,18 +641,14 @@ export class MobileRpcRouter {
         .map((item) => item.trim().replace(/\\/g, "/"))
         .filter(Boolean)
         .slice(0, 20);
-      const result = await this.options.daemon.request(
-        DAEMON_METHODS.RUN,
+      const result = await this.executeFirstPartyRun(
         {
           cwd,
           message: message || (files.length ? "请查看提及的文件" : ""),
           sessionId: params.sessionId,
           runtime: params.runtime,
-          ...(attachments.length ? { attachments } : {}),
-          ...(files.length ? { files } : {}),
-          // Mobile has no patch-confirm UI (desktop "应用补丁"). Without auto-apply,
-          // write_file stays pending_confirmation and never lands on disk — the files
-          // tab then looks empty even though the agent claimed the write succeeded.
+          attachments: attachments.length ? attachments : undefined,
+          files: files.length ? files : undefined,
           autoApply: true,
         },
         onEvent,

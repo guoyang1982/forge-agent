@@ -14,19 +14,37 @@ import {
 import type { ChatMessage } from "@forge/protocol";
 import { DEFAULT_CONFIG } from "@forge/protocol";
 import { ForgeStore } from "@forge/store";
-import { createBuiltinRegistry } from "@forge/tools";
+import { createBuiltinRegistry, ToolRegistry } from "@forge/tools";
 import { WorkspaceGuard } from "@forge/workspace";
 
 const chatInputs = vi.hoisted(() => [] as Array<{ messages: ChatMessage[] }>);
 const chatDelayMs = vi.hoisted(() => ({ value: 0 }));
+const chatResponses = vi.hoisted(
+  () =>
+    [] as Array<{
+      text: string;
+      reasoningContent: string;
+      toolCalls: Array<{
+        id: string;
+        name: string;
+        arguments: Record<string, unknown>;
+      }>;
+    }>,
+);
 vi.mock("@forge/llm", () => ({
   LlmClient: class {
     async chat(input: { messages: ChatMessage[] }) {
-      chatInputs.push({ messages: input.messages });
+      chatInputs.push({ messages: structuredClone(input.messages) });
       if (chatDelayMs.value > 0) {
         await new Promise((resolve) => setTimeout(resolve, chatDelayMs.value));
       }
-      return { text: "done", reasoningContent: "", toolCalls: [] };
+      return (
+        chatResponses.shift() ?? {
+          text: "done",
+          reasoningContent: "",
+          toolCalls: [],
+        }
+      );
     }
   },
   LlmError: class extends Error {},
@@ -39,6 +57,7 @@ const fixtureRoots: string[] = [];
 afterEach(() => {
   chatInputs.splice(0);
   chatDelayMs.value = 0;
+  chatResponses.splice(0);
   for (const root of fixtureRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -82,6 +101,47 @@ describe("published AgentProfile runtime policy integration", () => {
     expect(sent).toContain("Keep the current objective intact.");
     expect(sent).toContain("Return the final answer.");
   });
+
+  it("re-evaluates profile compression before the next LLM request without orphaning a tool result", async () => {
+    const fx = await runtimePolicyFixture();
+    const tools = new ToolRegistry();
+    tools.register(
+      {
+        name: "large_result",
+        description: "returns a large observation",
+        parameters: { type: "object", properties: {} },
+      },
+      async () => `TOOL-NOISE-${"z".repeat(400)}`,
+    );
+    chatResponses.push(
+      {
+        text: "",
+        reasoningContent: "",
+        toolCalls: [{ id: "call-large", name: "large_result", arguments: {} }],
+      },
+      { text: "done", reasoningContent: "", toolCalls: [] },
+    );
+
+    await fx.run(
+      [
+        { role: "system", content: "Keep the objective." },
+        { role: "user", content: "Use the observation and answer." },
+      ],
+      undefined,
+      tools,
+    );
+
+    expect(chatInputs).toHaveLength(2);
+    expect(JSON.stringify(chatInputs[0]?.messages)).toContain(
+      "Use the observation and answer.",
+    );
+    const second = chatInputs[1]?.messages ?? [];
+    expect(JSON.stringify(second)).not.toContain("TOOL-NOISE");
+    expect(second.some((message) => message.role === "tool")).toBe(false);
+    expect(second.some((message) => Boolean(message.tool_calls?.length))).toBe(
+      false,
+    );
+  });
 });
 
 async function runtimePolicyFixture() {
@@ -122,17 +182,18 @@ async function runtimePolicyFixture() {
   const config = {
     ...DEFAULT_CONFIG,
     model: { ...DEFAULT_CONFIG.model, name: snapshot.runtime.model },
-    limits: { ...DEFAULT_CONFIG.limits, maxSteps: 1 },
+    limits: { ...DEFAULT_CONFIG.limits, maxSteps: 2 },
   };
   let activeMessages: ChatMessage[] = [];
   let activeOnEvent: Parameters<typeof runReActLoop>[0]["onEvent"];
+  let activeTools = createBuiltinRegistry();
   const legacy = new LegacyForgeStepExecutor({
     run: async (request, _emit, signal, runtimePolicy) => {
       const result = await runReActLoop({
         config,
         guard,
         messages: activeMessages,
-        tools: createBuiltinRegistry(),
+        tools: activeTools,
         autoApply: false,
         runtimePolicy,
         onEvent: activeOnEvent,
@@ -169,6 +230,9 @@ async function runtimePolicyFixture() {
       getApproval: () => {
         throw new Error("approval not expected");
       },
+      consumeApproval: () => {
+        throw new Error("approval not expected");
+      },
     },
     budget: {
       reserve: async () => {
@@ -178,6 +242,7 @@ async function runtimePolicyFixture() {
       release: async () => {},
     },
     evidence: {
+      hasCoverage: () => true,
       validateDelivery: async () => ({ accepted: true }),
     },
     step: {
@@ -195,9 +260,11 @@ async function runtimePolicyFixture() {
     async run(
       messages: ChatMessage[],
       onEvent?: Parameters<typeof runReActLoop>[0]["onEvent"],
+      tools?: ToolRegistry,
     ) {
       activeMessages = messages;
       activeOnEvent = onEvent;
+      activeTools = tools ?? createBuiltinRegistry();
       const outcome = await governed.execute(
         {
           runId: "run-profile-policy",

@@ -123,6 +123,54 @@ describe("MemoryStoreV2", () => {
     ).toThrow(/redact/i);
   });
 
+  it("does not recall project-scoped memories without project context", () => {
+    const store = memoryV2Fixture();
+    const proposed = store.propose({
+      ...candidate("project launch date"),
+      scope: {
+        companyId: "company-a",
+        employeeId: "e1",
+        projectId: "project-1",
+      },
+    });
+    store.decide({ candidateId: proposed.id, decision: "ADD" });
+    expect(store.recall(recallContext())).toEqual([]);
+    expect(
+      store.recall({ ...recallContext(), projectId: "project-1" }),
+    ).toHaveLength(1);
+  });
+
+  it("rejects concurrent decide attempts with compare-and-swap", () => {
+    const store = memoryV2Fixture();
+    const proposed = store.propose(candidate("single decision"));
+    store.decide({ candidateId: proposed.id, decision: "ADD" });
+    expect(() =>
+      store.decide({ candidateId: proposed.id, decision: "DELETE" }),
+    ).toThrow(/already decided/);
+  });
+
+  it("ignores reserved metadata keys supplied by callers", () => {
+    const store = memoryV2Fixture();
+    const proposed = store.propose({
+      ...candidate("protected metadata"),
+      metadata: {
+        memoryId: "forged-memory",
+        version: 99,
+        superseded: true,
+        note: "allowed",
+      },
+    });
+    expect(proposed.memoryId).not.toBe("forged-memory");
+    expect(proposed.version).not.toBe(99);
+    store.decide({ candidateId: proposed.id, decision: "ADD" });
+    expect(store.recall(recallContext())).toEqual([
+      expect.objectContaining({
+        content: "protected metadata",
+        reasonRecalled: expect.stringContaining("approved"),
+      }),
+    ]);
+  });
+
   it("invalidates all versions of a memory", () => {
     const store = memoryV2Fixture();
     const proposed = store.propose(candidate("temporary note"));

@@ -3,7 +3,6 @@ import type { DaemonModule } from "../host/types.js";
 import { listCodexModels } from "../services/codex-runtime.js";
 import { listCursorModels, probeCursorRuntime } from "../services/cursor-runtime.js";
 import { handlePermissionResponse } from "../services/network-confirm.js";
-import { handleRun } from "../services/run-service.js";
 import {
   closeAcpSession,
   listRuntimes,
@@ -32,16 +31,12 @@ export function createRuntimeModule(): DaemonModule<ForgeDaemonContext> {
       }));
       router.registerLegacy(DAEMON_METHODS.CANCEL_RUN, async (params) => {
         const request = params as { sessionId?: string } | undefined;
-        return context.cancelService.cancel(request?.sessionId);
+        return context.firstPartyRuns.cancel(request?.sessionId);
       });
       router.registerLegacy(DAEMON_METHODS.PERMISSION_RESPONSE, async (params) =>
         handlePermissionResponse(params));
       router.registerLegacy(DAEMON_METHODS.RUN, async (params, rpc) =>
-        handleRun(params, rpc.emitLegacyAgentEvent, {
-          sessions: context.sessions,
-          getRuntime: context.getRuntime,
-          cancelService: context.cancelService,
-        }));
+        context.firstPartyRuns.start(params, rpc.emitLegacyAgentEvent));
       router.registerLegacy(DAEMON_METHODS.LIST_CODEX_MODELS, async (params) =>
         listCodexModels(cwdFromParams(params)));
       router.registerLegacy(DAEMON_METHODS.LIST_CURSOR_MODELS, async (params) =>

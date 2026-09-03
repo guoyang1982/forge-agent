@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { EventEnvelope } from "@forge/protocol";
 import type { NewEvent, OutboxClaim, OutboxState, SubscriptionFilter } from "./types.js";
+import { DEFAULT_OUTBOX_LEASE_MS } from "./types.js";
 
 const DEFAULT_DESTINATION = "internal";
 const DEFAULT_SCHEMA_VERSION = 1;
@@ -127,6 +128,12 @@ export class EventStore {
   }
 
   ackCursor(consumerId: string, sequence: number, now: string): void {
+    const maxSequence = this.getMaxSequence();
+    if (sequence > maxSequence) {
+      throw new Error(
+        `cursor sequence ${sequence} exceeds stream maximum ${maxSequence}`,
+      );
+    }
     this.db
       .prepare(
         `INSERT INTO core_event_cursors (consumer_id, sequence, updated_at)
@@ -136,6 +143,13 @@ export class EventStore {
            updated_at = excluded.updated_at`,
       )
       .run(consumerId, sequence, now);
+  }
+
+  getMaxSequence(): number {
+    const row = this.db
+      .prepare(`SELECT MAX(sequence) AS maxSequence FROM core_events`)
+      .get() as { maxSequence: number | null } | undefined;
+    return row?.maxSequence ?? 0;
   }
 
   getCursor(consumerId: string): number {
@@ -151,8 +165,24 @@ export class EventStore {
     destination: string;
     limit: number;
     now: string;
+    workerId: string;
+    leaseMs?: number;
   }): OutboxClaim[] {
+    const leaseMs = input.leaseMs ?? DEFAULT_OUTBOX_LEASE_MS;
+    const leasedUntil = new Date(Date.parse(input.now) + leaseMs).toISOString();
+
     return this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE core_outbox
+           SET leased_by = NULL, leased_until = NULL
+           WHERE destination = ?
+             AND state = 'pending'
+             AND leased_until IS NOT NULL
+             AND leased_until <= ?`,
+        )
+        .run(input.destination, input.now);
+
       const rows = this.db
         .prepare(
           `SELECT id, event_sequence AS eventSequence, event_id AS eventId,
@@ -161,10 +191,11 @@ export class EventStore {
            WHERE destination = ?
              AND state = 'pending'
              AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+             AND (leased_by IS NULL OR leased_until IS NULL OR leased_until <= ?)
            ORDER BY created_at ASC
            LIMIT ?`,
         )
-        .all(input.destination, input.now, input.limit) as Array<{
+        .all(input.destination, input.now, input.now, input.limit) as Array<{
           id: string;
           eventSequence: number;
           eventId: string;
@@ -179,10 +210,12 @@ export class EventStore {
         const changed = this.db
           .prepare(
             `UPDATE core_outbox
-             SET state = 'published', published_at = ?, attempts = attempts + 1
-             WHERE id = ? AND state = 'pending'`,
+             SET leased_by = ?, leased_until = ?, attempts = attempts + 1
+             WHERE id = ?
+               AND state = 'pending'
+               AND (leased_by IS NULL OR leased_until IS NULL OR leased_until <= ?)`,
           )
-          .run(input.now, row.id).changes;
+          .run(input.workerId, leasedUntil, row.id, input.now).changes;
         if (changed !== 1) {
           continue;
         }
@@ -194,20 +227,62 @@ export class EventStore {
           payload: JSON.parse(row.payloadJson) as unknown,
           attempts: row.attempts + 1,
           createdAt: row.createdAt,
+          leasedUntil,
         });
       }
       return claims;
     })();
   }
 
-  markOutboxFailed(outboxId: string, nextAttemptAt: string): void {
-    this.db
+  ackOutbox(outboxId: string, workerId: string, now: string): void {
+    const result = this.db
       .prepare(
         `UPDATE core_outbox
-         SET state = 'failed', next_attempt_at = ?, attempts = attempts + 1
-         WHERE id = ?`,
+         SET state = 'published', published_at = ?, leased_by = NULL, leased_until = NULL
+         WHERE id = ? AND state = 'pending' AND leased_by = ?`,
       )
-      .run(nextAttemptAt, outboxId);
+      .run(now, outboxId, workerId);
+    if (result.changes !== 1) {
+      throw new Error(`outbox delivery not owned: ${outboxId}`);
+    }
+  }
+
+  markOutboxFailed(
+    outboxId: string,
+    nextAttemptAt: string,
+    workerId?: string,
+  ): void {
+    const result = workerId
+      ? this.db
+          .prepare(
+            `UPDATE core_outbox
+             SET state = 'failed', next_attempt_at = ?, leased_by = NULL, leased_until = NULL
+             WHERE id = ? AND leased_by = ?`,
+          )
+          .run(nextAttemptAt, outboxId, workerId)
+      : this.db
+          .prepare(
+            `UPDATE core_outbox
+             SET state = 'failed', next_attempt_at = ?, leased_by = NULL, leased_until = NULL
+             WHERE id = ?`,
+          )
+          .run(nextAttemptAt, outboxId);
+    if (result.changes !== 1) {
+      throw new Error(`outbox delivery not owned: ${outboxId}`);
+    }
+  }
+
+  releaseOutbox(outboxId: string, workerId: string, nextAttemptAt: string): void {
+    const result = this.db
+      .prepare(
+        `UPDATE core_outbox
+         SET state = 'pending', next_attempt_at = ?, leased_by = NULL, leased_until = NULL
+         WHERE id = ? AND state = 'pending' AND leased_by = ?`,
+      )
+      .run(nextAttemptAt, outboxId, workerId);
+    if (result.changes !== 1) {
+      throw new Error(`outbox delivery not owned: ${outboxId}`);
+    }
   }
 
   getOutboxState(outboxId: string): OutboxState | null {

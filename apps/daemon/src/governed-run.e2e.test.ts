@@ -82,7 +82,7 @@ describe("governed run e2e", () => {
 async function governedDaemonFixture() {
   const root = mkdtempSync(join(tmpdir(), "forge-governed-run-e2e-"));
   fixtureRoots.push(root);
-  const clock = new ManualTestClock("2026-01-01T00:00:00.000Z");
+  const clock = new ManualTestClock("2099-01-01T00:00:00.000Z");
   const forgeStore = ForgeStore.open({
     dbPath: join(root, "data.db"),
     migrationsDir,
@@ -208,6 +208,9 @@ async function governedDaemonFixture() {
         });
       },
       getApproval: (approvalId) => approvals.getApproval(approvalId),
+      consumeApproval: (approvalId) => {
+        approvals.consumeApproval(approvalId);
+      },
     },
     budget: {
       reserve: async (input) => {
@@ -224,6 +227,7 @@ async function governedDaemonFixture() {
       },
     },
     evidence: {
+      hasCoverage: () => true,
       validateDelivery: async (input) => {
         calls.push("evidence.validate");
         return validations.validateDelivery(input);

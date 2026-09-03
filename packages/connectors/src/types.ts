@@ -73,7 +73,7 @@ export interface ConnectorAdapter {
 
 export interface ResolvedCredential {
   ref: string;
-  token: string;
+  bytes: Uint8Array;
 }
 
 export interface ConnectorGatewayEvent {

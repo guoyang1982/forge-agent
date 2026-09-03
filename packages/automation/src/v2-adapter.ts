@@ -14,16 +14,61 @@ export const EMPTY_OBJECT_SCHEMA = {
 
 export interface ScheduledRunClaimStore {
   tryClaim(automationId: string, occurrenceAt: string): boolean;
+  complete(automationId: string, occurrenceAt: string): void;
+  abandon(automationId: string, occurrenceAt: string): void;
+  recoverIncomplete(): number;
 }
 
 export class TriggerScheduleClaimStore implements ScheduledRunClaimStore {
+  private readonly leases = new Map<string, string>();
+
   constructor(private readonly triggers: TriggerStore) {}
 
   tryClaim(automationId: string, occurrenceAt: string): boolean {
-    return this.triggers.accept({
+    const result = this.triggers.accept({
       source: `automation:${automationId}`,
       externalId: occurrenceAt,
     });
+    if (result.accepted && result.leaseToken) {
+      this.leases.set(`${automationId}:${occurrenceAt}`, result.leaseToken);
+    }
+    return result.accepted;
+  }
+
+  complete(automationId: string, occurrenceAt: string): void {
+    const key = `${automationId}:${occurrenceAt}`;
+    const leaseToken = this.leases.get(key);
+    if (!leaseToken) {
+      throw new Error(`missing trigger lease for ${key}`);
+    }
+    this.triggers.complete(
+      {
+        source: `automation:${automationId}`,
+        externalId: occurrenceAt,
+      },
+      leaseToken,
+    );
+    this.leases.delete(key);
+  }
+
+  abandon(automationId: string, occurrenceAt: string): void {
+    const key = `${automationId}:${occurrenceAt}`;
+    const leaseToken = this.leases.get(key);
+    if (!leaseToken) {
+      return;
+    }
+    this.triggers.fail(
+      {
+        source: `automation:${automationId}`,
+        externalId: occurrenceAt,
+      },
+      leaseToken,
+    );
+    this.leases.delete(key);
+  }
+
+  recoverIncomplete(): number {
+    return this.triggers.recoverIncomplete();
   }
 }
 
@@ -98,9 +143,10 @@ export function buildAutomationRunContext(
 export async function processScheduledAutomationCatchUp(
   automations: AutomationRecord[],
   claimStore: ScheduledRunClaimStore,
-  execute: (automationId: string) => Promise<void>,
+  execute: (automationId: string, occurrenceAt: string) => Promise<boolean>,
   now = new Date(),
 ): Promise<void> {
+  claimStore.recoverIncomplete();
   for (const auto of automations) {
     if (auto.trigger.type !== "cron" || !auto.nextRunAt) {
       continue;
@@ -111,7 +157,18 @@ export async function processScheduledAutomationCatchUp(
     if (!claimStore.tryClaim(auto.id, auto.nextRunAt)) {
       continue;
     }
-    await execute(auto.id);
+    let durableOccurrenceCreated = false;
+    try {
+      durableOccurrenceCreated = await execute(auto.id, auto.nextRunAt);
+    } catch (error) {
+      claimStore.abandon(auto.id, auto.nextRunAt);
+      throw error;
+    }
+    if (durableOccurrenceCreated) {
+      claimStore.complete(auto.id, auto.nextRunAt);
+    } else {
+      claimStore.abandon(auto.id, auto.nextRunAt);
+    }
   }
 }
 

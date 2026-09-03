@@ -40,6 +40,7 @@ export interface AutomationRunRecord {
   preview?: string;
   workflowInstanceId?: string;
   durableRunId?: string;
+  triggerRef?: string;
 }
 
 export interface AutomationDraft {

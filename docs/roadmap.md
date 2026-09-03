@@ -51,6 +51,7 @@ Forge 的长期方向不是继续堆叠模型、工具和人才数量，而是�
 - Cron/手动自动化、独立 Session、运行历史与通知配置。
 - PDF、Office 文档和文本附件提取能力，可作为知识库摄取基础。
 - Desktop、CLI、Mobile、Channel Gateway 和远程主机访问能力。
+- Core v2 作为执行/治理内核：first-party Desktop / CLI / Mobile 仍走 `run` / `cancel_run`，daemon 内部创建 durable `core_runs` 并桥接事件；`run.create` 留给自动化、恢复和测试。
 
 相关现状文档：
 

@@ -23,11 +23,21 @@ describe("scanLegacySymbols", () => {
 
   it("ignores allowlisted transitional paths", () => {
     const root = fixtureRepo({
-      "apps/cli/src/runner.ts": "DAEMON_METHODS.RUN",
+      "apps/daemon/src/modules/runtime-module.ts": "DAEMON_METHODS.RUN",
       "apps/other/x.ts": "console.log('ok')",
     });
     const findings = scanLegacySymbols({ root });
     expect(findings).toEqual([]);
+  });
+
+  it("rejects legacy symbols outside the allowlist", () => {
+    const root = fixtureRepo({
+      "apps/example/legacy.js": "client.request(DAEMON_METHODS.CANCEL_RUN, value)",
+    });
+    const findings = scanLegacySymbols({ root, allowPaths: [] });
+    expect(findings.some((finding) => finding.symbol === "DAEMON_METHODS.CANCEL_RUN")).toBe(
+      true,
+    );
   });
 });
 
