@@ -359,6 +359,6 @@ function rpcContext() {
   return {
     requestId: "request-governed-1",
     correlationId: "correlation-governed-1",
-    emitLegacyAgentEvent: () => {},
+    emitAgentEvent: () => {},
   };
 }

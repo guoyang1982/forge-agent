@@ -19,7 +19,7 @@ export interface IdFactory {
   stepId?(): string;
 }
 
-export interface LegacyForgeRunFn {
+export interface ForgeAgentRunFn {
   (
     request: RunRequest,
     emit: (event: AgentEvent) => void,
@@ -28,10 +28,10 @@ export interface LegacyForgeRunFn {
   ): Promise<RunResult>;
 }
 
-export interface LegacyForgeStepExecutorOptions {
-  run: LegacyForgeRunFn;
+export interface ForgeAgentStepExecutorOptions {
+  run: ForgeAgentRunFn;
   persistResult?: (result: RunResult, input: StepExecutionInput) => string;
-  emitLegacyAgentEvent?: (
+  emitAgentEvent?: (
     event: AgentEvent,
     links: { runId: string; stepId: string; attemptId: string },
   ) => void;
@@ -62,14 +62,14 @@ function forgeAgentStep(
     id: ids.stepId?.() ?? `${runId}:forge-agent`,
     kind: FORGE_AGENT_STEP_KIND,
     dependsOn: [],
-    input: legacyRunInputFromRequest(request),
+    input: forgeAgentRunInput(request),
     idempotencyKey: request.sessionId ?? undefined,
     retry: { maxAttempts: 1, backoffMs: 0, maxBackoffMs: 0 },
     timeoutMs: 3_600_000,
   };
 }
 
-export function legacyRunInputFromRequest(request: RunRequest): RunRequest {
+export function forgeAgentRunInput(request: RunRequest): RunRequest {
   return {
     cwd: request.cwd,
     message: request.message,
@@ -85,7 +85,7 @@ export function legacyRunInputFromRequest(request: RunRequest): RunRequest {
   };
 }
 
-export function parseLegacyRunRequest(input: unknown): RunRequest {
+export function parseForgeAgentStepInput(input: unknown): RunRequest {
   if (!input || typeof input !== "object") {
     throw new Error("legacy run step input must be an object");
   }
@@ -93,7 +93,7 @@ export function parseLegacyRunRequest(input: unknown): RunRequest {
   if (typeof value.cwd !== "string" || typeof value.message !== "string") {
     throw new Error("legacy run step input requires cwd and message");
   }
-  return legacyRunInputFromRequest(value as RunRequest);
+  return forgeAgentRunInput(value as RunRequest);
 }
 
 export function finalTextToArtifactRef(
@@ -104,7 +104,7 @@ export function finalTextToArtifactRef(
   return `artifact:session:${sessionId}:${digest}`;
 }
 
-export function bridgeLegacyAgentEvent(
+export function bridgeAgentEvent(
   event: AgentEvent,
   links: { runId: string; stepId: string; attemptId: string; correlationId: string },
 ): Record<string, unknown> {
@@ -120,10 +120,10 @@ export function bridgeLegacyAgentEvent(
   };
 }
 
-export class LegacyForgeStepExecutor implements StepExecutor {
+export class ForgeAgentStepExecutor implements StepExecutor {
   readonly kind = FORGE_AGENT_STEP_KIND;
 
-  constructor(private readonly options: LegacyForgeStepExecutorOptions) {}
+  constructor(private readonly options: ForgeAgentStepExecutorOptions) {}
 
   async execute(
     input: StepExecutionInput,
@@ -137,9 +137,9 @@ export class LegacyForgeStepExecutor implements StepExecutor {
       };
     }
 
-    const request = parseLegacyRunRequest(input.input);
+    const request = parseForgeAgentStepInput(input.input);
     const emit = (event: AgentEvent) => {
-      this.options.emitLegacyAgentEvent?.(event, {
+      this.options.emitAgentEvent?.(event, {
         runId: input.runId,
         stepId: input.stepId,
         attemptId: input.attemptId,

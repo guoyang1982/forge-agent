@@ -6,25 +6,40 @@ import { DAEMON_METHODS, V2_RPC_METHODS } from "@forge/protocol";
 import { TypedRouter } from "../host/router.js";
 import type { ForgeDaemonContext } from "./context.js";
 import { createDaemonModules } from "./index.js";
+import { createSystemModule } from "./system-module.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
 describe("daemon business modules", () => {
-  it("registers every declared compatibility method exactly once", () => {
+  it("registers every declared product method exactly once", () => {
     const router = new TypedRouter();
-    const context = {} as ForgeDaemonContext;
+    const context = {
+      serverVersion: "0.2.0-test",
+      build: "modules-test",
+    } as ForgeDaemonContext;
+
+    createSystemModule({
+      capabilities: () => ({
+        protocolVersion: 2,
+        serverVersion: "0.2.0-test",
+        methods: [],
+        eventTypes: [],
+        features: {},
+      }),
+      status: async () => ({ ok: true, migrationVersion: null, modules: [] }),
+    }).register(router, context);
 
     for (const module of createDaemonModules(context)) {
       module.register(router, context);
     }
 
-    const v2Methods = new Set<string>(V2_RPC_METHODS);
-    const legacyMethods = router.methods().filter((method) => !v2Methods.has(method));
+    const kernelMethods = new Set<string>(V2_RPC_METHODS);
+    const productMethods = router.methods().filter((method) => !kernelMethods.has(method));
 
-    expect(new Set(legacyMethods)).toEqual(
+    expect(new Set(productMethods)).toEqual(
       new Set(Object.values(DAEMON_METHODS)),
     );
-    expect(legacyMethods).toHaveLength(Object.values(DAEMON_METHODS).length);
+    expect(productMethods).toHaveLength(Object.values(DAEMON_METHODS).length);
     expect(router.methods()).toEqual(
       expect.arrayContaining([
         "run.create",

@@ -31,11 +31,11 @@ export {
 export {
   EMPTY_OBJECT_SCHEMA,
   TriggerScheduleClaimStore,
-  automationLegacyRunInput,
+  automationRunInput,
   automationToWorkflow,
   buildAutomationRunContext,
-  legacyAutomationStep,
+  automationAgentStep,
   processScheduledAutomationCatchUp,
   workflowCorrelationId,
   type ScheduledRunClaimStore,
-} from "./v2-adapter.js";
+} from "./durable-adapter.js";

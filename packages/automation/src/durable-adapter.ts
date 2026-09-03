@@ -88,19 +88,19 @@ export function automationToWorkflow(
             },
           ]
         : [{ kind: "manual" }],
-    steps: [legacyAutomationStep(row)],
+    steps: [automationAgentStep(row)],
     concurrency: { maxRuns: 1 },
   };
 }
 
-export function legacyAutomationStep(
+export function automationAgentStep(
   row: AutomationRecord,
 ): WorkflowStepDefinition {
   return {
     id: "agent",
     kind: FORGE_AGENT_STEP_KIND,
     dependsOn: [],
-    input: automationLegacyRunInput(row),
+    input: automationRunInput(row),
     idempotencyKey:
       row.sessionMode === "resume" && row.resumeSessionId
         ? row.resumeSessionId
@@ -108,7 +108,7 @@ export function legacyAutomationStep(
   };
 }
 
-export function automationLegacyRunInput(
+export function automationRunInput(
   row: AutomationRecord,
   sessionId?: string,
 ): Record<string, unknown> {

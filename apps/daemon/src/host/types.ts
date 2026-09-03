@@ -5,7 +5,7 @@ import type { TypedRouter } from "./router.js";
 export interface RpcContext {
   requestId: string;
   correlationId: string;
-  emitLegacyAgentEvent: (event: AgentEvent) => void;
+  emitAgentEvent: (event: AgentEvent) => void;
 }
 
 export interface DaemonContext {
@@ -23,6 +23,8 @@ export interface DaemonModuleFeature {
 
 export interface DaemonModule<Context extends DaemonContext = DaemonContext> {
   readonly id: string;
+  /** Name advertised in system.capabilities.features. Defaults to `id`. */
+  readonly featureId?: string;
   readonly feature?: DaemonModuleFeature;
   register(router: TypedRouter, context: Context): void;
   start?(context: Context): Promise<void> | void;

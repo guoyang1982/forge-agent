@@ -36,8 +36,8 @@ export class TypedRouter {
     this.handlers.set(method, handler as RegisteredHandler);
   }
 
-  /** Temporary bridge for v1 method names while clients migrate to v2 contracts. */
-  registerLegacy(
+  /** Product RPC methods that are not in the typed kernel method union. */
+  registerProduct(
     method: string,
     handler: RegisteredHandler,
   ): void {
@@ -52,22 +52,22 @@ export class TypedRouter {
     params: RpcParams<M>,
     context: RpcContext,
   ): Promise<RpcResult<M>> {
-    return (await this.dispatch(method, params, context)) as RpcResult<M>;
+    return (await this.invoke(method, params, context)) as RpcResult<M>;
   }
 
-  handleLegacy(
+  handleUntyped(
     method: string,
     params: unknown,
     context: RpcContext,
   ): Promise<unknown> {
-    return this.dispatch(method, params, context);
+    return this.invoke(method, params, context);
   }
 
   methods(): string[] {
     return [...this.handlers.keys()];
   }
 
-  private async dispatch(
+  private async invoke(
     method: string,
     params: unknown,
     context: RpcContext,

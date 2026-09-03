@@ -21,23 +21,23 @@ export function createAutomationModule(): DaemonModule<ForgeDaemonContext> {
     feature: { version: 1, enabled: true },
     register(router, context) {
       const deps = automationDeps(context);
-      router.registerLegacy(DAEMON_METHODS.LIST_AUTOMATIONS, async (params) =>
+      router.registerProduct(DAEMON_METHODS.LIST_AUTOMATIONS, async (params) =>
         handleListAutomations(params, deps));
-      router.registerLegacy(DAEMON_METHODS.GET_AUTOMATION, async (params) =>
+      router.registerProduct(DAEMON_METHODS.GET_AUTOMATION, async (params) =>
         handleGetAutomation(params, deps));
-      router.registerLegacy(DAEMON_METHODS.CREATE_AUTOMATION, async (params) =>
+      router.registerProduct(DAEMON_METHODS.CREATE_AUTOMATION, async (params) =>
         handleCreateAutomation(params, deps));
-      router.registerLegacy(DAEMON_METHODS.UPDATE_AUTOMATION, async (params) =>
+      router.registerProduct(DAEMON_METHODS.UPDATE_AUTOMATION, async (params) =>
         handleUpdateAutomation(params, deps));
-      router.registerLegacy(DAEMON_METHODS.DELETE_AUTOMATION, async (params) =>
+      router.registerProduct(DAEMON_METHODS.DELETE_AUTOMATION, async (params) =>
         handleDeleteAutomation(params, deps));
-      router.registerLegacy(DAEMON_METHODS.RUN_AUTOMATION, async (params, rpc) =>
-        handleRunAutomation(params, deps, rpc.emitLegacyAgentEvent));
-      router.registerLegacy(DAEMON_METHODS.LIST_AUTOMATION_RUNS, async (params) =>
+      router.registerProduct(DAEMON_METHODS.RUN_AUTOMATION, async (params, rpc) =>
+        handleRunAutomation(params, deps, rpc.emitAgentEvent));
+      router.registerProduct(DAEMON_METHODS.LIST_AUTOMATION_RUNS, async (params) =>
         handleListAutomationRuns(params, deps));
-      router.registerLegacy(DAEMON_METHODS.PARSE_AUTOMATION_DRAFT, async (params) =>
+      router.registerProduct(DAEMON_METHODS.PARSE_AUTOMATION_DRAFT, async (params) =>
         handleParseAutomationDraft(params));
-      router.registerLegacy(DAEMON_METHODS.LIST_AUTOMATION_TEMPLATES, async () =>
+      router.registerProduct(DAEMON_METHODS.LIST_AUTOMATION_TEMPLATES, async () =>
         handleListAutomationTemplates());
     },
     start: async (context) => {

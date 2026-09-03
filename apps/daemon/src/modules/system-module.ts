@@ -1,7 +1,4 @@
-import type {
-  CapabilityManifest,
-  SystemStatusResult,
-} from "@forge/protocol";
+import { DAEMON_METHODS, type CapabilityManifest, type SystemStatusResult } from "@forge/protocol";
 import type { DaemonContext, DaemonModule } from "../host/types.js";
 
 export interface SystemModuleDependencies {
@@ -16,11 +13,13 @@ export function createSystemModule(
     id: "system",
     feature: { version: 1, enabled: true },
     register(router, context) {
-      router.register("system.ping", async () => ({
+      const ping = async () => ({
         ok: true,
         version: context.serverVersion,
         build: context.build,
-      }));
+      });
+      router.register("system.ping", ping);
+      router.registerProduct(DAEMON_METHODS.PING, ping);
       router.register("system.capabilities", async () =>
         dependencies.capabilities(),
       );

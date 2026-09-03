@@ -10,9 +10,9 @@ Assets/Connectors sub-plan Tasks 1–12 and review remediation Task 8 on branch 
 |------|-------------------|
 | Assets | `@forge/asset-registry` |
 | Workflows | `@forge/workflows` v2 compiler/store/triggers |
-| Automation | `@forge/automation` v2 adapter |
+| Automation | `@forge/automation` durable adapter |
 | Knowledge | `@forge/memory` `KnowledgeStore` |
-| Memory | `@forge/memory` `MemoryStoreV2` |
+| Memory | `@forge/memory` `GovernedMemoryStore` |
 | Runtime | `@forge/agent-core` dynamic status + compression |
 | Connectors | `@forge/connectors` gateway |
 | Clients | Desktop/CLI/Mobile keep `run` / `cancel_run`; kernel `run.create` for automation |

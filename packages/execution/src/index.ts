@@ -52,21 +52,21 @@ export type {
 export { mapGovernedOutcome } from "./governed-types.js";
 export { ExecutionRecovery } from "./recovery.js";
 export {
-  bridgeLegacyAgentEvent,
+  bridgeAgentEvent,
   finalTextToArtifactRef,
   FIRST_PARTY_RUN_ORIGIN,
   FORGE_AGENT_STEP_KIND,
   isFirstPartyChatPolicyContext,
-  LegacyForgeStepExecutor,
-  legacyRunInputFromRequest,
-  parseLegacyRunRequest,
+  ForgeAgentStepExecutor,
+  forgeAgentRunInput,
+  parseForgeAgentStepInput,
   runRequestToRunSpec,
-} from "./legacy-run-adapter.js";
+} from "./forge-agent-adapter.js";
 export type {
   IdFactory,
-  LegacyForgeRunFn,
-  LegacyForgeStepExecutorOptions,
-} from "./legacy-run-adapter.js";
+  ForgeAgentRunFn,
+  ForgeAgentStepExecutorOptions,
+} from "./forge-agent-adapter.js";
 export type {
   ClaimedAttempt,
   EventAppendFn,

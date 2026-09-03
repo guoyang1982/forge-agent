@@ -34,7 +34,7 @@ import { CancelService } from "./services/cancel-service.js";
 import { ChannelGatewayHost } from "./services/channel-gateway-host.js";
 import { releaseAllAcpSessions } from "./services/runtime-service.js";
 import { runSessionEndHooksOnShutdown } from "./services/session-end-service.js";
-import { executeLegacyForgeRun } from "./services/run-service.js";
+import { executeForgeRun } from "./services/run-service.js";
 import { createProductionExecutionComposition } from "./services/production-execution-composition.js";
 import { createProductionValidatorRegistry } from "./services/production-validators.js";
 import { AutomationGovernanceService } from "./services/automation-governance.js";
@@ -163,7 +163,7 @@ const productionExecution = createProductionExecutionComposition({
         return { sessionId: "session-smoke", finalText: "smoke-ok" };
       }
     : (request, emit, signal, runtimePolicy) =>
-        executeLegacyForgeRun(
+        executeForgeRun(
           request,
           emit,
           { sessions, getRuntime, cancelService },

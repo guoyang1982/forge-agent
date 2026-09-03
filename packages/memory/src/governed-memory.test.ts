@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ForgeStore } from "@forge/store";
 import {
-  MemoryStoreV2,
+  GovernedMemoryStore,
   type MemoryCandidateInput,
   type RecallContext,
-} from "./memory-v2.js";
+} from "./governed-memory.js";
 
 const migrationsDir = join(import.meta.dirname, "..", "..", "..", "migrations");
 const fixtureRoots: string[] = [];
@@ -18,15 +18,15 @@ afterEach(() => {
   }
 });
 
-describe("MemoryStoreV2", () => {
+describe("GovernedMemoryStore", () => {
   it("does not expose a candidate before an ADD decision", () => {
-    const store = memoryV2Fixture();
+    const store = governedMemoryFixture();
     store.propose(candidate("prefer concise answers"));
     expect(store.recall(recallContext())).toEqual([]);
   });
 
   it("recalls approved memories with explanation", () => {
-    const store = memoryV2Fixture();
+    const store = governedMemoryFixture();
     const proposed = store.propose(candidate("prefer concise answers"));
     store.decide({ candidateId: proposed.id, decision: "ADD" });
     const recalled = store.recall(recallContext());
@@ -39,7 +39,7 @@ describe("MemoryStoreV2", () => {
   });
 
   it("excludes expired and cross-company memories", () => {
-    const store = memoryV2FixtureWithApprovedRows();
+    const store = governedMemoryFixtureWithApprovedRows();
     expect(
       store.recall({
         companyId: "company-b",
@@ -70,7 +70,7 @@ describe("MemoryStoreV2", () => {
   });
 
   it("applies UPDATE as a new version and supersedes the previous one", () => {
-    const store = memoryV2Fixture();
+    const store = governedMemoryFixture();
     const first = store.propose(candidate("prefer short answers"));
     store.decide({ candidateId: first.id, decision: "ADD" });
     const correction = store.propose({
@@ -89,7 +89,7 @@ describe("MemoryStoreV2", () => {
   });
 
   it("removes memories after DELETE decision", () => {
-    const store = memoryV2Fixture();
+    const store = governedMemoryFixture();
     const proposed = store.propose(candidate("archive old preference"));
     store.decide({ candidateId: proposed.id, decision: "ADD" });
     const removal = store.propose({
@@ -105,14 +105,14 @@ describe("MemoryStoreV2", () => {
   });
 
   it("ignores NOOP decisions", () => {
-    const store = memoryV2Fixture();
+    const store = governedMemoryFixture();
     const proposed = store.propose(candidate("maybe useful"));
     store.decide({ candidateId: proposed.id, decision: "NOOP" });
     expect(store.recall(recallContext())).toEqual([]);
   });
 
   it("rejects raw shared cross-user conversations without redaction", () => {
-    const store = memoryV2Fixture();
+    const store = governedMemoryFixture();
     expect(() =>
       store.propose({
         claim: "User A told user B the launch date",
@@ -124,7 +124,7 @@ describe("MemoryStoreV2", () => {
   });
 
   it("does not recall project-scoped memories without project context", () => {
-    const store = memoryV2Fixture();
+    const store = governedMemoryFixture();
     const proposed = store.propose({
       ...candidate("project launch date"),
       scope: {
@@ -141,7 +141,7 @@ describe("MemoryStoreV2", () => {
   });
 
   it("rejects concurrent decide attempts with compare-and-swap", () => {
-    const store = memoryV2Fixture();
+    const store = governedMemoryFixture();
     const proposed = store.propose(candidate("single decision"));
     store.decide({ candidateId: proposed.id, decision: "ADD" });
     expect(() =>
@@ -150,7 +150,7 @@ describe("MemoryStoreV2", () => {
   });
 
   it("ignores reserved metadata keys supplied by callers", () => {
-    const store = memoryV2Fixture();
+    const store = governedMemoryFixture();
     const proposed = store.propose({
       ...candidate("protected metadata"),
       metadata: {
@@ -172,7 +172,7 @@ describe("MemoryStoreV2", () => {
   });
 
   it("invalidates all versions of a memory", () => {
-    const store = memoryV2Fixture();
+    const store = governedMemoryFixture();
     const proposed = store.propose(candidate("temporary note"));
     store.decide({ candidateId: proposed.id, decision: "ADD" });
     store.invalidate(proposed.id);
@@ -180,19 +180,19 @@ describe("MemoryStoreV2", () => {
   });
 });
 
-function memoryV2Fixture(): MemoryStoreV2 {
-  const root = mkdtempSync(join(tmpdir(), "forge-memory-v2-"));
+function governedMemoryFixture(): GovernedMemoryStore {
+  const root = mkdtempSync(join(tmpdir(), "forge-governed-memory-"));
   fixtureRoots.push(root);
   const forgeStore = ForgeStore.open({
     dbPath: join(root, "data.db"),
     migrationsDir,
     owner: "test",
   });
-  return new MemoryStoreV2(forgeStore.db);
+  return new GovernedMemoryStore(forgeStore.db);
 }
 
-function memoryV2FixtureWithApprovedRows(): MemoryStoreV2 {
-  const store = memoryV2Fixture();
+function governedMemoryFixtureWithApprovedRows(): GovernedMemoryStore {
+  const store = governedMemoryFixture();
   const proposed = store.propose({
     ...candidate("company-a playbook"),
     scope: { companyId: "company-a", employeeId: "e1" },

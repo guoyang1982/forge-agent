@@ -446,7 +446,7 @@ export interface EventEnvelope<T = unknown> {
   data: T;
 }
 
-export const FORGE_LEGACY_AGENT_STEP_KIND = "forge.agent" as const;
+export const FORGE_AGENT_STEP_KIND = "forge.agent" as const;
 
 /** Live event notification method for v2 event subscriptions. */
 export const CORE_EVENT_METHOD = "core.event" as const;

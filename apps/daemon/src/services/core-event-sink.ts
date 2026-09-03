@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
-  bridgeLegacyAgentEvent,
+  bridgeAgentEvent,
   type EventAppendFn,
 } from "@forge/execution";
 import { EventStore } from "@forge/event-store";
@@ -16,7 +16,7 @@ export interface ProductionEventSinkOptions {
 }
 
 /**
- * The sole production bridge between legacy agent progress and v2 CoreEvents.
+ * Production bridge from AgentEvent progress onto durable CoreEvents.
  * It always broadcasts the envelope returned from storage, never a synthetic copy.
  */
 export class ProductionEventSink {
@@ -45,7 +45,7 @@ export class ProductionEventSink {
     this.pendingTransactionEvents = [];
   };
 
-  readonly emitLegacyAgentEvent = (
+  readonly emitAgentEvent = (
     event: AgentEvent,
     links: { runId: string; stepId: string; attemptId: string },
   ): void => {
@@ -68,7 +68,7 @@ export class ProductionEventSink {
       occurredAt: this.now(),
       data: {
         ...event,
-        ...bridgeLegacyAgentEvent(event, { ...links, correlationId }),
+        ...bridgeAgentEvent(event, { ...links, correlationId }),
       },
     });
     this.broadcastStoredEvent(stored);

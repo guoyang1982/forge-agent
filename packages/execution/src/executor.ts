@@ -1,7 +1,7 @@
 import type { ExecutionClock } from "./clock.js";
 import {
   isFirstPartyChatPolicyContext,
-} from "./legacy-run-adapter.js";
+} from "./forge-agent-adapter.js";
 import type {
   StepExecutionInput,
   StepExecutorRegistry,

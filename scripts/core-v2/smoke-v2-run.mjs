@@ -17,11 +17,9 @@ try {
     );
     process.exit(1);
   }
-  const executionFeature =
-    capabilities.features?.["core.execution.v2"] ??
-    capabilities.features?.execution;
+  const executionFeature = capabilities.features?.["core.execution.v2"];
   if (!executionFeature?.enabled) {
-    console.error("[smoke] missing core.execution.v2 / execution feature");
+    console.error("[smoke] missing core.execution.v2 feature");
     process.exit(1);
   }
 

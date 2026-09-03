@@ -7,7 +7,7 @@ import {
   ExecutionStore,
   FORGE_AGENT_STEP_KIND,
   GovernedStepExecutor,
-  LegacyForgeStepExecutor,
+  ForgeAgentStepExecutor,
   ManualTestClock,
   type GovernedExecutionPorts,
 } from "@forge/execution";
@@ -187,7 +187,7 @@ async function runtimePolicyFixture() {
   let activeMessages: ChatMessage[] = [];
   let activeOnEvent: Parameters<typeof runReActLoop>[0]["onEvent"];
   let activeTools = createBuiltinRegistry();
-  const legacy = new LegacyForgeStepExecutor({
+  const legacy = new ForgeAgentStepExecutor({
     run: async (request, _emit, signal, runtimePolicy) => {
       const result = await runReActLoop({
         config,

@@ -1,5 +1,5 @@
 import { connectDaemon } from "@forge/bus";
-import { supportsDaemonV2 } from "@forge/daemon-client";
+import { supportsExecutionKernel } from "@forge/daemon-client";
 import { DAEMON_METHODS } from "@forge/protocol";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
@@ -22,11 +22,11 @@ export async function ensureDaemon(socketPath: string): Promise<void> {
   }
 }
 
-export async function daemonSupportsV2(socketPath: string): Promise<boolean> {
+export async function daemonSupportsExecutionKernel(socketPath: string): Promise<boolean> {
   try {
     const client = await connectDaemon(socketPath);
     try {
-      return await supportsDaemonV2(client);
+      return await supportsExecutionKernel(client);
     } finally {
       client.close();
     }
