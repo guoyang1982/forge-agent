@@ -19,7 +19,7 @@ Assets/Connectors sub-plan Tasks 1–12 and review remediation Task 8 on branch 
 
 ## Client migration (Task 8)
 
-Core v2 is the **execution/governance kernel**, not a product RPC rewrite. First-party Desktop / CLI / Mobile keep the existing `run` / `cancel_run` contract. The daemon opens a durable `core_runs` row, binds that RPC's `emit` to the `runId`, waits for a terminal state, and returns `{ sessionId, finalText }`. Chat sets `policyContext.origin = "first-party-chat"` and skips the governed executor; `compatibility: true` is not a bypass. Automation still goes through `prepare()` plus the governed executor. Recovery and tests still call `run.create`.
+Core v2 is the **execution/governance kernel**, not a product RPC rewrite. First-party Desktop / CLI / Mobile keep the existing `run` / `cancel_run` contract. The daemon opens a durable `core_runs` row, binds that RPC's `emit` to the `runId`, waits for a terminal state, and returns `{ sessionId, finalText }`. Chat sets `policyContext.origin = "first-party-chat"` and skips the governed executor. `compatibility: true` on event payloads marks a bridged AgentEvent; it is not a governance bypass. Automation still goes through `prepare()` plus the governed executor. Recovery and tests still call `run.create`.
 
 - Desktop `forge:run` / `forge:cancel-run` call `DAEMON_METHODS.RUN` / `CANCEL_RUN`
 - CLI REPL sends SIGINT to `cancel_run` with the known `sessionId`
@@ -77,4 +77,4 @@ Do not rehearse against a live production database.
 
 ## Transitional kernel helpers
 
-`run.create` stays as the automation / recovery / test entry. First-party product code must keep using `run` / `cancel_run`. Typed helpers such as `apps/cli/src/client-v2.ts` and `apps/desktop/src/daemon-v2.ts` are kernel/test utilities, not the product path. `pnpm core:v2:legacy-gate` still blocks accidental legacy usage outside the first-party allowlist.
+`run.create` stays as the automation / recovery / test entry. First-party product code must keep using `run` / `cancel_run`. Kernel callers use `@forge/daemon-client` (`createWorkbenchDaemonApi`, `simpleRunSpec`). `pnpm core:v2:legacy-gate` still blocks accidental legacy usage outside the first-party allowlist.

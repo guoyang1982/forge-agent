@@ -15,6 +15,7 @@ describe("legacy run adapter", () => {
       runRequestToRunSpec({ cwd: "/repo", message: "fix it" }, fixedIds()),
     ).toMatchObject({
       objective: "fix it",
+      policyContext: {},
       steps: [{ kind: "forge.agent", input: { cwd: "/repo", message: "fix it" } }],
     });
   });

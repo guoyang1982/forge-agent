@@ -75,6 +75,7 @@ export function simpleRunSpec(input: SimpleRunInput): RunSpec {
 
 export function agentEventFromEnvelope(event: EventEnvelope): AgentEvent | null {
   const data = event.data;
+  // `compatibility: true` here marks a bridged AgentEvent, not a governance skip.
   if (!isRecord(data) || data.compatibility !== true) {
     return null;
   }

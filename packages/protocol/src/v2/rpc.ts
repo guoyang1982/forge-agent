@@ -451,6 +451,7 @@ export const FORGE_LEGACY_AGENT_STEP_KIND = "forge.agent" as const;
 /** Live event notification method for v2 event subscriptions. */
 export const CORE_EVENT_METHOD = "core.event" as const;
 
+/** Bridged AgentEvent payload marker on `agent.event` envelopes. Not a governance flag. */
 export interface LegacyRunCompatibilityLinks {
   compatibility: true;
   legacyEventType: string;
