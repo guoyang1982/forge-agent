@@ -125,3 +125,61 @@ export function attachmentTextFromExtract(
   if (result.ok) return result.text;
   return `[附件 ${fileName} 未能解析为文本: ${result.error}]`;
 }
+
+export interface ExtractedDocumentChunk {
+  locator: string;
+  text: string;
+}
+
+/**
+ * Split extracted document text into stable, citable chunks for KnowledgeStore.
+ */
+export function chunkExtractedDocument(
+  sourceLocator: string,
+  text: string,
+  maxChunkChars = 1200,
+): ExtractedDocumentChunk[] {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return [];
+  }
+
+  const paragraphs = normalized
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  const chunks: ExtractedDocumentChunk[] = [];
+  let buffer = "";
+  let chunkIndex = 0;
+
+  const flush = (): void => {
+    const trimmed = buffer.trim();
+    if (!trimmed) {
+      buffer = "";
+      return;
+    }
+    chunks.push({
+      locator: `${sourceLocator}:chunk:${chunkIndex}`,
+      text: trimmed,
+    });
+    chunkIndex += 1;
+    buffer = "";
+  };
+
+  for (const paragraph of paragraphs.length ? paragraphs : [normalized]) {
+    if (!buffer) {
+      buffer = paragraph;
+    } else if (`${buffer}\n\n${paragraph}`.length <= maxChunkChars) {
+      buffer = `${buffer}\n\n${paragraph}`;
+    } else {
+      flush();
+      buffer = paragraph;
+    }
+    if (buffer.length >= maxChunkChars) {
+      flush();
+    }
+  }
+  flush();
+  return chunks.length ? chunks : [{ locator: `${sourceLocator}:chunk:0`, text: normalized }];
+}

@@ -42,6 +42,7 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
   let busy = false;
   let lastChangedPaths: string[] = [];
   let activeClient: Awaited<ReturnType<typeof connectDaemon>> | null = null;
+  let activeRunId: string | null = null;
   let cancelRequested = false;
   const commandRegistry = createCommandRegistry();
   registerBuiltinCommands(commandRegistry);
@@ -74,7 +75,9 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
           "\n\x1b[33m正在取消任务… (再按 Ctrl+C 可退出 REPL)\x1b[0m\n",
         );
         void activeClient
-          .request(DAEMON_METHODS.CANCEL_RUN, {})
+          .request(DAEMON_METHODS.CANCEL_RUN, {
+            ...(sessionId ? { sessionId } : {}),
+          })
           .catch(() => {});
       }
       return;
@@ -222,6 +225,7 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
     try {
       const client = await connectDaemon(cfg.daemon.socketPath);
       activeClient = client;
+      activeRunId = null;
       cancelRequested = false;
       const printer = createEventPrinter(pending, {
         quietSession: true,
@@ -237,6 +241,9 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
         sessionId,
         hookSource: pendingHookSource,
         autoApply: autoApplyPatches,
+        onRunStarted: (runId) => {
+          activeRunId = runId;
+        },
         onEvent: wrapRunEventHandler(
           (ev) => {
             if (ev.type === "text_delta") streamedText = true;
@@ -273,6 +280,8 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
       }
 
       client.close();
+      activeClient = null;
+      activeRunId = null;
       console.log("");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -287,6 +296,7 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
     pendingHookSource = undefined;
     busy = false;
     activeClient = null;
+    activeRunId = null;
     cancelRequested = false;
     rl.resume();
     rl.prompt();

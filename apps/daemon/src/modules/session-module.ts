@@ -2,8 +2,9 @@ import { basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { loadConfig, saveConfig } from "@forge/config";
-import { DAEMON_METHODS } from "@forge/protocol";
+import { DAEMON_METHODS, rpcFault, type ChatContent } from "@forge/protocol";
 import type { DaemonModule } from "../host/types.js";
+import { RpcFaultError } from "../host/router.js";
 import {
   handleGetSessionMessages,
   handleListSessions,
@@ -16,38 +17,112 @@ import { handleReview } from "../services/review-service.js";
 import type { ForgeDaemonContext } from "./context.js";
 
 type SharedProject = { id: string; name: string; cwd: string };
+type SessionModuleContext = Pick<
+  ForgeDaemonContext,
+  "socketPath" | "store" | "serverVersion" | "build" | "sessions" | "getRuntime"
+>;
 
-export function createSessionModule(): DaemonModule<ForgeDaemonContext> {
+export function createSessionModule(): DaemonModule<SessionModuleContext> {
   return {
     id: "session",
     feature: { version: 1, enabled: true },
     register(router, context) {
-      router.registerLegacy(DAEMON_METHODS.LIST_SESSIONS, async (params) =>
+      router.register("session.create", async (params, rpc) => {
+        if (!params.cwd?.trim()) {
+          throw invalidRequest("cwd is required", rpc.correlationId);
+        }
+        const sessionId = context.sessions.createSession(params.cwd.trim());
+        return { sessionId };
+      });
+      router.register("session.get", async (params, rpc) => {
+        if (!params.sessionId?.trim()) {
+          throw invalidRequest("sessionId is required", rpc.correlationId);
+        }
+        const summary = context.sessions
+          .listSessions(500)
+          .find((session) => session.id === params.sessionId);
+        if (!summary) {
+          throw invalidRequest("session not found", rpc.correlationId);
+        }
+        return {
+          sessionId: summary.id,
+          cwd: summary.cwd,
+          createdAt: summary.createdAt,
+          updatedAt: summary.updatedAt,
+          messageCount: summary.messageCount,
+        };
+      });
+      router.register("session.appendMessage", async (params, rpc) => {
+        if (!params.sessionId?.trim()) {
+          throw invalidRequest("sessionId is required", rpc.correlationId);
+        }
+        if (!params.role) {
+          throw invalidRequest("role is required", rpc.correlationId);
+        }
+        if (!isChatContent(params.content)) {
+          throw invalidRequest("content is invalid", rpc.correlationId);
+        }
+        context.sessions.appendMessage(params.sessionId, {
+          role: params.role,
+          content: params.content,
+        });
+        return { ok: true as const };
+      });
+
+      router.registerProduct(DAEMON_METHODS.LIST_SESSIONS, async (params) =>
         handleListSessions(params, { sessions: context.sessions }));
-      router.registerLegacy(DAEMON_METHODS.LIST_PROJECTS, async () => ({
+      router.registerProduct(DAEMON_METHODS.LIST_PROJECTS, async () => ({
         projects: sharedProjects(),
       }));
-      router.registerLegacy(DAEMON_METHODS.REGISTER_PROJECT, async (params) =>
+      router.registerProduct(DAEMON_METHODS.REGISTER_PROJECT, async (params) =>
         registerSharedProject(params));
-      router.registerLegacy(DAEMON_METHODS.SEARCH_SESSIONS, async (params) =>
+      router.registerProduct(DAEMON_METHODS.SEARCH_SESSIONS, async (params) =>
         handleSearchSessions(params, { sessions: context.sessions }));
-      router.registerLegacy(DAEMON_METHODS.GET_SESSION_MESSAGES, async (params) =>
+      router.registerProduct(DAEMON_METHODS.GET_SESSION_MESSAGES, async (params) =>
         handleGetSessionMessages(params, { sessions: context.sessions }));
-      router.registerLegacy(DAEMON_METHODS.APPLY_PATCH, async (params) =>
+      router.registerProduct(DAEMON_METHODS.APPLY_PATCH, async (params) =>
         handleApplyPatch(params));
-      router.registerLegacy(DAEMON_METHODS.RESTORE_CHECKPOINT, async (params) =>
+      router.registerProduct(DAEMON_METHODS.RESTORE_CHECKPOINT, async (params) =>
         handleRestoreCheckpoint(params, { sessions: context.sessions }));
-      router.registerLegacy(DAEMON_METHODS.PLAN, async (params, rpc) =>
-        handlePlan(params, rpc.emitLegacyAgentEvent));
-      router.registerLegacy(DAEMON_METHODS.REVIEW, async (params, rpc) =>
-        handleReview(params, rpc.emitLegacyAgentEvent));
-      router.registerLegacy(DAEMON_METHODS.COMPACT_SESSION, async (params, rpc) =>
-        handleCompactSession(params, rpc.emitLegacyAgentEvent, {
+      router.registerProduct(DAEMON_METHODS.PLAN, async (params, rpc) =>
+        handlePlan(params, rpc.emitAgentEvent));
+      router.registerProduct(DAEMON_METHODS.REVIEW, async (params, rpc) =>
+        handleReview(params, rpc.emitAgentEvent));
+      router.registerProduct(DAEMON_METHODS.COMPACT_SESSION, async (params, rpc) =>
+        handleCompactSession(params, rpc.emitAgentEvent, {
           sessions: context.sessions,
           getRuntime: context.getRuntime,
         }));
     },
   };
+}
+
+function invalidRequest(message: string, correlationId: string): RpcFaultError {
+  return new RpcFaultError(
+    rpcFault("INVALID_REQUEST", message, { correlationId }),
+  );
+}
+
+function isChatContent(content: unknown): content is ChatContent {
+  return content === null || typeof content === "string" || (
+    Array.isArray(content) && content.every(isChatContentPart)
+  );
+}
+
+function isChatContentPart(content: unknown): boolean {
+  if (!isRecord(content)) return false;
+  if (content.type === "text") return typeof content.text === "string";
+  if (content.type !== "image_url" || !isRecord(content.image_url)) return false;
+  return typeof content.image_url.url === "string" && (
+    content.image_url.detail === undefined ||
+    content.image_url.detail === "auto" ||
+    content.image_url.detail === "low" ||
+    content.image_url.detail === "high"
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function sharedProjects(): SharedProject[] {

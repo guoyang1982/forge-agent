@@ -10,6 +10,7 @@ import {
   handleParseAutomationDraft,
   handleRunAutomation,
   handleUpdateAutomation,
+  reconcileAutomationRuns,
   type AutomationServiceDeps,
 } from "../services/automation-service.js";
 import type { ForgeDaemonContext } from "./context.js";
@@ -20,26 +21,36 @@ export function createAutomationModule(): DaemonModule<ForgeDaemonContext> {
     feature: { version: 1, enabled: true },
     register(router, context) {
       const deps = automationDeps(context);
-      router.registerLegacy(DAEMON_METHODS.LIST_AUTOMATIONS, async (params) =>
+      router.registerProduct(DAEMON_METHODS.LIST_AUTOMATIONS, async (params) =>
         handleListAutomations(params, deps));
-      router.registerLegacy(DAEMON_METHODS.GET_AUTOMATION, async (params) =>
+      router.registerProduct(DAEMON_METHODS.GET_AUTOMATION, async (params) =>
         handleGetAutomation(params, deps));
-      router.registerLegacy(DAEMON_METHODS.CREATE_AUTOMATION, async (params) =>
+      router.registerProduct(DAEMON_METHODS.CREATE_AUTOMATION, async (params) =>
         handleCreateAutomation(params, deps));
-      router.registerLegacy(DAEMON_METHODS.UPDATE_AUTOMATION, async (params) =>
+      router.registerProduct(DAEMON_METHODS.UPDATE_AUTOMATION, async (params) =>
         handleUpdateAutomation(params, deps));
-      router.registerLegacy(DAEMON_METHODS.DELETE_AUTOMATION, async (params) =>
+      router.registerProduct(DAEMON_METHODS.DELETE_AUTOMATION, async (params) =>
         handleDeleteAutomation(params, deps));
-      router.registerLegacy(DAEMON_METHODS.RUN_AUTOMATION, async (params, rpc) =>
-        handleRunAutomation(params, deps, rpc.emitLegacyAgentEvent));
-      router.registerLegacy(DAEMON_METHODS.LIST_AUTOMATION_RUNS, async (params) =>
+      router.registerProduct(DAEMON_METHODS.RUN_AUTOMATION, async (params, rpc) =>
+        handleRunAutomation(params, deps, rpc.emitAgentEvent));
+      router.registerProduct(DAEMON_METHODS.LIST_AUTOMATION_RUNS, async (params) =>
         handleListAutomationRuns(params, deps));
-      router.registerLegacy(DAEMON_METHODS.PARSE_AUTOMATION_DRAFT, async (params) =>
+      router.registerProduct(DAEMON_METHODS.PARSE_AUTOMATION_DRAFT, async (params) =>
         handleParseAutomationDraft(params));
-      router.registerLegacy(DAEMON_METHODS.LIST_AUTOMATION_TEMPLATES, async () =>
+      router.registerProduct(DAEMON_METHODS.LIST_AUTOMATION_TEMPLATES, async () =>
         handleListAutomationTemplates());
     },
-    start: (context) => context.schedulerHost.start(),
+    start: async (context) => {
+      await reconcileAutomationRuns({
+        store: context.automationStore,
+        channelStore: context.channelStore,
+        durable: {
+          db: context.store.db,
+          executionStore: context.executionStore,
+        },
+      });
+      await context.schedulerHost.start();
+    },
     stop: (context) => context.schedulerHost.stop(),
   };
 }
@@ -50,10 +61,12 @@ function automationDeps(context: ForgeDaemonContext): AutomationServiceDeps {
     getStore: () => context.automationStore,
     getChannelStore: () => context.channelStore,
     getScheduler: () => context.schedulerHost,
-    getRunDeps: () => ({
-      sessions: context.sessions,
-      getRuntime: context.getRuntime,
-      cancelService: context.cancelService,
+    getDurable: () => ({
+      db: context.store.db,
+      executionStore: context.executionStore,
+      executor: context.executor,
+      clock: context.executionClock,
+      governance: context.automationGovernance,
     }),
   };
 }

@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  assertForeignKeysEnabled,
   ForgeStore,
   openNonMigratingDatabase,
   type ForgeStoreOptions,
@@ -23,6 +24,18 @@ afterEach(() => {
 });
 
 describe("ForgeStore migrations", () => {
+  it("enables foreign_keys on every connection", () => {
+    const fixture = migrationFixture({
+      "001_init.sql": "CREATE TABLE noop (id INTEGER PRIMARY KEY);",
+    });
+    const store = ForgeStore.open(fixture.options);
+    try {
+      assertForeignKeysEnabled(store.db);
+    } finally {
+      store.close();
+    }
+  });
+
   it("rejects migration ownership outside daemon or tests", () => {
     const fixture = migrationFixture({});
     expect(() =>

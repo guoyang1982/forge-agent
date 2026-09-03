@@ -38,6 +38,9 @@ export interface AutomationRunRecord {
   finishedAt?: string;
   error?: string;
   preview?: string;
+  workflowInstanceId?: string;
+  durableRunId?: string;
+  triggerRef?: string;
 }
 
 export interface AutomationDraft {

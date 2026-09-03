@@ -90,11 +90,23 @@ import { ensureExternalRuntimesRegistered } from "./external-runtimes.js";
 import { getExternalRuntime } from "./external-runtime-registry.js";
 import { buildExternalHistoryContext } from "./external-runtime-history.js";
 import { createMcpServerRequestHandler } from "./mcp-permission.js";
+import type { RuntimePolicy } from "@forge/agent-profile";
 
 export interface RunServiceDeps {
   sessions: SessionStore;
   getRuntime: () => Promise<ForgeRuntime>;
   cancelService: CancelService;
+}
+
+/** Bridge used by the durable execution legacy adapter. */
+export async function executeForgeRun(
+  request: RunRequest,
+  emit: (event: AgentEvent) => void,
+  deps: RunServiceDeps,
+  runtimePolicy?: RuntimePolicy,
+  externalSignal?: AbortSignal,
+): Promise<RunResult> {
+  return handleRun(request, emit, deps, runtimePolicy, externalSignal);
 }
 
 function runPreviewFromAttachments(req: RunRequest): string {
@@ -109,12 +121,16 @@ export async function handleRun(
   params: unknown,
   emit: (event: AgentEvent) => void,
   deps: RunServiceDeps,
+  runtimePolicy?: RuntimePolicy,
+  externalSignal?: AbortSignal,
 ): Promise<RunResult> {
   const req = params as RunRequest;
   const cwd = req.cwd || process.cwd();
   const absCwd = resolve(cwd);
   const loaded = loadConfig({ cwd: absCwd });
-  const requestedModel = req.runtime?.model?.trim();
+  const requestedModel = effectiveModelName(
+    runtimePolicy?.model || req.runtime?.model,
+  );
   const provider = req.runtime?.provider?.trim() || "forge";
   const config =
     provider === "forge" && requestedModel
@@ -156,6 +172,7 @@ export async function handleRun(
   // Register before publishing session_start so clients can immediately cancel
   // the run using the sessionId from that first event without racing setup.
   const abort = deps.cancelService.registerRun(sessionId);
+  linkExternalAbortSignal(externalSignal, abort);
 
   const runPreview = req.channelRun
     ? (req.channelRun.preview
@@ -867,6 +884,7 @@ export async function handleRun(
       tools: registry,
       supportsVision: supportsNativeImageUrl,
       autoApply: Boolean(req.autoApply),
+      runtimePolicy,
       skipNetworkConfirm: Boolean(req.autoApply),
       confirmNetwork: sharedConfirmNetwork,
       skipSoftwareConfirm: Boolean(req.autoApply),
@@ -1514,4 +1532,22 @@ async function runTalentSubagent(options: {
       result: `人才子代理执行失败: ${message}`,
     };
   }
+}
+
+function linkExternalAbortSignal(
+  externalSignal: AbortSignal | undefined,
+  controller: AbortController,
+): void {
+  if (!externalSignal || externalSignal === controller.signal) return;
+  if (externalSignal.aborted) {
+    controller.abort();
+    return;
+  }
+  externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
+}
+
+function effectiveModelName(name: string | undefined): string | undefined {
+  const trimmed = name?.trim();
+  if (!trimmed || trimmed === "forge-default") return undefined;
+  return trimmed;
 }

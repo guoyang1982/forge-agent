@@ -13,6 +13,9 @@
   "scripts": {
     "build": "tsc"
   },
+  "dependencies": {
+    "@forge/protocol": "workspace:*"
+  },
   "devDependencies": {
     "typescript": "^5.8.3"
   }

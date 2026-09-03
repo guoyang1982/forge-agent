@@ -1,11 +1,26 @@
 import { describe, expect, it } from "vitest";
 import {
   BINARY_DOCUMENT_EXTENSIONS,
+  chunkExtractedDocument,
   extensionOf,
   extractDocumentText,
   isTextLikeFilename,
   PLAIN_TEXT_EXTENSIONS,
 } from "./index.js";
+
+describe("chunkExtractedDocument", () => {
+  it("splits long extracted text into stable locators", () => {
+    const chunks = chunkExtractedDocument(
+      "policy.md",
+      "All refund requests must be approved.\n\nLate requests are rejected.",
+    );
+    expect(chunks[0]).toMatchObject({
+      locator: "policy.md:chunk:0",
+      text: expect.stringContaining("refund"),
+    });
+    expect(chunks.length).toBeGreaterThan(0);
+  });
+});
 
 describe("extensionOf", () => {
   it("parses extension", () => {

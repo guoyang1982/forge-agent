@@ -3467,6 +3467,18 @@ body.is-resizing .resize-handle {
   border-left-color: #737373;
 }
 
+.event.thinking > summary {
+  cursor: pointer;
+  color: var(--sub);
+  font-size: 12px;
+  line-height: 1.5;
+  list-style: none;
+}
+
+.event.thinking > summary::-webkit-details-marker {
+  display: none;
+}
+
 /* Single fold per run: progress on summary, details inside body */
 .run-activity {
   margin-top: 2px;
@@ -8971,6 +8983,111 @@ textarea {
   font-family: var(--mono, "SF Mono", Menlo, monospace);
   font-size: 10px;
   opacity: 0.75;
+}
+
+.trace-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-panel, #111);
+  color: var(--text, #e7e7e7);
+}
+
+.trace-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  flex-shrink: 0;
+}
+
+.trace-panel-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.trace-panel-meta {
+  flex: 1;
+  font-size: 11px;
+  opacity: 0.65;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px 16px;
+  font-size: 12px;
+}
+
+.trace-empty {
+  opacity: 0.6;
+  margin: 12px 4px;
+}
+
+.trace-node {
+  margin-left: 8px;
+}
+
+.trace-node-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.trace-node-summary::-webkit-details-marker {
+  display: none;
+}
+
+.trace-kind {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #1f2937;
+  color: #93c5fd;
+  flex-shrink: 0;
+}
+
+.trace-kind-run { color: #6ee7b7; background: #064e3b; }
+.trace-kind-tool { color: #fcd34d; background: #78350f; }
+.trace-kind-llm { color: #c4b5fd; background: #4c1d95; }
+.trace-kind-thinking { color: #fda4af; background: #4c0519; }
+.trace-kind-turn { color: #7dd3fc; background: #0c4a6e; }
+
+.trace-name {
+  font-family: var(--mono, "SF Mono", Menlo, monospace);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-meta {
+  margin-left: auto;
+  opacity: 0.55;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.trace-summary {
+  margin: 4px 0 8px 22px;
+  padding: 6px 8px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 6px;
+  max-height: 140px;
+  overflow: auto;
 }
 
 .tools-add-wrap {

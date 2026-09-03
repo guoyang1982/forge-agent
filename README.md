@@ -223,6 +223,32 @@ pnpm core:v2:baseline -- --repository-root /Users/example/forge-agent --output /
 pnpm --filter @forge/store test -- src/legacy-upgrade.test.ts
 ```
 
+Durable execution 阶段门禁（schema、trace、重启恢复与客户端订阅）：
+
+```bash
+pnpm --filter @forge/store test
+pnpm --filter @forge/event-store test
+pnpm --filter @forge/execution test
+pnpm --filter @forge/run-orchestrator test
+pnpm --filter @forge/daemon-client test
+pnpm --filter @forge/daemon test
+pnpm --filter @forge/daemon build
+```
+
+`pnpm eval` 会在离线 CLI 回归前先运行上述 durable execution 子集（含 trace 与 daemon 重启 E2E）。
+
+Assets/Connectors 子计划门禁：
+
+```bash
+pnpm --filter @forge/asset-registry test
+pnpm --filter @forge/workflows test
+pnpm --filter @forge/memory test
+pnpm --filter @forge/connectors test
+pnpm core:v2:legacy-gate
+```
+
+详见 `docs/core-v2-operations.md` 与 `docs/core-v2-migration-report.md`。
+
 ## 文档
 
 | 文档 | 内容 |

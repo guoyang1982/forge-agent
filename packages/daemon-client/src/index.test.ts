@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   AGENT_EVENT_METHOD,
+  CORE_EVENT_METHOD,
   type EventEnvelope,
   type RpcResult,
 } from "@forge/protocol";
@@ -125,7 +126,7 @@ describe("connectDaemon", () => {
               socket.write(
                 JSON.stringify({
                   jsonrpc: "2.0",
-                  method: "core.event",
+                  method: CORE_EVENT_METHOD,
                   params: event,
                 }) + "\n",
               );

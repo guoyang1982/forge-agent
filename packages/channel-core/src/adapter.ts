@@ -4,6 +4,11 @@ import type {
   InboundMessage,
   OutboundReply,
 } from "./types.js";
+import type { RpcMethod, RpcParams, RpcResult } from "@forge/protocol";
+import { DAEMON_METHODS } from "@forge/protocol";
+
+type LegacyDaemonMethod = (typeof DAEMON_METHODS)[keyof typeof DAEMON_METHODS];
+export type AdapterDaemonMethod = RpcMethod | LegacyDaemonMethod;
 
 export interface AdapterContext {
   adapterId: string;
@@ -17,8 +22,13 @@ export interface AdapterContext {
 }
 
 export interface AdapterDaemonBridge {
+  request<M extends RpcMethod>(
+    method: M,
+    params?: RpcParams<M>,
+    onEvent?: (event: unknown) => void,
+  ): Promise<RpcResult<M>>;
   request(
-    method: string,
+    method: LegacyDaemonMethod,
     params?: unknown,
     onEvent?: (event: unknown) => void,
   ): Promise<unknown>;

@@ -30,6 +30,16 @@ import { NodeReplSession } from "./node-repl.js";
 
 export { validateShellCommand } from "./shell-safe.js";
 export { runSafeShell } from "./run-shell.js";
+export {
+  ToolDiscovery,
+  catalogFromDefinitions,
+  type RiskLevel,
+  type ToolCatalogEntry,
+  type ToolDiscoveryTrace,
+  type ToolSchema,
+  type ToolSearchInput,
+  type ToolSummary,
+} from "./discovery.js";
 
 export interface NetworkConfirmRequest {
   action: "search" | "web" | "api" | "download";

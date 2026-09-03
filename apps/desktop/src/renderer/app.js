@@ -432,6 +432,8 @@ const state = {
   /** sessionId -> reflection-gate state (round/status/issues) for the run. */
   reflectionBySession: new Map(),
   sessionCwdById: new Map(),
+  /** sessionId -> latest durable runId from session_start / done. */
+  runIdBySession: new Map(),
   /** Bumped on each session switch; stale async restores are ignored. */
   viewSwitchGeneration: 0,
   /** Skip structured timeline writes while rebuilding DOM from JSON. */
@@ -731,6 +733,18 @@ function snapshotDomTimelineChild(node, sessionId) {
       createdAt: Date.now(),
     };
   }
+  if (node.tagName === "DETAILS" && node.classList.contains("thinking")) {
+    const pre = node.querySelector(".event-pre");
+    return {
+      type: "thinking",
+      id: node.dataset.thinkingId || timelineEntryId(),
+      talentMention: node.dataset.talentMention || "",
+      summary: node.querySelector("summary")?.textContent || "",
+      content: pre?.textContent || "",
+      open: Boolean(node.open && node.dataset.userPinned === "1"),
+      createdAt: Date.now(),
+    };
+  }
   if (node.classList?.contains("event")) {
     const cls = [...node.classList].filter((c) => c !== "event").join(" ");
     const entry = {
@@ -745,19 +759,7 @@ function snapshotDomTimelineChild(node, sessionId) {
       hasDetail: node.classList.contains("clickable") || Boolean(node.dataset.forgeDetail),
       createdAt: Date.now(),
     };
-    return entry;
-  }
-  if (node.tagName === "DETAILS" && node.classList.contains("thinking")) {
-    const pre = node.querySelector(".event-pre");
-    return {
-      type: "thinking",
-      id: node.dataset.thinkingId || timelineEntryId(),
-      talentMention: node.dataset.talentMention || "",
-      summary: node.querySelector("summary")?.textContent || "",
-      content: pre?.textContent || "",
-      open: node.open,
-      createdAt: Date.now(),
-    };
+    return thinkingEntryFromFlattenedEvent(entry) || entry;
   }
   if (node.matches?.("details.subagent-talent-activity")) {
     const mention = normalizeTalentMention(node.dataset.talentMention || "");
@@ -1677,6 +1679,9 @@ function recordThinkingEntry(sessionId, thinkingId, talent, summary, content, ho
   }
   if (summary) entry.summary = summary;
   if (content != null) entry.content = content;
+  if (holder) {
+    entry.open = Boolean(holder.open && holder.dataset?.userPinned === "1");
+  }
   touchTimelineState(sessionId);
 }
 
@@ -1797,6 +1802,59 @@ function structuredTimelineRunActivityHasChildren(sessionId) {
   return ensureTimelineEntries(timelineState).some(
     (entry) => entry.type === "run_activity" && (entry.children?.length ?? 0) > 0,
   );
+}
+
+function isFlattenedThinkingEvent(entry) {
+  if (!entry || entry.type !== "event") return false;
+  const className = String(entry.className || "");
+  if (className.split(/\s+/).includes("thinking")) return true;
+  const text = String(entry.text || "");
+  return /思考中（可展开）|思考完成\s*·/.test(text) && text.length > 24;
+}
+
+function thinkingEntryFromFlattenedEvent(entry) {
+  if (!isFlattenedThinkingEvent(entry)) return null;
+  const text = String(entry.text || "").trim();
+  const match = text.match(
+    /^(.*?(?:思考中（可展开）|思考完成[^\n]*?))([\s\S]*)$/,
+  );
+  const summaryRaw = String(match?.[1] || "思考完成").trim();
+  const content = String(match?.[2] || "").trim();
+  const chars = content.length;
+  const summary = /思考中/.test(summaryRaw)
+    ? summaryRaw.replace(/思考中（可展开）|思考中/, `思考完成 · ${chars} 字`)
+    : summaryRaw;
+  return {
+    type: "thinking",
+    id: entry.id,
+    talentMention: "",
+    summary,
+    content,
+    open: false,
+    createdAt: entry.createdAt || Date.now(),
+  };
+}
+
+function healFlattenedThinkingChildren(children) {
+  if (!Array.isArray(children) || !children.length) return children;
+  let changed = false;
+  const next = children.map((child) => {
+    if (child?.type === "subagent" && Array.isArray(child.children)) {
+      const nested = healFlattenedThinkingChildren(child.children);
+      if (nested !== child.children) {
+        changed = true;
+        return { ...child, children: nested };
+      }
+      return child;
+    }
+    const healed = thinkingEntryFromFlattenedEvent(child);
+    if (healed) {
+      changed = true;
+      return healed;
+    }
+    return child;
+  });
+  return changed ? next : children;
 }
 
 function isSubstantiveRunActivityChild(child) {
@@ -1922,7 +1980,13 @@ function renderStructuredThinkingEntry(entry, container) {
   wrap.dataset.thinkingId = entry.id;
   if (entry.talentMention) wrap.dataset.talentMention = entry.talentMention;
   wrap.open = Boolean(entry.open);
-  const summary = entry.summary || "思考中（可展开）";
+  const chars = String(entry.content || "").trim().length;
+  let summary = entry.summary || "思考中（可展开）";
+  const sid = getActiveEventSessionId();
+  const running = Boolean(sid && state.runningSessions.has(sid));
+  if (!running && /思考中/.test(summary) && chars > 0) {
+    summary = summary.replace(/思考中（可展开）|思考中/, `思考完成 · ${chars} 字`);
+  }
   wrap.innerHTML = `<summary>${escapeHtml(summary)}</summary><pre class="event-pre"></pre>`;
   const pre = wrap.querySelector(".event-pre");
   if (pre && entry.content) pre.textContent = entry.content;
@@ -2375,7 +2439,11 @@ function renderStructuredTimelineChild(entry, container, sessionId) {
   if (entry.type === "step_narrative") {
     return renderStructuredStepNarrativeEntry(entry, container);
   }
-  if (entry.type === "event") return renderStructuredEventLine(entry, container, sessionId);
+  if (entry.type === "event") {
+    const healed = thinkingEntryFromFlattenedEvent(entry);
+    if (healed) return renderStructuredThinkingEntry(healed, container);
+    return renderStructuredEventLine(entry, container, sessionId);
+  }
   if (entry.type === "thinking") return renderStructuredThinkingEntry(entry, container);
   if (entry.type === "subagent") return renderStructuredSubagentEntry(entry, container, sessionId);
   return null;
@@ -2407,6 +2475,7 @@ function renderStructuredTimelineEntry(entry, mount, sessionId) {
 function renderTimelineFromState(sessionId, mount = getTimelineMount()) {
   const timelineState = getNormalTimelineState(sessionId, false);
   if (!mount || !timelineState) return false;
+  sanitizeStructuredTimelineCache(sessionId);
   const entries = ensureTimelineEntries(timelineState);
   if (!entries.length) return false;
   setTimelineRuntimeForSession(sessionId);
@@ -4421,17 +4490,32 @@ function runActivityHasExpandedContent(details) {
 function closeOrphanThinkingBlocks(mount = $("timeline")) {
   if (!mount?.querySelectorAll) return;
   mount.querySelectorAll("details.event.thinking").forEach((block) => {
-    if (block.dataset.userPinned === "1") return;
     const summary = block.querySelector("summary");
-    if (!summary?.textContent?.includes("思考中")) return;
     const pre = block.querySelector(".event-pre");
-    const chars = pre?.textContent?.length ?? 0;
-    // Keep talent prefixes (e.g. "🧑 老周 · "); only flip the in-progress label.
-    // Do not force-collapse — user may have expanded the block.
-    summary.textContent = String(summary.textContent || "").replace(
-      /思考中（可展开）|思考中/,
-      `思考完成 · ${chars} 字`,
-    );
+    const chars = String(pre?.textContent || "").trim().length;
+    if (summary?.textContent?.includes("思考中")) {
+      // Keep talent prefixes (e.g. "🧑 老周 · "); only flip the in-progress label.
+      summary.textContent = String(summary.textContent || "").replace(
+        /思考中（可展开）|思考中/,
+        `思考完成 · ${chars} 字`,
+      );
+    }
+    if (block.dataset.userPinned !== "1") {
+      block.open = false;
+    }
+    const sid = getActiveEventSessionId();
+    if (sid && block.dataset.thinkingId) {
+      recordThinkingEntry(
+        sid,
+        block.dataset.thinkingId,
+        block.dataset.talentMention
+          ? { mention: block.dataset.talentMention }
+          : null,
+        summary?.textContent || "",
+        pre?.textContent || "",
+        block,
+      );
+    }
   });
   if (state.thinkingPre && !state.thinkingPre.isConnected) state.thinkingPre = null;
 }
@@ -7603,7 +7687,13 @@ function applyRightMode() {
     : null;
   $("terminalToggleBtn")?.classList.toggle("active", activeKind === "terminal");
   $("browserToggleBtn")?.classList.toggle("active", activeKind === "browser");
+  $("traceToggleBtn")?.classList.toggle("active", activeKind === "trace");
 }
+
+window.openRight = openRight;
+window.getActiveSessionId = () => sessionRuns?.getViewingSessionId?.() ?? null;
+window.forgeTraceRunId = (sessionId) =>
+  sessionId ? state.runIdBySession.get(sessionId) : undefined;
 
 function openRight(open, mode = "code") {
   const wasOpen = state.rightOpen;
@@ -10004,7 +10094,16 @@ function sanitizeStructuredTimelineCache(sessionId) {
   if (!timelineState) return;
   const entries = ensureTimelineEntries(timelineState);
   const deduped = dedupeConsecutiveStructuredPrompts(entries);
-  if (deduped.length !== entries.length) {
+  let changed = deduped.length !== entries.length;
+  for (const entry of deduped) {
+    if (entry?.type !== "run_activity" || !Array.isArray(entry.children)) continue;
+    const healed = healFlattenedThinkingChildren(entry.children);
+    if (healed !== entry.children) {
+      entry.children = healed;
+      changed = true;
+    }
+  }
+  if (changed) {
     timelineState.entries = deduped;
     touchTimelineState(sessionId);
   }
@@ -18044,6 +18143,22 @@ function bindActions() {
     openRight(true, "tools");
     window.forgeBrowserPanel?.ensureStarted?.();
   });
+  $("traceToggleBtn")?.addEventListener("click", () => {
+    if (state.activeNav !== "chat") return;
+    const isActive =
+      state.rightOpen &&
+      state.rightMode === "tools" &&
+      window.forgeToolsPanel?.activeKind?.() === "trace";
+    if (isActive) {
+      dismissRightPanel();
+      return;
+    }
+    const sessionId = sessionRuns.getViewingSessionId();
+    window.forgeTracePanel?.open?.({
+      runId: sessionId ? state.runIdBySession.get(sessionId) : undefined,
+      sessionId,
+    });
+  });
   $("toolsCloseBtn")?.addEventListener("click", () => dismissRightPanel());
   // Keep launcher highlights in sync with tab switches, and close the right
   // region when the last tools tab is closed.
@@ -18808,6 +18923,7 @@ function handleForgeAgentEvent(ev) {
     }
 
     if (ev.type === "done" && ev.sessionId) {
+      if (ev.runId) state.runIdBySession.set(ev.sessionId, ev.runId);
       sessionRuns.markSessionRunning(ev.sessionId, false);
       if (!sessionRuns.isViewingSession(ev.sessionId)) {
         state.unreadDoneSessions.add(ev.sessionId);
@@ -18840,6 +18956,7 @@ function handleForgeAgentEvent(ev) {
 
     if (ev.type === "session_start") {
       rememberSessionCwd(ev.sessionId, ev.cwd);
+      if (ev.runId) state.runIdBySession.set(ev.sessionId, ev.runId);
       state.planCardTitle = "任务清单";
       state.dispatchPlanLocked = false;
       state.runConclusionBySession.delete(ev.sessionId);
@@ -18954,6 +19071,7 @@ function handleLiveAgentEvent(ev, opts = {}) {
 
 function handleLiveAgentEventBody(ev, opts = {}) {
     if (ev.type === "session_start") return;
+    if (ev.type === "llm_start" || ev.type === "llm_end") return;
     if (ev.type === "hooks_applied") {
       finishStreamTextSegment();
       pushEvent(

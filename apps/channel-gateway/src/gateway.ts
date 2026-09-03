@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   isMessageChannelAdapter,
   type AdapterContext,
@@ -18,9 +19,13 @@ import type {
   ChannelKind,
 } from "@forge/protocol";
 import { DEFAULT_PERMISSIONS } from "@forge/protocol";
-import { SessionStore } from "@forge/session";
-import { openNonMigratingDatabase } from "@forge/store";
+import { ForgeStore } from "@forge/store";
+import { DaemonSessionStore } from "./daemon-session-store.js";
 import { ForgeBridge } from "./forge-bridge.js";
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+/** Must match daemon ForgeStore (`data.db`) so channel CRUD and gateway runtime share one store. */
+const GATEWAY_DB_NAME = "data.db";
 
 export interface ChannelGatewayOptions {
   dataDir: string;
@@ -31,8 +36,9 @@ export interface ChannelGatewayOptions {
 }
 
 export class ChannelGateway {
+  private readonly storeOwner: ForgeStore;
   private readonly store: ChannelStore;
-  private readonly sessions: SessionStore;
+  private readonly sessions: DaemonSessionStore;
   private readonly forge: ForgeBridge;
   private readonly adapters = new Map<string, ChannelAdapter>();
   private readonly adapterFingerprints = new Map<string, string>();
@@ -52,10 +58,14 @@ export class ChannelGateway {
 
   constructor(private readonly opts: ChannelGatewayOptions) {
     const cfg = loadConfig();
-    const dbPath = join(opts.dataDir, "data.db");
-    this.sessions = new SessionStore(openNonMigratingDatabase(dbPath));
-    this.store = new ChannelStore(this.sessions.getDb());
+    this.storeOwner = ForgeStore.open({
+      dbPath: join(opts.dataDir, GATEWAY_DB_NAME),
+      migrationsDir: join(repoRoot, "migrations"),
+      owner: "daemon",
+    });
+    this.store = new ChannelStore(this.storeOwner.db);
     this.forge = new ForgeBridge(cfg.daemon.socketPath);
+    this.sessions = new DaemonSessionStore(this.forge);
   }
 
   async start(): Promise<void> {
@@ -80,7 +90,7 @@ export class ChannelGateway {
       this.httpServer = null;
     }
     this.forge.close();
-    this.sessions.close();
+    this.storeOwner.close();
     this.startedAt = null;
   }
 
@@ -137,10 +147,7 @@ export class ChannelGateway {
       cwd: record.cwd,
       config,
       dataDir: this.opts.dataDir,
-      daemon: {
-        request: (method, params, onEvent) =>
-          this.forge.request(method, params, onEvent),
-      },
+      daemon: this.forge,
       onInbound: (msg: InboundMessage) => {
         void this.handleInbound(record, msg);
       },
@@ -346,7 +353,7 @@ export class ChannelGateway {
       let binding = this.store.getBinding(record.id, msg.thread.threadKey);
       let sessionId = binding?.sessionId;
       if (!sessionId) {
-        sessionId = this.sessions.createSession(record.cwd);
+        sessionId = (await this.sessions.create(record.cwd)).sessionId;
         this.store.upsertBinding({
           channelId: record.id,
           channel: record.kind,
@@ -371,7 +378,7 @@ export class ChannelGateway {
           : `${prefix}${msg.text}`;
 
       if (msg.text.trim() === "/new" || msg.text.trim() === "/reset") {
-        sessionId = this.sessions.createSession(record.cwd);
+        sessionId = (await this.sessions.create(record.cwd)).sessionId;
         this.store.upsertBinding({
           channelId: record.id,
           channel: record.kind,

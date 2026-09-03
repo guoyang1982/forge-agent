@@ -19,6 +19,7 @@ import type {
   RunAttachment,
   RunRequest,
   SessionHookSource,
+  TraceGetResult,
 } from "@forge/protocol";
 import type { HooksSettingsFile, HooksSettingsScope } from "@forge/hooks";
 
@@ -902,6 +903,8 @@ const api = {
       runtime?: { loaded?: boolean; skills?: number; plugins?: number };
       sessions?: { count?: number };
     }>,
+  getTrace: (payload?: { runId?: string; sessionId?: string }) =>
+    ipcRenderer.invoke("forge:trace-get", payload ?? {}) as Promise<TraceGetResult>,
   onEvent: (listener: (event: AgentEvent) => void) => {
     const wrapped = (_evt: unknown, data: AgentEvent) => listener(data);
     ipcRenderer.on("forge:event", wrapped);

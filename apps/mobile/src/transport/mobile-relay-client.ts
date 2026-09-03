@@ -197,6 +197,74 @@ export class MobileRelayClient {
     }
   }
 
+  resumeRun(
+    params: {
+      runId: string;
+      cursor?: number;
+      subscriptionId?: string;
+    },
+    onEvent?: (event: RpcEvent) => void,
+  ): Promise<{ sequences: number[] }> {
+    const subscriptionId = params.subscriptionId ?? opaqueId("subscription");
+    if (onEvent) {
+      this.subscriptions.set(subscriptionId, onEvent);
+    }
+    return this.callV2(
+      "run.resume",
+      {
+        runId: params.runId,
+        cursor: params.cursor ?? 0,
+        subscriptionId,
+      },
+      { subscriptionId, onEvent },
+    ) as Promise<{ sequences: number[] }>;
+  }
+
+  private async callV2(
+    method: "run.resume",
+    params: unknown,
+    options?: {
+      subscriptionId?: string;
+      onEvent?: (event: RpcEvent) => void;
+    },
+  ): Promise<unknown> {
+    if (this.closed) throw new Error("Mobile connection is closed");
+    const id = opaqueId("request");
+    if (options?.subscriptionId && options.onEvent) {
+      this.subscriptions.set(options.subscriptionId, options.onEvent);
+    }
+    const response = new Promise<unknown>((resolve, reject) => {
+      const timeoutMs = rpcTimeoutMs(method);
+      const timer = timeoutMs === null ? undefined : setTimeout(() => {
+          this.pending.delete(id);
+          if (options?.subscriptionId) this.subscriptions.delete(options.subscriptionId);
+          reject(new Error("Mobile RPC request timed out"));
+        }, timeoutMs);
+      this.pending.set(id, {
+        resolve,
+        reject,
+        ...(timer ? { timer } : {}),
+        subscriptionId: options?.subscriptionId,
+      });
+    });
+    try {
+      this.sendEncrypted({
+        type: "rpc.request",
+        id,
+        protocolVersion: 2,
+        method,
+        params,
+      });
+    } catch (error) {
+      const pending = this.pending.get(id);
+      if (pending?.timer) clearTimeout(pending.timer);
+      this.pending.delete(id);
+      if (options?.subscriptionId) this.subscriptions.delete(options.subscriptionId);
+      throw error;
+    }
+    return response;
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;

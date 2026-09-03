@@ -1,11 +1,13 @@
 import { existsSync, mkdirSync, realpathSync, rmdirSync, statSync } from "node:fs";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 import type { AdapterDaemonBridge } from "@forge/channel-core";
+import { isMobileV2OnlyMethod } from "@forge/mobile-protocol/v2";
 import { mobileRpcFrameV1Schema, type MobileRpcFrameV1 } from "@forge/mobile-protocol";
 import { DAEMON_METHODS } from "@forge/protocol";
 import { z } from "zod";
 import { normalizeMobileAttachments } from "./mobile-attachments.js";
 import type { MobileDeviceRegistry } from "./device-registry.js";
+import { MobileRpcV2Router } from "./mobile-rpc-v2.js";
 
 type RpcRequest = Extract<MobileRpcFrameV1, { type: "rpc.request" }>;
 type RpcResponse = Extract<MobileRpcFrameV1, { type: "rpc.response" }>;
@@ -139,6 +141,7 @@ const gitSwitchParams = cwdParams.extend({
 
 interface ActiveRun {
   deviceId: string;
+  runId?: string;
   subscribers: Map<string, EventSink>;
   nextSeq: number;
 }
@@ -161,14 +164,24 @@ export class MobileRpcRouter {
   >();
   /** Avoid re-listing hundreds of sessions just to authorize opening one already listed to mobile. */
   private readonly sessionCwdCache = new Map<string, string>();
+  private readonly v2Router: MobileRpcV2Router;
 
   constructor(private readonly options: MobileRpcRouterOptions) {
     // options.allowedProjects is retained for channel config compatibility but
     // access is scoped to Desktop's shared ui.projects list (synced live).
     void this.options.allowedProjects;
+    this.v2Router = new MobileRpcV2Router({ daemon: options.daemon });
   }
 
   async handle(deviceId: string, input: unknown, emit: EventSink): Promise<RpcResponse> {
+    const candidate = input as { type?: string; method?: string };
+    if (
+      candidate.type === "rpc.request" &&
+      typeof candidate.method === "string" &&
+      isMobileV2OnlyMethod(candidate.method)
+    ) {
+      return this.v2Router.handle(deviceId, input, emit) as Promise<RpcResponse>;
+    }
     const frame = mobileRpcFrameV1Schema.parse(input);
     if (frame.type !== "rpc.request") {
       throw new MobileRpcRouterError("bad_request", "expected rpc.request");
@@ -305,7 +318,11 @@ export class MobileRpcRouter {
         // devices with session access should always be able to interrupt.
         const params = cancelParams.parse(frame.params);
         await this.assertCancelAccess(deviceId, params.sessionId);
-        return this.options.daemon.request(DAEMON_METHODS.CANCEL_RUN, {
+        const run = this.activeRuns.get(params.sessionId);
+        if (run?.runId) {
+          return this.options.daemon.request("run.cancel", { runId: run.runId });
+        }
+        return this.options.daemon.request("run.cancel", {
           sessionId: params.sessionId,
         });
       }
@@ -516,6 +533,37 @@ export class MobileRpcRouter {
     }
   }
 
+  private async executeFirstPartyRun(
+    input: {
+      cwd: string;
+      message: string;
+      sessionId?: string | null;
+      runtime?: { provider?: string; model?: string };
+      autoApply?: boolean;
+      files?: string[];
+      attachments?: unknown;
+    },
+    onLegacyEvent: (event: unknown) => void,
+  ): Promise<{ sessionId: string; finalText: string }> {
+    const result = (await this.options.daemon.request(
+      DAEMON_METHODS.RUN,
+      {
+        cwd: input.cwd,
+        message: input.message,
+        sessionId: input.sessionId ?? null,
+        runtime: input.runtime,
+        attachments: input.attachments,
+        files: input.files,
+        autoApply: input.autoApply,
+      },
+      onLegacyEvent,
+    )) as { sessionId?: string; finalText?: string };
+    return {
+      sessionId: String(result.sessionId ?? ""),
+      finalText: String(result.finalText ?? ""),
+    };
+  }
+
   private async startRun(
     deviceId: string,
     rawParams: unknown,
@@ -593,18 +641,14 @@ export class MobileRpcRouter {
         .map((item) => item.trim().replace(/\\/g, "/"))
         .filter(Boolean)
         .slice(0, 20);
-      const result = await this.options.daemon.request(
-        DAEMON_METHODS.RUN,
+      const result = await this.executeFirstPartyRun(
         {
           cwd,
           message: message || (files.length ? "请查看提及的文件" : ""),
           sessionId: params.sessionId,
           runtime: params.runtime,
-          ...(attachments.length ? { attachments } : {}),
-          ...(files.length ? { files } : {}),
-          // Mobile has no patch-confirm UI (desktop "应用补丁"). Without auto-apply,
-          // write_file stays pending_confirmation and never lands on disk — the files
-          // tab then looks empty even though the agent claimed the write succeeded.
+          attachments: attachments.length ? attachments : undefined,
+          files: files.length ? files : undefined,
           autoApply: true,
         },
         onEvent,

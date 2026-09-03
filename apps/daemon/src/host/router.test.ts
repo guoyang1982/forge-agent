@@ -7,7 +7,7 @@ function requestContext(): RpcContext {
   return {
     requestId: "request-1",
     correlationId: "correlation-1",
-    emitLegacyAgentEvent: () => {},
+    emitAgentEvent: () => {},
   };
 }
 
@@ -63,17 +63,17 @@ describe("TypedRouter", () => {
     expect(router.methods()).toEqual(["system.ping", "system.capabilities"]);
   });
 
-  it("temporarily dispatches legacy method names during the v2 migration", async () => {
+  it("dispatches product method names through the untyped handler", async () => {
     const router = new TypedRouter();
     const context = requestContext();
-    router.registerLegacy("run", async (params, receivedContext) => {
+    router.registerProduct("run", async (params, receivedContext) => {
       expect(params).toEqual({ message: "hello" });
       expect(receivedContext).toBe(context);
       return { sessionId: "session-1" };
     });
 
     await expect(
-      router.handleLegacy("run", { message: "hello" }, context),
+      router.handleUntyped("run", { message: "hello" }, context),
     ).resolves.toEqual({ sessionId: "session-1" });
     expect(router.methods()).toContain("run");
   });
