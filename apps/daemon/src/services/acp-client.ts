@@ -68,6 +68,9 @@ export interface AcpUpdate {
   /** Unified diff for file edits. */
   diff?: string;
   unifiedDiff?: string;
+  used?: number;
+  size?: number;
+  cost?: { amount?: number; currency?: string };
 }
 
 export class AcpError extends Error {

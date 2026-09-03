@@ -1001,6 +1001,17 @@ export type AgentEvent =
       sessionId?: string;
       model?: string;
       durationMs?: number;
+      promptTokens?: number;
+      completionTokens?: number;
+      cachedTokens?: number;
+      reasoningTokens?: number;
+      totalTokens?: number;
+      /** Approximate USD cost in microdollars (1 USD = 1_000_000). */
+      costMinor?: number;
+      usageSource?: "api" | "estimate";
+      /** Cursor/ACP session context occupancy (not prompt/completion). */
+      contextTokens?: number;
+      contextSize?: number;
       talent?: TalentEventInfo;
     }
   | { type: "text_delta"; sessionId?: string; delta: string; talent?: TalentEventInfo }
@@ -1191,6 +1202,8 @@ export type AgentEvent =
       estimatedTokens: number;
       maxContextTokens: number;
       truncated?: boolean;
+      /** Optional USD microdollars from ACP usage_update. */
+      costMinor?: number;
     }
   | { type: "done"; sessionId: string; finalText?: string; runId?: string }
   | {

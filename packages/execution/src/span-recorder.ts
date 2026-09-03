@@ -17,6 +17,13 @@ export interface ActivitySpanRecord {
   endedAt?: string;
   durationMs?: number;
   summary?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  cachedTokens?: number;
+  costMinor?: number;
+  usageEstimated?: boolean;
+  contextTokens?: number;
+  contextSize?: number;
 }
 
 export interface SpanRecorderLinks {
@@ -124,7 +131,7 @@ export class SpanRecorder {
         const key = this.activeLlmByAttempt.get(links.attemptId);
         if (key) {
           this.activeLlmByAttempt.delete(links.attemptId);
-          this.closeKey(key, "succeeded", event.model);
+          this.closeKey(key, "succeeded", llmUsagePatch(event));
         }
         break;
       }
@@ -140,11 +147,9 @@ export class SpanRecorder {
         );
         break;
       case "thinking_end":
-        this.closeKey(
-          `thinking:${links.attemptId}`,
-          "succeeded",
-          `${event.charCount} chars`,
-        );
+        this.closeKey(`thinking:${links.attemptId}`, "succeeded", {
+          summary: `${event.charCount} chars`,
+        });
         break;
       case "tool_start":
         this.start(
@@ -162,8 +167,43 @@ export class SpanRecorder {
         this.closeKey(
           `tool:${event.callId ?? event.name}`,
           toolFailed(event.result) ? "failed" : "succeeded",
-          summarizeSpanPayload(event.result),
+          { summary: summarizeSpanPayload(event.result) },
         );
+        break;
+      case "runtime_activity": {
+        const key = `tool:${event.callId ?? event.name ?? event.label ?? "acp_tool"}`;
+        if (event.status === "running") {
+          if (!this.open.has(key)) {
+            this.start(
+              key,
+              {
+                kind: "tool",
+                name: event.name ?? event.label ?? "tool",
+                parentSpanId: this.turnParent(links.attemptId),
+                summary: summarizeSpanPayload(event.args ?? event.path ?? event.label),
+              },
+              links,
+            );
+          }
+          break;
+        }
+        this.closeKey(
+          key,
+          event.status === "failed" || event.status === "declined" ? "failed" : "succeeded",
+          {
+            summary: summarizeSpanPayload(
+              event.result ?? event.path ?? event.label ?? event.status,
+            ),
+          },
+        );
+        break;
+      }
+      case "context_usage":
+        this.patchOpenLlm(links.attemptId, {
+          contextTokens: event.estimatedTokens,
+          contextSize: event.maxContextTokens,
+          costMinor: event.costMinor,
+        });
         break;
       case "done":
         this.flush("succeeded");
@@ -214,10 +254,33 @@ export class SpanRecorder {
     this.options.emit(SPAN_STARTED, { ...span }, links);
   }
 
+  private patchOpenLlm(
+    attemptId: string,
+    patch: Partial<ActivitySpanRecord>,
+  ): void {
+    const key = this.activeLlmByAttempt.get(attemptId);
+    if (!key) return;
+    const open = this.open.get(key);
+    if (!open) return;
+    open.span = { ...open.span, ...patch };
+  }
+
   private closeKey(
     key: string,
     status: ActivitySpanRecord["status"],
-    summary?: string,
+    patch?: Partial<
+      Pick<
+        ActivitySpanRecord,
+        | "summary"
+        | "promptTokens"
+        | "completionTokens"
+        | "cachedTokens"
+        | "costMinor"
+        | "usageEstimated"
+        | "contextTokens"
+        | "contextSize"
+      >
+    >,
   ): void {
     const open = this.open.get(key);
     if (!open) return;
@@ -227,14 +290,78 @@ export class SpanRecorder {
     const endedMs = Date.parse(endedAt);
     const finished: ActivitySpanRecord = {
       ...open.span,
+      ...patch,
       status,
       endedAt,
       durationMs:
         Number.isFinite(startedMs) && Number.isFinite(endedMs)
           ? Math.max(0, endedMs - startedMs)
           : undefined,
-      summary: summary ?? open.span.summary,
+      summary: patch?.summary ?? open.span.summary,
     };
     this.options.emit(SPAN_ENDED, finished, open.links);
   }
+}
+
+type LlmEndEvent = Extract<AgentEvent, { type: "llm_end" }>;
+
+function llmUsagePatch(event: LlmEndEvent): Partial<ActivitySpanRecord> {
+  const patch: Partial<ActivitySpanRecord> = {
+    summary: formatLlmUsageSummary(event),
+  };
+  if (typeof event.promptTokens === "number") patch.promptTokens = event.promptTokens;
+  if (typeof event.completionTokens === "number") {
+    patch.completionTokens = event.completionTokens;
+  }
+  if (typeof event.cachedTokens === "number") patch.cachedTokens = event.cachedTokens;
+  if (typeof event.costMinor === "number") patch.costMinor = event.costMinor;
+  if (event.usageSource === "estimate") patch.usageEstimated = true;
+  if (typeof event.contextTokens === "number") patch.contextTokens = event.contextTokens;
+  if (typeof event.contextSize === "number") patch.contextSize = event.contextSize;
+  return patch;
+}
+
+function formatLlmUsageSummary(event: LlmEndEvent): string {
+  const parts: string[] = [];
+  if (typeof event.promptTokens === "number" || typeof event.completionTokens === "number") {
+    const prompt = formatTokenCount(event.promptTokens ?? 0);
+    const completion = formatTokenCount(event.completionTokens ?? 0);
+    const cached =
+      typeof event.cachedTokens === "number" && event.cachedTokens > 0
+        ? ` (${formatTokenCount(event.cachedTokens)} cached)`
+        : "";
+    parts.push(`${prompt} → ${completion}${cached}`);
+  } else if (
+    typeof event.contextTokens === "number" ||
+    typeof event.contextSize === "number"
+  ) {
+    parts.push(
+      `${formatTokenCount(event.contextTokens ?? 0)}/${formatTokenCount(event.contextSize ?? 0)} ctx`,
+    );
+  }
+  if (typeof event.costMinor === "number") {
+    parts.push(formatMicroUsd(event.costMinor));
+  }
+  if (event.usageSource === "estimate") parts.push("est.");
+  if (parts.length === 0) return event.model ?? "llm";
+  return parts.join(" · ");
+}
+
+function formatTokenCount(count: number): string {
+  if (count >= 10_000) return `${Math.round(count / 1000)}k`;
+  if (count >= 1000) return `${(count / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  return String(count);
+}
+
+function formatMicroUsd(micro: number): string {
+  const usd = micro / 1_000_000;
+  if (usd >= 1) return `$${usd.toFixed(2)}`;
+  if (usd >= 0.01) {
+    return `$${usd.toFixed(3)}`.replace(/0+$/, "").replace(/\.$/, "");
+  }
+  if (usd >= 0.0001) return `$${usd.toFixed(4)}`;
+  if (usd > 0) {
+    return `$${usd.toFixed(6)}`.replace(/0+$/, "").replace(/\.$/, "");
+  }
+  return "$0";
 }

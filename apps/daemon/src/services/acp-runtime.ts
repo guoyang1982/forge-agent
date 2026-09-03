@@ -179,6 +179,21 @@ export function mapAcpUpdate(
     return;
   }
 
+  if (kind === "usage_update") {
+    const used = typeof update.used === "number" ? update.used : undefined;
+    const size = typeof update.size === "number" ? update.size : undefined;
+    const costMinor = usdCostToMicro(update.cost);
+    if (used == null && size == null && costMinor == null) return;
+    emit({
+      type: "context_usage",
+      sessionId,
+      estimatedTokens: used ?? 0,
+      maxContextTokens: size ?? 0,
+      ...(costMinor != null ? { costMinor } : {}),
+    });
+    return;
+  }
+
   if (kind === "tool_call") {
     const name = update.title ?? update.kind ?? "acp_tool";
     const args = normalizeRawInput(update.rawInput);
@@ -384,6 +399,15 @@ async function syncWarmSessionMode(options: {
   }
 }
 
+function usdCostToMicro(cost: AcpUpdate["cost"]): number | undefined {
+  if (!cost || typeof cost.amount !== "number" || !Number.isFinite(cost.amount)) {
+    return undefined;
+  }
+  const currency = (cost.currency ?? "USD").toUpperCase();
+  if (currency && currency !== "USD") return undefined;
+  return Math.max(0, Math.round(cost.amount * 1_000_000));
+}
+
 export async function runAcpRuntime(options: AcpRuntimeOptions): Promise<RunResult> {
   return acpSessionPool.withTurn(options.providerKey, options.sessionId, () =>
     runAcpTurn(options),
@@ -535,16 +559,34 @@ async function runAcpTurn(options: AcpRuntimeOptions): Promise<RunResult> {
       );
     }
     emitStatus(options.emit, options.sessionId, `${options.providerLabel} turn 启动中…`);
+    const modelName = model ?? options.providerLabel;
+    options.emit({ type: "llm_start", sessionId: options.sessionId, model: modelName });
+    const llmStarted = Date.now();
+    let lastContext: {
+      contextTokens?: number;
+      contextSize?: number;
+      costMinor?: number;
+    } = {};
+    const emit: typeof options.emit = (event) => {
+      if (event.type === "context_usage") {
+        lastContext = {
+          contextTokens: event.estimatedTokens,
+          contextSize: event.maxContextTokens,
+          costMinor: event.costMinor,
+        };
+      }
+      options.emit(event);
+    };
     client.setPermissionHandler(
-      createAcpPermissionHandler(options.emit, options.sessionId, options.signal),
+      createAcpPermissionHandler(emit, options.sessionId, options.signal),
     );
     try {
       for await (const item of client.promptStream(acpSessionId, promptBlocks)) {
         if (item.kind === "update") {
-          mapAcpUpdate(item.update, options.emit, options.sessionId, finalText);
+          mapAcpUpdate(item.update, emit, options.sessionId, finalText);
         } else {
           emitStatus(
-            options.emit,
+            emit,
             options.sessionId,
             item.stopReason
               ? `${options.providerLabel} turn 完成 (${item.stopReason})`
@@ -554,6 +596,19 @@ async function runAcpTurn(options: AcpRuntimeOptions): Promise<RunResult> {
       }
     } finally {
       client.setPermissionHandler(undefined);
+      options.emit({
+        type: "llm_end",
+        sessionId: options.sessionId,
+        model: modelName,
+        durationMs: Date.now() - llmStarted,
+        ...(lastContext.contextTokens != null
+          ? { contextTokens: lastContext.contextTokens }
+          : {}),
+        ...(lastContext.contextSize != null
+          ? { contextSize: lastContext.contextSize }
+          : {}),
+        ...(lastContext.costMinor != null ? { costMinor: lastContext.costMinor } : {}),
+      });
     }
     return { sessionId: options.sessionId, finalText: finalText.value };
   } catch (cause) {

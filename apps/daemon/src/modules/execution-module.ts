@@ -157,6 +157,10 @@ async function handleTraceGet(
       tools: trace.summaries.tools,
       versions: trace.summaries.versions,
       totalCostMinor: Number(trace.summaries.totalCostMinor),
+      totalPromptTokens: trace.summaries.totalPromptTokens,
+      totalCompletionTokens: trace.summaries.totalCompletionTokens,
+      contextTokens: trace.summaries.contextTokens || undefined,
+      contextSize: trace.summaries.contextSize || undefined,
     },
   };
 }

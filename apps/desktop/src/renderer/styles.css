@@ -9076,6 +9076,7 @@ textarea {
   opacity: 0.55;
   font-size: 11px;
   flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .trace-summary {

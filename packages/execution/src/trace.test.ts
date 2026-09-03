@@ -62,12 +62,22 @@ describe("buildTrace", () => {
         name: "gpt-test",
         status: "succeeded",
         durationMs: 12,
+        promptTokens: 1200,
+        completionTokens: 80,
+        costMinor: 18_000,
       }),
     ];
     const tree = toTraceTree(buildTrace(events));
     const attempt = tree.children[0]?.children[0];
     const turn = attempt?.children.find((node) => node.kind === "turn");
-    expect(turn?.children.some((node) => node.kind === "llm")).toBe(true);
+    const llm = turn?.children.find((node) => node.kind === "llm");
+    expect(llm?.promptTokens).toBe(1200);
+    expect(llm?.completionTokens).toBe(80);
+    expect(llm?.costMinor).toBe(18_000);
+    expect(turn?.costMinor).toBe(18_000);
+    expect(tree.costMinor).toBe(18_000);
+    expect(buildTrace(events).summaries.totalPromptTokens).toBe(1200);
+    expect(buildTrace(events).summaries.totalCostMinor).toBe(42n + 18_000n);
   });
 });
 

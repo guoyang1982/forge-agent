@@ -80,6 +80,14 @@
       if (metaEl) {
         const parts = [
           result?.state,
+          formatTokenPair(
+            result?.summaries?.totalPromptTokens,
+            result?.summaries?.totalCompletionTokens,
+            undefined,
+            result?.summaries?.contextTokens ?? result?.tree?.contextTokens,
+            result?.summaries?.contextSize ?? result?.tree?.contextSize,
+          ),
+          formatCost(result?.summaries?.totalCostMinor),
           result?.summaries?.tools?.length
             ? `${result.summaries.tools.length} 个工具`
             : "",
@@ -117,7 +125,21 @@
     name.textContent = node.name || node.spanId;
     const meta = document.createElement("span");
     meta.className = "trace-meta";
-    meta.textContent = [node.status, formatMs(node.durationMs)].filter(Boolean).join(" · ");
+    meta.textContent = [
+      node.status,
+      formatTokenPair(
+        node.promptTokens,
+        node.completionTokens,
+        node.cachedTokens,
+        node.contextTokens,
+        node.contextSize,
+      ),
+      formatCost(node.costMinor),
+      node.usageEstimated ? "est." : "",
+      formatMs(node.durationMs),
+    ]
+      .filter(Boolean)
+      .join(" · ");
     summary.append(kind, name, meta);
     details.append(summary);
     if (node.summary) {
@@ -136,6 +158,37 @@
     if (typeof ms !== "number" || !Number.isFinite(ms)) return "";
     if (ms < 1000) return `${Math.round(ms)}ms`;
     return `${(ms / 1000).toFixed(1)}s`;
+  }
+
+  function formatTokenPair(prompt, completion, cached, contextTokens, contextSize) {
+    if (typeof contextTokens === "number" || typeof contextSize === "number") {
+      if ((contextTokens || 0) <= 0 && (contextSize || 0) <= 0) return "";
+      return `${formatTokenCount(contextTokens || 0)}/${formatTokenCount(contextSize || 0)} ctx`;
+    }
+    if (typeof prompt !== "number" && typeof completion !== "number") return "";
+    if ((prompt || 0) <= 0 && (completion || 0) <= 0) return "";
+    const cachedTok =
+      typeof cached === "number" && cached > 0
+        ? ` (${formatTokenCount(cached)} cached)`
+        : "";
+    return `${formatTokenCount(prompt || 0)}→${formatTokenCount(completion || 0)}${cachedTok}`;
+  }
+
+  function formatTokenCount(count) {
+    if (count >= 10_000) return `${Math.round(count / 1000)}k`;
+    if (count >= 1000) return `${(count / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+    return String(count);
+  }
+
+  function formatCost(micro) {
+    if (typeof micro !== "number" || !Number.isFinite(micro) || micro <= 0) return "";
+    const usd = micro / 1_000_000;
+    if (usd >= 1) return `$${usd.toFixed(2)}`;
+    if (usd >= 0.01) {
+      return `$${usd.toFixed(3)}`.replace(/0+$/, "").replace(/\.$/, "");
+    }
+    if (usd >= 0.0001) return `$${usd.toFixed(4)}`;
+    return `$${usd.toFixed(6)}`.replace(/0+$/, "").replace(/\.$/, "");
   }
 
   function formatDuration(node) {

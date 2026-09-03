@@ -463,6 +463,13 @@ export interface TraceNode {
   endedAt?: string;
   durationMs?: number;
   summary?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  cachedTokens?: number;
+  costMinor?: number;
+  usageEstimated?: boolean;
+  contextTokens?: number;
+  contextSize?: number;
   children: TraceNode[];
 }
 
@@ -477,6 +484,10 @@ export interface TraceGetResult {
     tools: string[];
     versions: string[];
     totalCostMinor: number;
+    totalPromptTokens: number;
+    totalCompletionTokens: number;
+    contextTokens?: number;
+    contextSize?: number;
   };
 }
 

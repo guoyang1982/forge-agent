@@ -17,14 +17,29 @@ import {
   finalizeSseParseState,
   parseLlmResponseBody,
 } from "./sse.js";
+import {
+  estimateLlmCostMicroUsd,
+  estimateLlmUsage,
+  formatUsdFromMicro,
+  parseLlmUsage,
+  type LlmUsage,
+} from "./usage.js";
 
 export { LlmError } from "./errors.js";
+export {
+  estimateLlmCostMicroUsd,
+  estimateLlmUsage,
+  formatUsdFromMicro,
+  parseLlmUsage,
+};
+export type { LlmUsage };
 
 export interface LlmChatResult {
   text: string | null;
   toolCalls: ToolCall[];
   /** DeepSeek thinking / reasoner chain-of-thought (not shown to end users by default). */
   reasoningContent?: string | null;
+  usage?: LlmUsage;
 }
 
 export interface LlmChatOptions {
@@ -75,6 +90,9 @@ export class LlmClient {
           options.onThinkingEnd,
       ),
     };
+    if (body.stream) {
+      body.stream_options = { include_usage: true };
+    }
     const opts = this.config.options;
     if (opts?.thinking) body.thinking = opts.thinking;
     if (opts?.reasoning_effort) body.reasoning_effort = opts.reasoning_effort;
@@ -175,7 +193,7 @@ export class LlmClient {
         const json = JSON.parse(raw.trim()) as ApiCompletion;
         const choice = json.choices?.[0]?.message;
         if (choice) {
-          const msg = parseMessage(choice);
+          const msg = parseMessage(choice, json.usage);
           if (msg.text?.trim() || msg.toolCalls.length) return msg;
         }
       } catch {
@@ -189,6 +207,7 @@ export class LlmClient {
 
 interface ApiCompletion {
   choices?: Array<{ message?: ApiMessage }>;
+  usage?: unknown;
 }
 
 interface ApiMessage {
@@ -231,7 +250,7 @@ function toApiTool(t: ToolDefinition) {
   };
 }
 
-function parseMessage(msg: ApiMessage): LlmChatResult {
+function parseMessage(msg: ApiMessage, usageRaw?: unknown): LlmChatResult {
   const toolCalls: ToolCall[] = (msg.tool_calls ?? []).map((tc) => ({
     id: tc.id,
     name: tc.function.name,
@@ -241,6 +260,7 @@ function parseMessage(msg: ApiMessage): LlmChatResult {
     text: msg.content ?? null,
     toolCalls,
     reasoningContent: msg.reasoning_content ?? null,
+    usage: parseLlmUsage(usageRaw),
   };
 }
 

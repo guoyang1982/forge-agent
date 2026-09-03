@@ -6,7 +6,12 @@ import type {
   ToolCall,
 } from "@forge/protocol";
 import { plainTextFromChatContent } from "@forge/protocol";
-import { LlmClient } from "@forge/llm";
+import {
+  LlmClient,
+  estimateLlmCostMicroUsd,
+  estimateLlmUsage,
+  type LlmUsage,
+} from "@forge/llm";
 import type { RuntimePolicy } from "@forge/agent-profile";
 import {
   ToolRegistry,
@@ -275,6 +280,7 @@ export async function runReActLoop(
     let thinkingChars = 0;
     const llmStarted = Date.now();
     const modelName = config.model.name;
+    let llmUsage: LlmUsage | undefined;
     onEvent?.({ type: "llm_start", model: modelName });
     try {
       const requestMessages = compressRuntimeMessages(
@@ -314,14 +320,30 @@ export async function runReActLoop(
           emitModelStatus(message);
         },
       });
+      llmUsage =
+        response.usage ?? estimateUsageFromTurn(requestMessages, response);
     } catch (e) {
       if (isAbortError(e)) throw new RunCancelledError(messages);
       throw e;
     } finally {
+      const costMinor = llmUsage
+        ? estimateLlmCostMicroUsd(modelName, llmUsage)
+        : undefined;
       onEvent?.({
         type: "llm_end",
         model: modelName,
         durationMs: Date.now() - llmStarted,
+        ...(llmUsage
+          ? {
+              promptTokens: llmUsage.promptTokens,
+              completionTokens: llmUsage.completionTokens,
+              totalTokens: llmUsage.totalTokens,
+              cachedTokens: llmUsage.cachedTokens,
+              reasoningTokens: llmUsage.reasoningTokens,
+              usageSource: llmUsage.source,
+            }
+          : {}),
+        ...(costMinor != null ? { costMinor } : {}),
       });
       modelResponseDone = true;
       clearInterval(modelHeartbeat);
@@ -571,6 +593,25 @@ function compressRuntimeMessages(
     message: `上下文已按 AgentProfile 策略压缩，移除约 ${compressed.removedTokenEstimate} tokens`,
   });
   return messages;
+}
+
+function estimateUsageFromTurn(
+  messages: ChatMessage[],
+  response: Awaited<ReturnType<LlmClient["chat"]>>,
+): LlmUsage {
+  const promptChars = messages.reduce((total, message) => {
+    return (
+      total +
+      plainTextFromChatContent(message.content).length +
+      (message.reasoning_content?.length ?? 0) +
+      (message.tool_calls ? JSON.stringify(message.tool_calls).length : 0)
+    );
+  }, 0);
+  const completionChars =
+    (response.text?.length ?? 0) +
+    (response.reasoningContent?.length ?? 0) +
+    JSON.stringify(response.toolCalls ?? []).length;
+  return estimateLlmUsage(promptChars, completionChars);
 }
 
 function findLastUserMessage(messages: ChatMessage[]): string | null {

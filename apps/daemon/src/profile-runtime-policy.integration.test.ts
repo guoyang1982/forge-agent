@@ -31,24 +31,27 @@ const chatResponses = vi.hoisted(
       }>;
     }>,
 );
-vi.mock("@forge/llm", () => ({
-  LlmClient: class {
-    async chat(input: { messages: ChatMessage[] }) {
-      chatInputs.push({ messages: structuredClone(input.messages) });
-      if (chatDelayMs.value > 0) {
-        await new Promise((resolve) => setTimeout(resolve, chatDelayMs.value));
-      }
-      return (
-        chatResponses.shift() ?? {
-          text: "done",
-          reasoningContent: "",
-          toolCalls: [],
+vi.mock("@forge/llm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@forge/llm")>();
+  return {
+    ...actual,
+    LlmClient: class {
+      async chat(input: { messages: ChatMessage[] }) {
+        chatInputs.push({ messages: structuredClone(input.messages) });
+        if (chatDelayMs.value > 0) {
+          await new Promise((resolve) => setTimeout(resolve, chatDelayMs.value));
         }
-      );
-    }
-  },
-  LlmError: class extends Error {},
-}));
+        return (
+          chatResponses.shift() ?? {
+            text: "done",
+            reasoningContent: "",
+            toolCalls: [],
+          }
+        );
+      }
+    },
+  };
+});
 
 const { runReActLoop } = await import("@forge/agent-core");
 const migrationsDir = join(import.meta.dirname, "..", "..", "..", "migrations");

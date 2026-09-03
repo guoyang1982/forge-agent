@@ -28,6 +28,13 @@ export interface ActivitySpan {
   finishedAt?: string;
   durationMs?: number;
   summary?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  cachedTokens?: number;
+  costMinor?: number;
+  usageEstimated?: boolean;
+  contextTokens?: number;
+  contextSize?: number;
 }
 
 export interface StepSpan {
@@ -54,6 +61,10 @@ export interface TraceSummaries {
   tools: string[];
   versions: string[];
   totalCostMinor: bigint;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  contextTokens: number;
+  contextSize: number;
 }
 
 export interface TraceContext {
@@ -96,6 +107,10 @@ export function buildTrace(events: EventEnvelope[]): TraceContext {
   const tools = new Set<string>();
   const versions = new Set<string>();
   let totalCostMinor = 0n;
+  let totalPromptTokens = 0;
+  let totalCompletionTokens = 0;
+  let contextTokens = 0;
+  let contextSize = 0;
   const artifactRefs = new Set<string>();
 
   for (const event of ordered) {
@@ -108,7 +123,9 @@ export function buildTrace(events: EventEnvelope[]): TraceContext {
     if (typeof payload.tool === "string") tools.add(payload.tool);
     if (typeof payload.version === "string") versions.add(payload.version);
     if (typeof payload.costMinor === "number" && Number.isFinite(payload.costMinor)) {
-      totalCostMinor += BigInt(Math.trunc(payload.costMinor));
+      if (event.type !== SPAN_STARTED && event.type !== "agent.event") {
+        totalCostMinor += BigInt(Math.trunc(payload.costMinor));
+      }
     }
     if (typeof payload.outputRef === "string") {
       artifactRefs.add(payload.outputRef);
@@ -169,7 +186,13 @@ export function buildTrace(events: EventEnvelope[]): TraceContext {
     }
 
     if (event.type === SPAN_STARTED || event.type === SPAN_ENDED) {
-      applyActivityEvent(event, payload, attempt, tools);
+      const usage = applyActivityEvent(event, payload, attempt, tools);
+      if (event.type === SPAN_ENDED) {
+        totalPromptTokens += usage.promptTokens;
+        totalCompletionTokens += usage.completionTokens;
+        if (usage.contextTokens > contextTokens) contextTokens = usage.contextTokens;
+        if (usage.contextSize > contextSize) contextSize = usage.contextSize;
+      }
     }
     if (event.type === "step.started") {
       attempt.startedAt = event.occurredAt;
@@ -202,6 +225,10 @@ export function buildTrace(events: EventEnvelope[]): TraceContext {
       tools: [...tools],
       versions: [...versions],
       totalCostMinor,
+      totalPromptTokens,
+      totalCompletionTokens,
+      contextTokens,
+      contextSize,
     },
   };
 }
@@ -276,6 +303,16 @@ export function toTraceTree(trace: TraceContext): TraceNode {
           activity.finishedAt,
           activity.durationMs,
           activity.summary,
+          {
+            promptTokens: activity.promptTokens,
+            completionTokens: activity.completionTokens,
+            cachedTokens: activity.cachedTokens,
+            costMinor:
+              activity.costMinor != null ? Number(activity.costMinor) : undefined,
+            usageEstimated: activity.usageEstimated,
+            contextTokens: activity.contextTokens,
+            contextSize: activity.contextSize,
+          },
         );
         nodes.set(activityNode.spanId, activityNode);
       }
@@ -288,6 +325,7 @@ export function toTraceTree(trace: TraceContext): TraceNode {
     if (parent) parent.children.push(node);
     else root.children.push(node);
   }
+  rollupUsage(root);
   return root;
 }
 
@@ -296,7 +334,7 @@ function applyActivityEvent(
   payload: Record<string, unknown>,
   attempt: AttemptSpan,
   tools: Set<string>,
-): void {
+): { promptTokens: number; completionTokens: number; contextTokens: number; contextSize: number } {
   const spanId = typeof payload.spanId === "string" ? payload.spanId : event.eventId;
   let activity = attempt.activities.find((item) => item.spanId === spanId);
   if (!activity) {
@@ -318,6 +356,25 @@ function applyActivityEvent(
   }
   if (typeof payload.summary === "string") activity.summary = payload.summary;
   if (typeof payload.durationMs === "number") activity.durationMs = payload.durationMs;
+  if (typeof payload.promptTokens === "number") {
+    activity.promptTokens = payload.promptTokens;
+  }
+  if (typeof payload.completionTokens === "number") {
+    activity.completionTokens = payload.completionTokens;
+  }
+  if (typeof payload.cachedTokens === "number") {
+    activity.cachedTokens = payload.cachedTokens;
+  }
+  if (typeof payload.costMinor === "number" && Number.isFinite(payload.costMinor)) {
+    activity.costMinor = payload.costMinor;
+  }
+  if (payload.usageEstimated === true) activity.usageEstimated = true;
+  if (typeof payload.contextTokens === "number") {
+    activity.contextTokens = payload.contextTokens;
+  }
+  if (typeof payload.contextSize === "number") {
+    activity.contextSize = payload.contextSize;
+  }
   if (event.type === SPAN_STARTED) {
     activity.startedAt = event.occurredAt;
     activity.status = "running";
@@ -328,6 +385,12 @@ function applyActivityEvent(
       typeof payload.status === "string" ? payload.status : "succeeded";
   }
   if (activity.kind === "tool") tools.add(activity.name);
+  return {
+    promptTokens: activity.kind === "llm" ? (activity.promptTokens ?? 0) : 0,
+    completionTokens: activity.kind === "llm" ? (activity.completionTokens ?? 0) : 0,
+    contextTokens: activity.kind === "llm" ? (activity.contextTokens ?? 0) : 0,
+    contextSize: activity.kind === "llm" ? (activity.contextSize ?? 0) : 0,
+  };
 }
 
 function nodeFrom(
@@ -340,6 +403,15 @@ function nodeFrom(
   endedAt?: string,
   durationMs?: number,
   summary?: string,
+  usage?: {
+    promptTokens?: number;
+    completionTokens?: number;
+    cachedTokens?: number;
+    costMinor?: number;
+    usageEstimated?: boolean;
+    contextTokens?: number;
+    contextSize?: number;
+  },
 ): TraceNode {
   return {
     spanId,
@@ -355,8 +427,61 @@ function nodeFrom(
         ? Math.max(0, Date.parse(endedAt) - Date.parse(startedAt))
         : undefined),
     summary,
+    promptTokens: usage?.promptTokens,
+    completionTokens: usage?.completionTokens,
+    cachedTokens: usage?.cachedTokens,
+    costMinor: usage?.costMinor,
+    usageEstimated: usage?.usageEstimated,
+    contextTokens: usage?.contextTokens,
+    contextSize: usage?.contextSize,
     children: [],
   };
+}
+
+function rollupUsage(node: TraceNode): void {
+  for (const child of node.children) rollupUsage(child);
+  const hasOwn =
+    node.kind === "llm" &&
+    (typeof node.promptTokens === "number" ||
+      typeof node.costMinor === "number" ||
+      typeof node.contextTokens === "number");
+  if (hasOwn) return;
+  let prompt = 0;
+  let completion = 0;
+  let cost = 0;
+  let contextTokens = 0;
+  let contextSize = 0;
+  let hasUsage = false;
+  for (const child of node.children) {
+    if (typeof child.promptTokens === "number") {
+      prompt += child.promptTokens;
+      hasUsage = true;
+    }
+    if (typeof child.completionTokens === "number") {
+      completion += child.completionTokens;
+      hasUsage = true;
+    }
+    if (typeof child.costMinor === "number") {
+      cost += child.costMinor;
+      hasUsage = true;
+    }
+    if (typeof child.contextTokens === "number" && child.contextTokens > contextTokens) {
+      contextTokens = child.contextTokens;
+      hasUsage = true;
+    }
+    if (typeof child.contextSize === "number" && child.contextSize > contextSize) {
+      contextSize = child.contextSize;
+      hasUsage = true;
+    }
+  }
+  if (!hasUsage) return;
+  if (prompt > 0 || completion > 0) {
+    node.promptTokens = prompt;
+    node.completionTokens = completion;
+  }
+  if (cost > 0) node.costMinor = cost;
+  if (contextTokens > 0) node.contextTokens = contextTokens;
+  if (contextSize > 0) node.contextSize = contextSize;
 }
 
 function inferRunId(events: EventEnvelope[]): string | undefined {
