@@ -45,6 +45,7 @@ import type {
 } from "@forge/execution";
 import {
   compileWorkflowRun,
+  hashWorkflowDefinition,
   WorkflowStore,
   type WorkflowTriggerKind,
 } from "@forge/workflows";
@@ -477,21 +478,27 @@ async function executeDurableOccurrence(
 > {
   const workflows = WorkflowStore.forDatabase(deps.durable.db);
   const definition = automationToWorkflow(auto);
+  const existingPublished = workflows.getLatestPublishedVersion(definition.id);
+  const definitionChanged = existingPublished
+    ? hashWorkflowDefinition({ ...existingPublished.definition, version: 1 }) !==
+      hashWorkflowDefinition({ ...definition, version: 1 })
+    : true;
   const governance = await deps.durable.governance.prepare(auto, definition, {
-    userGranted: trigger === "manual",
+    assetPublicationRequired: definitionChanged,
   });
   const published =
-    workflows.getLatestPublishedVersion(definition.id) ??
-    workflows.publish(
-      {
-        id: definition.id,
-        name: auto.name,
-        ownerSubject: { kind: "human", id: "local-user" },
-        definition,
-        description: auto.description ?? auto.name,
-      },
-      governance.qualityGate,
-    );
+    existingPublished && !definitionChanged
+      ? existingPublished
+      : workflows.publish(
+          {
+            id: definition.id,
+            name: auto.name,
+            ownerSubject: { kind: "human", id: "local-user" },
+            definition,
+            description: auto.description ?? auto.name,
+          },
+          governance.qualityGate!,
+        );
   const triggerRef = occurrence.triggerRef ?? `automation-run:${occurrence.id}`;
   const existing = workflows.findInstanceByTriggerRef(definition.id, triggerRef);
   if (existing?.runId) {

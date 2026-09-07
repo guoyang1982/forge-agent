@@ -6,9 +6,14 @@ import {
   type AssetVersionRef,
 } from "@forge/asset-registry";
 import { chunkExtractedDocument } from "@forge/document-extract";
+import {
+  assertTenantScope,
+  isSameTenantScope,
+  matchesTenantScope,
+  type TenantScope,
+} from "@forge/protocol";
 
-export interface KnowledgeAccessScope {
-  companyId?: string;
+export interface KnowledgeAccessScope extends TenantScope {
   projectId?: string;
   teamId?: string;
 }
@@ -24,7 +29,7 @@ export interface KnowledgeSourceInput {
   name: string;
   sourceKind: string;
   uri?: string;
-  accessScope?: KnowledgeAccessScope;
+  accessScope: KnowledgeAccessScope;
   content: string;
   chunks?: KnowledgeChunkInput[];
   ownerSubject: { kind: string; id: string };
@@ -37,6 +42,16 @@ export interface KnowledgeQualityGateInput {
   securityValidationId: string;
   description?: string;
 }
+
+export interface KnowledgePublishTarget {
+  assetId: string;
+  assetVersionId: string;
+  ownerSubject: { kind: string; id: string };
+}
+
+export type KnowledgeQualityGateProvider = (
+  target: KnowledgePublishTarget,
+) => KnowledgeQualityGateInput;
 
 export interface KnowledgeAssetVersionRef {
   kind: "knowledge";
@@ -85,7 +100,7 @@ export class KnowledgeStore {
   constructor(
     private readonly db: Database,
     private readonly assets: AssetRegistry,
-    private readonly gate: KnowledgeQualityGateInput = {
+    private readonly gate: KnowledgeQualityGateInput | KnowledgeQualityGateProvider = {
       validationIds: ["validation-pass"],
       permissionReviewId: "grant:publish:knowledge",
       securityValidationId: "security-pass",
@@ -93,10 +108,18 @@ export class KnowledgeStore {
   ) {}
 
   async syncSource(input: KnowledgeSourceInput): Promise<KnowledgeSyncResult> {
+    assertTenantScope(input.accessScope);
     const now = new Date().toISOString();
     const sourceId = this.resolveSourceId(input);
     const contentHash = hashContent(input.content);
     const existingSource = this.getSourceRow(sourceId);
+
+    if (
+      existingSource &&
+      !isSameTenantScope(existingSource.accessScope, input.accessScope)
+    ) {
+      throw new Error("knowledge source scope does not match caller scope");
+    }
 
     if (!existingSource) {
       this.db
@@ -290,7 +313,13 @@ export class KnowledgeStore {
     };
   }
 
-  deleteSource(sourceId: string): void {
+  deleteSource(sourceId: string, scope: KnowledgeAccessScope): void {
+    assertTenantScope(scope);
+    const source = this.getSourceRow(sourceId);
+    if (!source) return;
+    if (!isSameTenantScope(source.accessScope, scope)) {
+      throw new Error("knowledge source scope does not match caller scope");
+    }
     const currentVersion = this.getCurrentVersion(sourceId);
     if (!currentVersion) {
       return;
@@ -341,11 +370,19 @@ export class KnowledgeStore {
         content: { description: input.name, contentHash },
       });
     }
+    const draft = this.assets.getDraftVersion(assetId);
+    if (!draft) {
+      throw new Error(`knowledge asset draft is missing: ${assetId}`);
+    }
+    const gate =
+      typeof this.gate === "function"
+        ? this.gate({ assetId, assetVersionId: draft.id, ownerSubject: input.ownerSubject })
+        : this.gate;
     return this.assets.publish(assetId, {
-      validationIds: this.gate.validationIds,
-      permissionReviewId: this.gate.permissionReviewId,
-      securityValidationId: this.gate.securityValidationId,
-      description: this.gate.description ?? input.name,
+      validationIds: gate.validationIds,
+      permissionReviewId: gate.permissionReviewId,
+      securityValidationId: gate.securityValidationId,
+      description: gate.description ?? input.name,
     });
   }
 
@@ -383,22 +420,43 @@ export class KnowledgeStore {
     return chunkExtractedDocument(locatorBase, input.content, DEFAULT_CHUNK_SIZE);
   }
 
-  private getSourceRow(sourceId: string): { id: string } | undefined {
-    return this.db
-      .prepare(`SELECT id FROM core_knowledge_sources WHERE id = ?`)
-      .get(sourceId) as { id: string } | undefined;
+  private getSourceRow(
+    sourceId: string,
+  ): { id: string; accessScope: KnowledgeAccessScope } | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT id, access_scope_json AS accessScopeJson
+         FROM core_knowledge_sources WHERE id = ?`,
+      )
+      .get(sourceId) as { id: string; accessScopeJson: string } | undefined;
+    return row
+      ? {
+          id: row.id,
+          accessScope: JSON.parse(row.accessScopeJson) as KnowledgeAccessScope,
+        }
+      : undefined;
   }
 
   private resolveSourceId(input: KnowledgeSourceInput): string {
     if (input.id) {
       return input.id;
     }
-    const existing = this.db
+    const candidates = this.db
       .prepare(
-        `SELECT id FROM core_knowledge_sources
+        `SELECT id, access_scope_json AS accessScopeJson
+         FROM core_knowledge_sources
          WHERE name = ? AND source_kind = ?`,
       )
-      .get(input.name, input.sourceKind) as { id: string } | undefined;
+      .all(input.name, input.sourceKind) as Array<{
+      id: string;
+      accessScopeJson: string;
+    }>;
+    const existing = candidates.find((candidate) =>
+      isSameTenantScope(
+        JSON.parse(candidate.accessScopeJson) as KnowledgeAccessScope,
+        input.accessScope,
+      ),
+    );
     return existing?.id ?? randomUUID();
   }
 
@@ -447,13 +505,7 @@ function matchesScope(
   requested?: KnowledgeAccessScope,
 ): boolean {
   const stored = JSON.parse(accessScopeJson) as KnowledgeAccessScope;
-  if (!hasScopeConstraints(stored)) {
-    return true;
-  }
-  if (!requested) {
-    return false;
-  }
-  if (stored.companyId && stored.companyId !== requested.companyId) {
+  if (!requested || !matchesTenantScope(stored, requested)) {
     return false;
   }
   if (stored.projectId && stored.projectId !== requested.projectId) {
@@ -463,10 +515,6 @@ function matchesScope(
     return false;
   }
   return true;
-}
-
-function hasScopeConstraints(scope: KnowledgeAccessScope): boolean {
-  return Boolean(scope.companyId || scope.projectId || scope.teamId);
 }
 
 function scoreChunk(text: string, query: string): number {

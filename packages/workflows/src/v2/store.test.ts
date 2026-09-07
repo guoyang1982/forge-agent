@@ -105,6 +105,43 @@ describe("WorkflowStore", () => {
     ).toThrow(/concurrency limit/);
   });
 
+  it("uses the requested workflow version concurrency limit after republishing", () => {
+    const fx = workflowFixture();
+    const first = publishWorkflow(fx, {
+      id: "wf-versioned-limit",
+      name: "Versioned workflow",
+      ownerSubject: { kind: "human", id: "local" },
+      definition: sampleDefinition({
+        id: "wf-versioned-limit",
+        concurrency: { maxRuns: 1 },
+      }),
+    });
+    publishWorkflow(fx, {
+      id: "wf-versioned-limit",
+      name: "Versioned workflow",
+      ownerSubject: { kind: "human", id: "local" },
+      definition: sampleDefinition({
+        id: "wf-versioned-limit",
+        concurrency: { maxRuns: 2 },
+      }),
+    });
+
+    fx.store.createInstance({
+      workflowId: "wf-versioned-limit",
+      workflowVersionId: first.workflowVersionId,
+      triggerKind: "manual",
+      runInput: { topic: "first" },
+    });
+    expect(() =>
+      fx.store.createInstance({
+        workflowId: "wf-versioned-limit",
+        workflowVersionId: first.workflowVersionId,
+        triggerKind: "manual",
+        runInput: { topic: "second" },
+      }),
+    ).toThrow(/concurrency limit/);
+  });
+
   it("rejects instances for unpublished workflow versions", () => {
     const fx = workflowFixture();
     const published = publishWorkflow(fx, {
@@ -174,7 +211,9 @@ describe("WorkflowStore", () => {
       }),
     ).toThrow(WorkflowReplayAuthorizationError);
 
-    seedWorkflowReplayGrant(fx.forgeStore.db, "grant:replay:1");
+    seedWorkflowReplayGrant(fx.forgeStore.db, "grant:replay:1", {
+      instanceId: instance.id,
+    });
     const replayed = fx.store.replayDeadLetter(
       instance.id,
       { kind: "human", id: "operator-1" },
@@ -193,6 +232,46 @@ describe("WorkflowStore", () => {
         previousState: "dead_letter",
       },
     });
+  });
+
+  it.each([
+    ["another subject", { subject: { kind: "human", id: "other-operator" } }],
+    ["another workflow", { workflowId: "wf-other" }],
+    ["another dead-letter instance", { instanceId: "instance-other" }],
+    ["another resource kind", { resourceKind: "workflow" }],
+    ["an inactive policy", { policyActive: false }],
+  ])("rejects a replay grant bound to %s", (_label, grantOptions) => {
+    const fx = workflowFixture();
+    const published = publishWorkflow(fx, {
+      id: "wf-1",
+      name: "Launch workflow",
+      ownerSubject: { kind: "human", id: "local" },
+      definition: sampleDefinition(),
+    });
+    const instance = fx.store.createInstance({
+      workflowId: "wf-1",
+      workflowVersionId: published.workflowVersionId,
+      triggerKind: "manual",
+      runInput: { topic: "launch" },
+    });
+    fx.store.markDeadLetter(instance.id, "step failed");
+    seedWorkflowReplayGrant(fx.forgeStore.db, "grant:replay:wrong", {
+      instanceId: instance.id,
+      ...grantOptions,
+    });
+
+    expect(() =>
+      fx.store.replayDeadLetter(
+        instance.id,
+        { kind: "human", id: "operator-1" },
+        {
+          reason: "manual retry",
+          grantId: "grant:replay:wrong",
+          idempotencyKey: `replay-${_label}`,
+        },
+      ),
+    ).toThrow(WorkflowReplayAuthorizationError);
+    expect(fx.store.getInstance(instance.id).state).toBe("dead_letter");
   });
 });
 
@@ -213,13 +292,16 @@ function publishWorkflow(
   draft: Parameters<WorkflowStore["publish"]>[0],
   gate = publishGate(draft.id ?? draft.definition.id),
 ) {
-  seedPublishEvidence(fx.forgeStore.db, {
-    grantId: gate.permissionReviewId,
-    validationIds: gate.validationIds,
-    securityValidationId: gate.securityValidationId,
-    assetId: draft.id ?? draft.definition.id,
+  return fx.store.publish(draft, (target) => {
+    seedPublishEvidence(fx.forgeStore.db, {
+      grantId: gate.permissionReviewId,
+      validationIds: gate.validationIds,
+      securityValidationId: gate.securityValidationId,
+      assetId: target.assetId,
+      assetVersionId: target.assetVersionId,
+    });
+    return gate;
   });
-  return fx.store.publish(draft, gate);
 }
 
 function sampleDefinition(

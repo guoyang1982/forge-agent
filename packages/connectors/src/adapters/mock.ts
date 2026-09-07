@@ -16,6 +16,10 @@ export class MockConnectorAdapter implements ConnectorAdapter {
     input: ApprovedConnectorAction,
     credential: ResolvedCredential,
   ) => Promise<AdapterResult>;
+  reconcileImpl?: (
+    input: ConnectorActionRecord,
+    credential: ResolvedCredential,
+  ) => Promise<AdapterResult | "unknown">;
 
   async propose(input: ConnectorActionInput): Promise<ConnectorProposalPreview> {
     return {
@@ -45,7 +49,11 @@ export class MockConnectorAdapter implements ConnectorAdapter {
 
   async reconcile(
     input: ConnectorActionRecord,
+    credential: ResolvedCredential,
   ): Promise<AdapterResult | "unknown"> {
+    if (this.reconcileImpl) {
+      return this.reconcileImpl(input, credential);
+    }
     if (input.state === "succeeded") {
       return { ok: true, summary: "already succeeded" };
     }

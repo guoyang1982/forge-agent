@@ -1,8 +1,32 @@
 # Forge Core v2 Migration Report
 
+> Validation status: **implementation verified; ready for commit and human acceptance**
+> Last verified: 2026-09-07 (`codex/core-v2-f0c-execution`, `116c86c` plus reviewed uncommitted closeout changes)
+
 ## Scope
 
-Assets/Connectors sub-plan Tasks 1–12 and review remediation Task 8 on branch `codex/core-v2-f0c-execution`.
+Assets/Connectors sub-plan Tasks 1–12 and review remediation Tasks 1–8 on branch `codex/core-v2-f0c-execution`. “Delivered” below means the package/API exists; release readiness is controlled by the verification matrix and open blockers in this document.
+
+## 2026-09-07 verification matrix
+
+| Area | Status | Verified behavior | Remaining work |
+|------|--------|-------------------|----------------|
+| Build, tests and legacy gate | ✅ Pass | Root build, complete root tests and forbidden legacy-symbol gate pass | Commit the remaining reviewed changes |
+| Execution governance | ✅ Pass | Required governance, validators, approval expiry/consumption, parameter hash/risk binding, `uncertain` fencing, and exact Asset/Connector/Dead-letter authorization binding | Preserve these invariants as new governed domains are added |
+| Automation governance | ✅ Pass | Manual, CLI, scheduled and `skipConfirm` execution all require a pre-existing external grant with exact policy, subject, action, workspace and expiry matching | Keep grant issuance in an explicit external approval flow; automation execution must remain fail closed |
+| Event store and cursor | ✅ Pass | Append/outbox transaction, bounded cursors, lease ownership, handler-before-ack, ordered replay; production dispatcher performs startup recovery, ACK, exponential-backoff retry and terminal failure handling, and stops before the Daemon closes storage | Add operator-facing delivery metrics only when product observability is implemented |
+| Workflow triggers | ✅ Pass | Claim token, heartbeat, recovery and takeover fencing; expired leases cannot heartbeat/complete/fail; concurrency reads the instance workflow version; changed automation definitions publish a new governed version | Add product-level visibility for trigger recovery when the operator UI is implemented |
+| Dead-letter replay | ✅ Pass | Active grant is bound to the exact actor, action, workflow and dead-letter instance; authorization and replay mutation share one transaction; one successful replay per instance/idempotency key | Add product-level replay approval UI only when the operator workflow is implemented |
+| Asset publication | ✅ Pass | Publish grants and validations bind active policy, owner subject, action, asset and stable asset-version resource; rollback grants bind actor, asset and target version; missing scopes fail closed | Preserve these bindings when adding external approval UI and audit views |
+| Connectors | ✅ Pass | Proposal CAS; exact approval binding and atomic consumption; credentials resolved per operation and zeroed; post-dispatch exceptions fenced as `unknown`; repeat execution blocked; budget held and settled through reconciliation; unknown/reconciled events emitted | Add product-level reconciliation queue and operator UI when Connector management is exposed |
+| Artifact storage | ✅ Pass | Traversal and duplicate rejection; artifact root and every child reject symbolic links; directories are created one segment at a time; writes use exclusive temporary files, sync and atomic rename; reads use `O_NOFOLLOW` handles and verify regular-file/hash invariants | Preserve the secure filesystem primitives when adding remote artifact backends |
+| Scope isolation | ✅ Pass | Core exposes generic required `tenantId` plus optional `organizationId`; new memory/knowledge writes fail closed without a tenant, reads isolate both boundaries, and migration 027 maps legacy company data and local unscoped data into explicit scopes | Forge Company should map `companyId` to `organizationId` at its adapter boundary |
+| Trace/token/cost | ✅ Package tests pass | Durable trace/span metadata and token/cost fields | Add end-to-end product acceptance after blockers close |
+| Channel Gateway | ✅ Pass | Test fixtures use the shared `data.db`; concurrent first-party `run` events remain attached to their originating request | Keep first-party Channel on the documented `run` contract |
+
+## Verification closure
+
+No frozen-scope implementation blocker remains. Root build/tests, Core v2 tests (including backup/restore), legacy gate, migration upgrade tests, security regression tests and Smoke passed on 2026-09-07. Commit/release packaging and product-level human acceptance remain operational steps, not additional Core v2 features.
 
 ## Delivered packages
 

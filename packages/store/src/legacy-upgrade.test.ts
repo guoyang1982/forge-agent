@@ -68,6 +68,9 @@ describe("Core v1 database upgrade", () => {
         "022_outbox_delivery_leases.sql",
         "023_workspace_canonical_root_unique.sql",
         "024_core_remediation.sql",
+        "025_connector_approval_binding.sql",
+        "026_connector_outcome_reconciliation.sql",
+        "027_tenant_organization_scope.sql",
       ]);
     } finally {
       store?.close();

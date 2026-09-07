@@ -114,7 +114,8 @@ export class TriggerStore {
         `UPDATE core_workflow_trigger_receipts
          SET heartbeat_at = ?, lease_expires_at = ?, updated_at = ?
          WHERE source = ? AND external_id = ?
-           AND state = 'processing' AND claimed_by = ? AND lease_token = ?`,
+           AND state = 'processing' AND claimed_by = ? AND lease_token = ?
+           AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`,
       )
       .run(
         now,
@@ -124,6 +125,7 @@ export class TriggerStore {
         input.externalId,
         this.ownerId,
         leaseToken,
+        now,
       );
     if (updated.changes !== 1) {
       throw new TriggerLeaseError("heartbeat rejected for trigger receipt");
@@ -131,19 +133,22 @@ export class TriggerStore {
   }
 
   complete(input: TriggerAcceptInput, leaseToken: string): void {
+    const now = new Date().toISOString();
     const updated = this.db
       .prepare(
         `UPDATE core_workflow_trigger_receipts
          SET state = 'completed', updated_at = ?
          WHERE source = ? AND external_id = ?
-           AND state = 'processing' AND claimed_by = ? AND lease_token = ?`,
+           AND state = 'processing' AND claimed_by = ? AND lease_token = ?
+           AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`,
       )
       .run(
-        new Date().toISOString(),
+        now,
         input.source,
         input.externalId,
         this.ownerId,
         leaseToken,
+        now,
       );
     if (updated.changes !== 1) {
       throw new TriggerLeaseError("complete rejected for trigger receipt");
@@ -151,20 +156,23 @@ export class TriggerStore {
   }
 
   fail(input: TriggerAcceptInput, leaseToken: string): void {
+    const now = new Date().toISOString();
     const updated = this.db
       .prepare(
         `UPDATE core_workflow_trigger_receipts
          SET state = 'pending', claimed_by = NULL, lease_token = NULL,
              lease_expires_at = NULL, heartbeat_at = NULL, updated_at = ?
          WHERE source = ? AND external_id = ?
-           AND state = 'processing' AND claimed_by = ? AND lease_token = ?`,
+           AND state = 'processing' AND claimed_by = ? AND lease_token = ?
+           AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`,
       )
       .run(
-        new Date().toISOString(),
+        now,
         input.source,
         input.externalId,
         this.ownerId,
         leaseToken,
+        now,
       );
     if (updated.changes !== 1) {
       throw new TriggerLeaseError("fail rejected for trigger receipt");

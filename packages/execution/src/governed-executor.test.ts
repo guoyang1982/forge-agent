@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ForgeStore } from "@forge/store";
 import { ApprovalService } from "@forge/policy";
 import { ManualTestClock } from "./clock.js";
@@ -125,6 +125,105 @@ describe("GovernedStepExecutor", () => {
       error: { code: "IDEMPOTENCY_UNCERTAIN" },
     });
     expect(fx.calls.filter((call) => call === "step.execute")).toHaveLength(1);
+  });
+
+  it("marks idempotency uncertain when delivery validation throws after execution succeeds", async () => {
+    const fx = governedFixture({
+      validateDelivery: async () => {
+        throw new Error("evidence service unavailable");
+      },
+    });
+    const input = { ...fx.input, idempotencyKey: "validation-response-lost" };
+
+    await expect(fx.executor.execute(input, fx.signal)).rejects.toThrow(
+      "evidence service unavailable",
+    );
+
+    expect(fx.calls).toContain("step.execute");
+    expect(fx.store.getIdempotencyState("validation-response-lost")).toBe("uncertain");
+  });
+
+  it("marks idempotency uncertain when budget commit throws after execution succeeds", async () => {
+    const fx = governedFixture({
+      budgetCommit: async () => {
+        throw new Error("budget commit response lost");
+      },
+    });
+    const input = { ...fx.input, idempotencyKey: "budget-response-lost" };
+
+    await expect(fx.executor.execute(input, fx.signal)).rejects.toThrow(
+      "budget commit response lost",
+    );
+
+    expect(fx.calls).toContain("step.execute");
+    expect(fx.store.getIdempotencyState("budget-response-lost")).toBe("uncertain");
+  });
+
+  it("marks idempotency uncertain when completing the persisted claim throws", async () => {
+    const fx = governedFixture();
+    const input = { ...fx.input, idempotencyKey: "completion-write-lost" };
+    vi.spyOn(fx.store, "completeIdempotencyKey").mockImplementation(() => {
+      throw new Error("idempotency completion write failed");
+    });
+
+    await expect(fx.executor.execute(input, fx.signal)).rejects.toThrow(
+      "idempotency completion write failed",
+    );
+
+    expect(fx.calls).toContain("step.execute");
+    expect(fx.store.getIdempotencyState("completion-write-lost")).toBe("uncertain");
+  });
+
+  it("blocks re-execution when the external step throws after its side effect", async () => {
+    let published = 0;
+    const fx = governedFixture({
+      step: async () => {
+        published += 1;
+        throw new Error("network response lost after publish");
+      },
+    });
+    const input = { ...fx.input, idempotencyKey: "publish-response-lost" };
+
+    await expect(fx.executor.execute(input, fx.signal)).rejects.toThrow(
+      "network response lost after publish",
+    );
+    expect(published).toBe(1);
+
+    // Explicitly prepare a later retry/recovery claim. DurableExecutor does
+    // not automatically retry a non-abort rejected port promise.
+    fx.store.scheduleRetry(
+      {
+        attemptId: input.attemptId,
+        nextAttemptAt: "2026-01-01T00:00:01.000Z",
+        error: { code: "NETWORK_RESPONSE_LOST" },
+      },
+      "2026-01-01T00:00:01.000Z",
+    );
+    fx.store.resumeDueWaits("2026-01-01T00:00:01.000Z", 1);
+    const retryAttempt = fx.store.claimNextStep(
+      "r1",
+      "worker-2",
+      "2026-01-01T00:00:01.000Z",
+    )!;
+
+    const retry = await fx.executor
+      .execute(
+        {
+          ...input,
+          attemptId: retryAttempt.id,
+          attemptNumber: retryAttempt.attemptNumber,
+        },
+        fx.signal,
+      )
+      .catch(() => undefined);
+
+    expect(published).toBe(1);
+    expect(fx.store.getIdempotencyState("publish-response-lost")).toBe("uncertain");
+    expect(retry).toMatchObject({
+      state: "failed",
+      error: { code: "IDEMPOTENCY_UNCERTAIN" },
+      retryable: false,
+    });
   });
 
   it("rejects an expired resumed approval without executing or opening another wait", async () => {
@@ -256,6 +355,8 @@ function governedFixture(options?: {
   decision?: "allow" | "deny" | "require_approval";
   validationAccepted?: boolean;
   validationResults?: boolean[];
+  validateDelivery?: () => Promise<{ accepted: boolean }>;
+  budgetCommit?: () => Promise<void>;
   step?: (signal: AbortSignal) => Promise<StepOutcome>;
 }) {
   const calls: string[] = [];
@@ -407,6 +508,7 @@ function governedFixture(options?: {
       },
       commit: async () => {
         calls.push("budget.commit");
+        await options?.budgetCommit?.();
       },
       release: async () => {
         calls.push("budget.release");
@@ -419,6 +521,9 @@ function governedFixture(options?: {
       },
       validateDelivery: async () => {
         calls.push("evidence.validate");
+        if (options?.validateDelivery) {
+          return options.validateDelivery();
+        }
         return {
           accepted:
             options?.validationResults?.shift() ??

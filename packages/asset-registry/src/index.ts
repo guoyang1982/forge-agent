@@ -6,4 +6,5 @@ export {
   ImmutableAssetVersionError,
   formatOwnerSubjectId,
   hashAssetContent,
+  assetVersionResourceId,
 } from "./registry.js";

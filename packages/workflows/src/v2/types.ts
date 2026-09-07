@@ -66,6 +66,16 @@ export interface WorkflowQualityGateInput {
   description?: string;
 }
 
+export interface WorkflowPublishTarget {
+  assetId: string;
+  assetVersionId: string;
+  ownerSubject: SubjectRef;
+}
+
+export type WorkflowQualityGateProvider = (
+  target: WorkflowPublishTarget,
+) => WorkflowQualityGateInput;
+
 export interface PublishedWorkflowVersion {
   asset: AssetRecord;
   assetVersion: AssetVersion;

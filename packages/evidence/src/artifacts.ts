@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { realpath, lstat } from "node:fs/promises";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import type { Database } from "@forge/store";
 import type { ArtifactRecord, RegisterArtifactInput } from "./types.js";
@@ -54,7 +54,10 @@ export class ArtifactService {
     const sha256 = hashContent(input.content);
     const contentRef = join("artifacts", input.id.slice(0, 2), input.id);
     const absolutePath = join(this.artifactRoot, contentRef);
-    await assertPathWithinRoot(this.artifactRoot, absolutePath);
+    const canonicalRoot = await prepareArtifactDirectory(
+      this.artifactRoot,
+      dirname(absolutePath),
+    );
 
     const createdAt = new Date().toISOString();
     try {
@@ -85,11 +88,27 @@ export class ArtifactService {
     }
 
     const tempPath = `${absolutePath}.partial-${randomUUID()}`;
+    let tempHandle: Awaited<ReturnType<typeof open>> | undefined;
     try {
-      await mkdir(dirname(absolutePath), { recursive: true });
-      await writeFile(tempPath, input.content);
+      await assertSecurePath(this.artifactRoot, tempPath, true);
+      await assertCanonicalParent(canonicalRoot, dirname(tempPath));
+      tempHandle = await open(
+        tempPath,
+        constants.O_CREAT |
+          constants.O_EXCL |
+          constants.O_WRONLY |
+          constants.O_NOFOLLOW,
+        0o600,
+      );
+      await tempHandle.writeFile(input.content);
+      await tempHandle.sync();
+      await tempHandle.close();
+      tempHandle = undefined;
+      await assertSecurePath(this.artifactRoot, tempPath, false);
+      await assertCanonicalParent(canonicalRoot, dirname(tempPath));
       await rename(tempPath, absolutePath);
     } catch (error) {
+      await tempHandle?.close().catch(() => undefined);
       this.db.prepare(`DELETE FROM core_artifacts WHERE id = ?`).run(input.id);
       try {
         await unlink(tempPath);
@@ -126,8 +145,29 @@ export class ArtifactService {
     const artifact = this.get(id);
     assertAccessScope(artifact.accessScope, scope);
     const absolutePath = join(this.artifactRoot, artifact.contentRef);
-    await assertPathWithinRoot(this.artifactRoot, absolutePath);
-    const content = await readFile(absolutePath);
+    const canonicalRoot = await requireArtifactRoot(this.artifactRoot);
+    await assertSecurePath(this.artifactRoot, absolutePath, false);
+    await assertCanonicalParent(canonicalRoot, dirname(absolutePath));
+    let handle: Awaited<ReturnType<typeof open>>;
+    try {
+      handle = await open(absolutePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch (error) {
+      if (isSymbolicLinkError(error)) {
+        throw new ArtifactAccessError("symbolic links are not allowed in artifact paths");
+      }
+      throw error;
+    }
+    let content: Buffer;
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) {
+        throw new ArtifactAccessError("artifact content must be a regular file");
+      }
+      await assertCanonicalParent(canonicalRoot, dirname(absolutePath));
+      content = await handle.readFile();
+    } finally {
+      await handle.close();
+    }
     if (hashContent(content) !== artifact.sha256) {
       throw new ArtifactTamperError();
     }
@@ -141,7 +181,81 @@ function validateArtifactId(id: string): void {
   }
 }
 
-async function assertPathWithinRoot(root: string, target: string): Promise<void> {
+async function prepareArtifactDirectory(
+  root: string,
+  directory: string,
+): Promise<string> {
+  const resolvedRoot = resolve(root);
+  try {
+    const rootStat = await lstat(resolvedRoot);
+    assertRootStat(rootStat);
+  } catch (error) {
+    if (!isNotFoundError(error)) throw error;
+    await mkdir(resolvedRoot, { recursive: true });
+    assertRootStat(await lstat(resolvedRoot));
+  }
+  const canonicalRoot = resolve(await realpath(resolvedRoot));
+  await ensureDirectoryTree(resolvedRoot, directory);
+  await assertSecurePath(resolvedRoot, directory, false);
+  await assertCanonicalParent(canonicalRoot, directory);
+  return canonicalRoot;
+}
+
+async function ensureDirectoryTree(root: string, directory: string): Promise<void> {
+  const resolvedRoot = resolve(root);
+  const resolvedDirectory = resolve(directory);
+  if (
+    resolvedDirectory !== resolvedRoot &&
+    !resolvedDirectory.startsWith(resolvedRoot + sep)
+  ) {
+    throw new ArtifactAccessError("artifact path escapes storage root");
+  }
+  let cursor = resolvedRoot;
+  const relative = resolvedDirectory
+    .slice(resolvedRoot.length)
+    .split(sep)
+    .filter(Boolean);
+  for (const segment of relative) {
+    cursor = join(cursor, segment);
+    let stat: Awaited<ReturnType<typeof lstat>>;
+    try {
+      stat = await lstat(cursor);
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
+      try {
+        await mkdir(cursor, { mode: 0o700 });
+      } catch (mkdirError) {
+        if (!isAlreadyExistsError(mkdirError)) throw mkdirError;
+      }
+      stat = await lstat(cursor);
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new ArtifactAccessError(
+        "symbolic links are not allowed in artifact paths",
+      );
+    }
+  }
+}
+
+async function requireArtifactRoot(root: string): Promise<string> {
+  const resolvedRoot = resolve(root);
+  assertRootStat(await lstat(resolvedRoot));
+  return resolve(await realpath(resolvedRoot));
+}
+
+function assertRootStat(stat: Awaited<ReturnType<typeof lstat>>): void {
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new ArtifactAccessError(
+      "artifact storage root must be a real directory",
+    );
+  }
+}
+
+async function assertSecurePath(
+  root: string,
+  target: string,
+  allowMissingLeaf: boolean,
+): Promise<void> {
   const resolvedRoot = resolve(root);
   const resolvedTarget = resolve(target);
   if (
@@ -151,6 +265,7 @@ async function assertPathWithinRoot(root: string, target: string): Promise<void>
     throw new ArtifactAccessError("artifact path escapes storage root");
   }
 
+  assertRootStat(await lstat(resolvedRoot));
   let cursor = resolvedRoot;
   const relative = resolvedTarget
     .slice(resolvedRoot.length)
@@ -161,18 +276,60 @@ async function assertPathWithinRoot(root: string, target: string): Promise<void>
     try {
       const stat = await lstat(cursor);
       if (stat.isSymbolicLink()) {
-        const linked = resolve(await realpath(cursor));
-        if (linked !== resolvedRoot && !linked.startsWith(resolvedRoot + sep)) {
-          throw new ArtifactAccessError("artifact path escapes storage root");
-        }
+        throw new ArtifactAccessError(
+          "symbolic links are not allowed in artifact paths",
+        );
       }
     } catch (error) {
       if (error instanceof ArtifactAccessError) {
         throw error;
       }
-      break;
+      if (isNotFoundError(error) && allowMissingLeaf && cursor === resolvedTarget) {
+        return;
+      }
+      throw error;
     }
   }
+}
+
+async function assertCanonicalParent(
+  canonicalRoot: string,
+  directory: string,
+): Promise<void> {
+  const canonicalDirectory = resolve(await realpath(directory));
+  if (
+    canonicalDirectory !== canonicalRoot &&
+    !canonicalDirectory.startsWith(canonicalRoot + sep)
+  ) {
+    throw new ArtifactAccessError("artifact path escapes storage root");
+  }
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: string }).code === "ENOENT"
+  );
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: string }).code === "EEXIST"
+  );
+}
+
+function isSymbolicLinkError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    ["ELOOP", "EMLINK"].includes((error as { code?: string }).code ?? "")
+  );
 }
 
 function isSqliteConstraintError(error: unknown): boolean {

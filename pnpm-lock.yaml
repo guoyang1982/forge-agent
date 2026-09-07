@@ -126,6 +126,9 @@ importers:
       '@forge/agent-profile':
         specifier: workspace:*
         version: link:../../packages/agent-profile
+      '@forge/asset-registry':
+        specifier: workspace:*
+        version: link:../../packages/asset-registry
       '@forge/automation':
         specifier: workspace:*
         version: link:../../packages/automation

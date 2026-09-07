@@ -34,6 +34,9 @@ export interface ConnectorProposalRecord {
   state: ConnectorActionState;
   idempotencyKey: string;
   approvalId?: string;
+  subject: SubjectRef;
+  runId?: string;
+  stepId?: string;
 }
 
 export interface ApprovedConnectorAction {
@@ -47,8 +50,7 @@ export interface ApprovedConnectorAction {
 
 export interface ConnectorActionRecord extends ConnectorProposalRecord {
   resultJson?: string;
-  runId?: string;
-  stepId?: string;
+  budgetReservationId?: string;
 }
 
 export interface AdapterResult {

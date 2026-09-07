@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AutomationStore } from "@forge/automation";
+import { assetVersionResourceId } from "@forge/asset-registry";
 import { AgentProfileStore } from "@forge/agent-profile";
 import { ValidationService } from "@forge/evidence";
 import { ApprovalService } from "@forge/policy";
@@ -31,6 +32,23 @@ afterEach(() => {
 });
 
 describe("durable automation occurrence integration", () => {
+  it.each([
+    ["manual", false],
+    ["cli", false],
+    ["schedule", false],
+    ["manual", true],
+  ] as const)(
+    "does not self-grant a %s occurrence when skipConfirm is %s",
+    async (trigger, skipConfirm) => {
+      const fx = durableAutomationFixture({ seedGrants: false });
+      const run = await fx.runWithoutGrant(trigger, skipConfirm);
+
+      expect(run.status).toBe("failed");
+      expect(run.error).toContain("missing external grant");
+      expect(fx.grantCount()).toBe(0);
+    },
+  );
+
   it("persists scheduled and manual occurrences as linked workflow instances and Runs without replaying after restart", async () => {
     const fx = durableAutomationFixture();
 
@@ -112,9 +130,29 @@ describe("durable automation occurrence integration", () => {
     });
     expect(fx.workflowInstances()[0]?.state).toBe("succeeded");
   });
+
+  it("publishes a new workflow version when the automation definition changes", async () => {
+    const fx = durableAutomationFixture();
+
+    await fx.runManualOccurrence();
+    fx.updateManualPromptAndAuthorizeNextVersion("Create the revised report");
+    await fx.runManualOccurrence();
+
+    const versions = fx.workflowVersions();
+    expect(versions).toHaveLength(2);
+    expect(versions.map((version) => version.version)).toEqual([1, 2]);
+    expect(versions[1]?.definition).toMatchObject({
+      version: 2,
+      steps: [
+        expect.objectContaining({
+          input: expect.objectContaining({ message: "Create the revised report" }),
+        }),
+      ],
+    });
+  });
 });
 
-function durableAutomationFixture() {
+function durableAutomationFixture(options: { seedGrants?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "forge-durable-automation-"));
   fixtureRoots.push(root);
   const forgeStore = ForgeStore.open({
@@ -191,13 +229,15 @@ function durableAutomationFixture() {
     prompt: "Create the manual report",
     enabled: true,
   });
-  seedAutomationPolicyAndGrants(forgeStore.db, scheduled.id, root);
-  seedAutomationPolicyAndGrants(forgeStore.db, manual.id, root);
+  if (options.seedGrants !== false) {
+    seedAutomationPolicyAndGrants(forgeStore.db, scheduled.id, root);
+    seedAutomationPolicyAndGrants(forgeStore.db, manual.id, root);
+  }
 
   const execute = (
     id: string,
     trigger: "schedule" | "manual" | "cli",
-    opts?: { occurrenceRef?: string },
+    opts?: { occurrenceRef?: string; skipConfirm?: boolean },
   ) =>
     executeAutomation(id, trigger, {
       store,
@@ -238,6 +278,29 @@ function durableAutomationFixture() {
       newScheduler();
       await execute(manual.id, "manual");
       activeScheduler.stop();
+    },
+    updateManualPromptAndAuthorizeNextVersion(prompt: string) {
+      store.update(manual.id, { prompt });
+      const workflowId = `automation:${manual.id}`;
+      forgeStore.db
+        .prepare("UPDATE core_grants SET resource_scope_json = ? WHERE id = ?")
+        .run(
+          JSON.stringify({
+            resourceIds: [workflowId, assetVersionResourceId(workflowId, 2)],
+            minRisk: "low",
+          }),
+          `grant:automation-asset:${manual.id}`,
+        );
+    },
+    async runWithoutGrant(
+      trigger: "schedule" | "manual" | "cli",
+      skipConfirm: boolean,
+    ) {
+      newScheduler();
+      const automationId = trigger === "schedule" ? scheduled.id : manual.id;
+      const run = await execute(automationId, trigger, { skipConfirm });
+      activeScheduler.stop();
+      return run;
     },
     async failScheduledOccurrenceBeforeRun() {
       forgeStore.db.exec(`
@@ -305,6 +368,29 @@ function durableAutomationFixture() {
       forgeStore.db
         .prepare("SELECT id FROM core_runs ORDER BY created_at")
         .all() as Array<{ id: string }>,
+    workflowVersions: () =>
+      (
+        forgeStore.db
+          .prepare(
+            `SELECT version, definition_json
+             FROM core_workflow_versions
+             WHERE workflow_id = ?
+             ORDER BY version`,
+          )
+          .all(`automation:${manual.id}`) as Array<{
+          version: number;
+          definition_json: string;
+        }>
+      ).map((row) => ({
+        version: row.version,
+        definition: JSON.parse(row.definition_json) as Record<string, unknown>,
+      })),
+    grantCount: () =>
+      (
+        forgeStore.db
+          .prepare("SELECT COUNT(*) AS count FROM core_grants")
+          .get() as { count: number }
+      ).count,
     agentSideEffects: () => agentSideEffects,
   };
 }

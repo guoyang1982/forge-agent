@@ -11,6 +11,7 @@ import type {
   WorkflowDraftInput,
   WorkflowInstanceRecord,
   WorkflowQualityGateInput,
+  WorkflowQualityGateProvider,
   WorkflowTriggerKind,
 } from "./types.js";
 
@@ -33,7 +34,7 @@ export class WorkflowStore {
 
   publish(
     draft: WorkflowDraftInput,
-    gate: WorkflowQualityGateInput,
+    gateInput: WorkflowQualityGateInput | WorkflowQualityGateProvider,
   ): PublishedWorkflowVersion {
     const workflowId = draft.id ?? draft.definition.id;
 
@@ -73,6 +74,19 @@ export class WorkflowStore {
           content: versionContent,
         });
       }
+
+      const assetDraft = this.assets.getDraftVersion(workflowId);
+      if (!assetDraft) {
+        throw new Error(`workflow asset draft is missing: ${workflowId}`);
+      }
+      const gate =
+        typeof gateInput === "function"
+          ? gateInput({
+              assetId: workflowId,
+              assetVersionId: assetDraft.id,
+              ownerSubject: draft.ownerSubject,
+            })
+          : gateInput;
 
       const workflowVersionId = randomUUID();
       const now = new Date().toISOString();
@@ -170,7 +184,13 @@ export class WorkflowStore {
   }): WorkflowInstanceRecord {
     return this.db.transaction(() => {
       this.assertPublishedWorkflowVersion(input.workflowId, input.workflowVersionId);
-      if (!this.canStartInstanceInTransaction(input.workflowId, input.concurrencyKey)) {
+      if (
+        !this.canStartInstanceInTransaction(
+          input.workflowId,
+          input.concurrencyKey,
+          input.workflowVersionId,
+        )
+      ) {
         throw new Error("workflow concurrency limit reached");
       }
 
@@ -289,25 +309,36 @@ export class WorkflowStore {
       throw new WorkflowReplayAuthorizationError("replay idempotency key is required");
     }
 
-    const grant = this.db
-      .prepare(
-        `SELECT effect, expires_at, resource_scope_json FROM core_grants
-         WHERE id = ? AND action = 'workflow.replay' AND effect = 'allow'`,
-      )
-      .get(authorization.grantId) as
-      | { effect: string; expires_at: string | null; resource_scope_json: string }
-      | undefined;
-    if (!grant) {
-      throw new WorkflowReplayAuthorizationError("replay grant is missing or denied");
-    }
-    if (grant.expires_at && grant.expires_at <= new Date().toISOString()) {
-      throw new WorkflowReplayAuthorizationError("replay grant expired");
-    }
-
     return this.db.transaction(() => {
       const instance = this.getInstance(instanceId);
       if (instance.state !== "dead_letter") {
         throw new Error(`workflow instance is not dead letter: ${instanceId}`);
+      }
+
+      const grant = this.db
+        .prepare(
+          `SELECT g.expires_at, g.resource_scope_json
+           FROM core_grants g
+           INNER JOIN core_policy_versions p ON p.id = g.policy_version_id
+           WHERE g.id = ?
+             AND g.subject_kind = ?
+             AND g.subject_id = ?
+             AND g.action = 'workflow.replay'
+             AND g.resource_kind = 'workflow_instance'
+             AND g.effect = 'allow'
+             AND p.is_active = 1`,
+        )
+        .get(authorization.grantId, actor.kind, actor.id) as
+        | { expires_at: string | null; resource_scope_json: string }
+        | undefined;
+      if (!grant) {
+        throw new WorkflowReplayAuthorizationError("replay grant is missing or denied");
+      }
+      if (grant.expires_at && grant.expires_at <= new Date().toISOString()) {
+        throw new WorkflowReplayAuthorizationError("replay grant expired");
+      }
+      if (!hasExactReplayScope(grant.resource_scope_json, instance.workflowId, instanceId)) {
+        throw new WorkflowReplayAuthorizationError("replay grant resource scope mismatch");
       }
 
       const existingReplay = this.db
@@ -334,7 +365,13 @@ export class WorkflowStore {
         throw new WorkflowReplayAuthorizationError("replay idempotency key already used");
       }
 
-      if (!this.canStartInstanceInTransaction(instance.workflowId, instance.concurrencyKey)) {
+      if (
+        !this.canStartInstanceInTransaction(
+          instance.workflowId,
+          instance.concurrencyKey,
+          instance.workflowVersionId,
+        )
+      ) {
         throw new Error("workflow concurrency limit reached");
       }
 
@@ -411,12 +448,35 @@ export class WorkflowStore {
   private canStartInstanceInTransaction(
     workflowId: string,
     concurrencyKey?: string,
+    workflowVersionId?: string,
   ): boolean {
-    const definition = this.getPublishedDefinition(workflowId);
+    const definition = workflowVersionId
+      ? this.getPublishedDefinitionByVersion(workflowId, workflowVersionId)
+      : this.getPublishedDefinition(workflowId);
     return (
       this.countActiveInstancesInTransaction(workflowId, concurrencyKey) <
       definition.concurrency.maxRuns
     );
+  }
+
+  private getPublishedDefinitionByVersion(
+    workflowId: string,
+    workflowVersionId: string,
+  ): DurableWorkflowDefinition {
+    const row = this.db
+      .prepare(
+        `SELECT wv.definition_json
+         FROM core_workflow_versions wv
+         INNER JOIN core_asset_versions av ON av.id = wv.asset_version_id
+         WHERE wv.workflow_id = ? AND wv.id = ? AND av.state = 'published'`,
+      )
+      .get(workflowId, workflowVersionId) as { definition_json: string } | undefined;
+    if (!row) {
+      throw new Error(
+        `workflow version is not published: ${workflowId}/${workflowVersionId}`,
+      );
+    }
+    return JSON.parse(row.definition_json) as DurableWorkflowDefinition;
   }
 
   private countActiveInstancesInTransaction(
@@ -483,6 +543,28 @@ export class WorkflowStore {
       throw new Error(`workflow instance not found: ${id}`);
     }
     return mapInstance(row);
+  }
+}
+
+function hasExactReplayScope(
+  serializedScope: string,
+  workflowId: string,
+  instanceId: string,
+): boolean {
+  try {
+    const scope = JSON.parse(serializedScope) as { resourceIds?: unknown };
+    if (!Array.isArray(scope.resourceIds)) return false;
+    const resourceIds = scope.resourceIds.filter(
+      (value): value is string => typeof value === "string",
+    );
+    return (
+      resourceIds.length === 2 &&
+      new Set(resourceIds).size === 2 &&
+      resourceIds.includes(workflowId) &&
+      resourceIds.includes(instanceId)
+    );
+  } catch {
+    return false;
   }
 }
 

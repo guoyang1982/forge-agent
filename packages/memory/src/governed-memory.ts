@@ -1,10 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "@forge/store";
+import {
+  assertTenantScope,
+  isSameTenantScope,
+  matchesTenantScope,
+  type TenantScope,
+} from "@forge/protocol";
 
 export type MemoryDecision = "ADD" | "UPDATE" | "DELETE" | "NOOP";
 
-export interface MemoryScope {
-  companyId?: string;
+export interface MemoryScope extends TenantScope {
   employeeId?: string;
   projectId?: string;
   shared?: boolean;
@@ -45,8 +50,7 @@ export interface DecideInput {
   decidedAt?: string;
 }
 
-export interface RecallContext {
-  companyId: string;
+export interface RecallContext extends TenantScope {
   employeeId: string;
   projectId?: string;
   query?: string;
@@ -99,6 +103,9 @@ export class GovernedMemoryStore {
 
   propose(input: MemoryCandidateInput): MemoryCandidateRecord {
     assertProposable(input);
+    if (input.targetMemoryId) {
+      this.assertMemoryScope(input.targetMemoryId, input.scope);
+    }
     const id = randomUUID();
     const now = new Date().toISOString();
     const memoryId = input.targetMemoryId ?? id;
@@ -204,7 +211,13 @@ export class GovernedMemoryStore {
       .slice(0, context.limit ?? 20);
   }
 
-  invalidate(memoryId: string, invalidatedAt = new Date().toISOString()): void {
+  invalidate(
+    memoryId: string,
+    scope: TenantScope,
+    invalidatedAt = new Date().toISOString(),
+  ): void {
+    assertTenantScope(scope);
+    this.assertMemoryScope(memoryId, scope);
     this.markInvalidated(memoryId, invalidatedAt);
   }
 
@@ -285,9 +298,30 @@ export class GovernedMemoryStore {
       .get(candidateId) as { metadata_json: string } | undefined;
     return row ? (JSON.parse(row.metadata_json) as Record<string, unknown>) : {};
   }
+
+  private assertMemoryScope(memoryId: string, scope: TenantScope): void {
+    const rows = this.db
+      .prepare(
+        `SELECT scope_json AS scopeJson
+         FROM core_memory_candidates
+         WHERE json_extract(metadata_json, '$.memoryId') = ?`,
+      )
+      .all(memoryId) as Array<{ scopeJson: string }>;
+    if (rows.length === 0) {
+      throw new Error(`memory not found: ${memoryId}`);
+    }
+    if (
+      rows.some((row) =>
+        !isSameTenantScope(JSON.parse(row.scopeJson) as MemoryScope, scope),
+      )
+    ) {
+      throw new Error("memory scope does not match caller scope");
+    }
+  }
 }
 
 function assertProposable(input: MemoryCandidateInput): void {
+  assertTenantScope(input.scope);
   if (!input.claim.trim()) {
     throw new Error("memory claim is required");
   }
@@ -314,7 +348,7 @@ function isActiveRow(row: CandidateRow, now: string): boolean {
 }
 
 function matchesRecallScope(scope: MemoryScope, context: RecallContext): boolean {
-  if (scope.companyId && scope.companyId !== context.companyId) {
+  if (!matchesTenantScope(scope, context)) {
     return false;
   }
   if (!scope.shared && scope.employeeId && scope.employeeId !== context.employeeId) {

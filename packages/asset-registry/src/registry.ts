@@ -45,7 +45,7 @@ export class AssetRegistry {
       }
     }
 
-    const versionId = randomUUID();
+    const versionId = assetVersionResourceId(assetId, 1);
     const ownerSubjectId = formatOwnerSubjectId(
       input.ownerSubject.kind,
       input.ownerSubject.id,
@@ -113,7 +113,7 @@ export class AssetRegistry {
           )
           .get(assetId) as { maxVersion: number }).maxVersion + 1;
 
-      const versionId = randomUUID();
+      const versionId = assetVersionResourceId(assetId, nextVersion);
       this.db
         .prepare(
           `INSERT INTO core_asset_versions (
@@ -199,15 +199,29 @@ export class AssetRegistry {
     assetVersionId: string,
     input: PublishInput,
   ): void {
+    const asset = this.requireAsset(assetId);
     const permission = this.db
       .prepare(
-        `SELECT effect, expires_at FROM core_grants
-         WHERE id = ? AND effect = 'allow'`,
+        `SELECT g.effect, g.expires_at, g.policy_version_id, g.resource_scope_json
+         FROM core_grants g
+         JOIN core_policy_versions p ON p.id = g.policy_version_id
+         WHERE g.id = ?
+           AND g.subject_kind = ? AND g.subject_id = ?
+           AND g.action = 'asset.publish' AND g.resource_kind = 'asset'
+           AND g.effect = 'allow' AND p.is_active = 1`,
       )
-      .get(input.permissionReviewId) as
-      | { effect: string; expires_at: string | null }
+      .get(input.permissionReviewId, asset.ownerSubjectKind, asset.ownerSubjectId) as
+      | {
+          effect: string;
+          expires_at: string | null;
+          policy_version_id: string;
+          resource_scope_json: string;
+        }
       | undefined;
-    if (!permission) {
+    if (
+      !permission ||
+      !scopeContainsExactResources(permission.resource_scope_json, [assetId, assetVersionId])
+    ) {
       throw new AssetQualityGateError("durable permission review evidence is missing or denied");
     }
     if (permission.expires_at && permission.expires_at <= new Date().toISOString()) {
@@ -239,14 +253,32 @@ export class AssetRegistry {
         );
       }
       const details = safeParseRecord(validation.details_json);
-      if (details.assetId && details.assetId !== assetId) {
+      if (details.assetId !== assetId) {
         throw new AssetQualityGateError(
           `validation evidence is bound to another asset: ${validationId}`,
         );
       }
-      if (details.assetVersionId && details.assetVersionId !== assetVersionId) {
+      if (details.assetVersionId !== assetVersionId) {
         throw new AssetQualityGateError(
           `validation evidence is bound to another asset version: ${validationId}`,
+        );
+      }
+      if (details.policyVersionId !== permission.policy_version_id) {
+        throw new AssetQualityGateError(
+          `validation evidence is bound to another policy: ${validationId}`,
+        );
+      }
+      if (
+        details.subjectKind !== asset.ownerSubjectKind ||
+        details.subjectId !== asset.ownerSubjectId
+      ) {
+        throw new AssetQualityGateError(
+          `validation evidence is bound to another subject: ${validationId}`,
+        );
+      }
+      if (details.action !== "asset.publish") {
+        throw new AssetQualityGateError(
+          `validation evidence is bound to another action: ${validationId}`,
         );
       }
       if (details.expiresAt && details.expiresAt <= new Date().toISOString()) {
@@ -281,20 +313,31 @@ export class AssetRegistry {
       throw new AssetQualityGateError("rollback target must be a published version");
     }
 
+    if (!input.actor.kind?.trim() || !input.actor.id?.trim()) {
+      throw new AssetQualityGateError("rollback actor is required");
+    }
+
     const grant = this.db
       .prepare(
-        `SELECT effect, expires_at FROM core_grants
-         WHERE id = ? AND action = 'asset.rollback' AND effect = 'allow'`,
+        `SELECT g.effect, g.expires_at, g.resource_scope_json
+         FROM core_grants g
+         JOIN core_policy_versions p ON p.id = g.policy_version_id
+         WHERE g.id = ?
+           AND g.subject_kind = ? AND g.subject_id = ?
+           AND g.action = 'asset.rollback' AND g.resource_kind = 'asset'
+           AND g.effect = 'allow' AND p.is_active = 1`,
       )
-      .get(input.grantId) as { effect: string; expires_at: string | null } | undefined;
-    if (!grant) {
+      .get(input.grantId, input.actor.kind, input.actor.id) as
+      | { effect: string; expires_at: string | null; resource_scope_json: string }
+      | undefined;
+    if (
+      !grant ||
+      !scopeContainsExactResources(grant.resource_scope_json, [assetId, targetVersionId])
+    ) {
       throw new AssetQualityGateError("rollback grant is missing or denied");
     }
     if (grant.expires_at && grant.expires_at <= new Date().toISOString()) {
       throw new AssetQualityGateError("rollback grant expired");
-    }
-    if (!input.actor.kind?.trim() || !input.actor.id?.trim()) {
-      throw new AssetQualityGateError("rollback actor is required");
     }
     if (!input.reason.trim()) {
       throw new AssetQualityGateError("rollback reason is required");
@@ -419,7 +462,7 @@ export class AssetRegistry {
     return mapVersion(row);
   }
 
-  private getDraftVersion(assetId: string): AssetVersion | null {
+  getDraftVersion(assetId: string): AssetVersion | null {
     const row = this.db
       .prepare(
         `SELECT v.id, v.asset_id, a.kind, v.version, v.state, v.owner_subject_id,
@@ -644,6 +687,11 @@ export function hashAssetContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
+export function assetVersionResourceId(assetId: string, version: number): string {
+  const assetKey = createHash("sha256").update(assetId).digest("hex").slice(0, 24);
+  return `asset-version:${assetKey}:${version}`;
+}
+
 function safeParseRecord(value: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -654,4 +702,16 @@ function safeParseRecord(value: string): Record<string, unknown> {
     /* ignore malformed evidence metadata */
   }
   return {};
+}
+
+function scopeContainsExactResources(
+  resourceScopeJson: string,
+  expectedResourceIds: string[],
+): boolean {
+  const scope = safeParseRecord(resourceScopeJson);
+  const resourceIds = scope.resourceIds;
+  if (!Array.isArray(resourceIds) || resourceIds.length === 0) {
+    return false;
+  }
+  return expectedResourceIds.every((resourceId) => resourceIds.includes(resourceId));
 }

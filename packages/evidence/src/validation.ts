@@ -118,7 +118,7 @@ export class ValidationService {
         result.severity,
         JSON.stringify(result.evidenceIds),
         result.summary,
-        JSON.stringify({}),
+        JSON.stringify(result.details ?? {}),
         new Date().toISOString(),
       );
     return id;

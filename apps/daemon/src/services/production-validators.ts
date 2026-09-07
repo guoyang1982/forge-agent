@@ -34,6 +34,15 @@ export function automationWorkflowDefinitionValidator(): Validator {
         summary: safe
           ? "automation workflow contains one governed Forge agent step and one trigger"
           : "automation workflow definition is not eligible for governed execution",
+        details: {
+          assetId: input.context?.assetId,
+          assetVersionId: input.context?.assetVersionId,
+          subjectKind: input.context?.subjectKind,
+          subjectId: input.context?.subjectId,
+          action: input.context?.action,
+          policyVersionId: input.context?.policyVersionId,
+          validationType: "publish",
+        },
       };
     },
   };

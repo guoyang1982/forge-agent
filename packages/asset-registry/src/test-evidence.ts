@@ -29,8 +29,13 @@ export function seedPublishEvidence(
     `INSERT OR REPLACE INTO core_grants (
       id, subject_kind, subject_id, policy_version_id, action, resource_kind,
       resource_scope_json, effect, approval_class, expires_at, created_at
-    ) VALUES (?, 'human', 'local', ?, 'asset.publish', 'asset', '{}', 'allow', NULL, NULL, ?)`,
-  ).run(input.grantId, policyVersionId, now);
+    ) VALUES (?, 'human', 'local', ?, 'asset.publish', 'asset', ?, 'allow', NULL, NULL, ?)`,
+  ).run(
+    input.grantId,
+    policyVersionId,
+    JSON.stringify({ resourceIds: [input.assetId, input.assetVersionId] }),
+    now,
+  );
 
   const allValidationIds = new Set([
     ...input.validationIds,
@@ -48,6 +53,9 @@ export function seedPublishEvidence(
       JSON.stringify({
         assetId: input.assetId,
         assetVersionId: input.assetVersionId,
+        subjectKind: "human",
+        subjectId: "local",
+        action: "asset.publish",
         validatorId: "quality-gate",
         validationType: "publish",
         status: "passed",
@@ -58,7 +66,12 @@ export function seedPublishEvidence(
   }
 }
 
-export function seedRollbackGrant(db: Database, grantId: string): void {
+export function seedRollbackGrant(
+  db: Database,
+  grantId: string,
+  assetId: string,
+  targetVersionId: string,
+): void {
   const now = new Date().toISOString();
   const policyVersionId = "policy:test:v1";
   db.prepare(
@@ -75,27 +88,57 @@ export function seedRollbackGrant(db: Database, grantId: string): void {
     `INSERT OR REPLACE INTO core_grants (
       id, subject_kind, subject_id, policy_version_id, action, resource_kind,
       resource_scope_json, effect, approval_class, expires_at, created_at
-    ) VALUES (?, 'human', 'local', ?, 'asset.rollback', 'asset', '{}', 'allow', NULL, NULL, ?)`,
-  ).run(grantId, policyVersionId, now);
+    ) VALUES (?, 'human', 'local', ?, 'asset.rollback', 'asset', ?, 'allow', NULL, NULL, ?)`,
+  ).run(
+    grantId,
+    policyVersionId,
+    JSON.stringify({ resourceIds: [assetId, targetVersionId] }),
+    now,
+  );
 }
 
-export function seedWorkflowReplayGrant(db: Database, grantId: string): void {
+export function seedWorkflowReplayGrant(
+  db: Database,
+  grantId: string,
+  options: {
+    subject?: { kind: string; id: string };
+    workflowId?: string;
+    instanceId?: string;
+    action?: string;
+    resourceKind?: string;
+    policyActive?: boolean;
+    expiresAt?: string | null;
+  } = {},
+): void {
   const now = new Date().toISOString();
-  const policyVersionId = "policy:test:v1";
+  const subject = options.subject ?? { kind: "human", id: "operator-1" };
+  const policyVersionId = `policy:test:${grantId}`;
   db.prepare(
     `INSERT OR IGNORE INTO core_policy_versions (
       id, name, version, rules_json, is_active, created_at
-    ) VALUES (?, 'test-policy', 1, '{}', 1, ?)`,
-  ).run(policyVersionId, now);
+    ) VALUES (?, ?, 1, '{}', ?, ?)`,
+  ).run(policyVersionId, `test-policy-${grantId}`, options.policyActive === false ? 0 : 1, now);
   db.prepare(
     `INSERT OR IGNORE INTO core_subjects (
       kind, subject_id, display_name, created_at, updated_at
-    ) VALUES ('human', 'operator-1', 'Operator', ?, ?)`,
-  ).run(now, now);
+    ) VALUES (?, ?, 'Operator', ?, ?)`,
+  ).run(subject.kind, subject.id, now, now);
   db.prepare(
     `INSERT OR REPLACE INTO core_grants (
       id, subject_kind, subject_id, policy_version_id, action, resource_kind,
       resource_scope_json, effect, approval_class, expires_at, created_at
-    ) VALUES (?, 'human', 'operator-1', ?, 'workflow.replay', 'workflow', '{}', 'allow', NULL, NULL, ?)`,
-  ).run(grantId, policyVersionId, now);
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'allow', NULL, ?, ?)`,
+  ).run(
+    grantId,
+    subject.kind,
+    subject.id,
+    policyVersionId,
+    options.action ?? "workflow.replay",
+    options.resourceKind ?? "workflow_instance",
+    JSON.stringify({
+      resourceIds: [options.workflowId ?? "wf-1", options.instanceId ?? "missing-instance"],
+    }),
+    options.expiresAt ?? null,
+    now,
+  );
 }

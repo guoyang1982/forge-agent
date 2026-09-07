@@ -4,6 +4,7 @@ export interface ValidationResult {
   severity: "info" | "warning" | "blocking";
   evidenceIds: string[];
   summary: string;
+  details?: Record<string, unknown>;
 }
 
 export interface ArtifactRecord {

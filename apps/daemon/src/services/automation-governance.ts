@@ -4,6 +4,7 @@ import { loadConfig } from "@forge/config";
 import type { ValidationService } from "@forge/evidence";
 import type { AutomationRecord } from "@forge/protocol";
 import type { Database } from "@forge/store";
+import { assetVersionResourceId } from "@forge/asset-registry";
 import type { BudgetLedgerService } from "@forge/usage-ledger";
 import type { WorkspaceGroupService } from "@forge/workspace";
 import type {
@@ -23,15 +24,10 @@ export interface PreparedAutomationGovernance {
   profileVersionId: string;
   policyContext: Record<string, unknown>;
   budgetAccountId: string;
-  qualityGate: WorkflowQualityGateInput;
+  qualityGate?: WorkflowQualityGateInput;
 }
 
 export const LOCAL_DEFAULT_POLICY_ID = "policy:local-default";
-
-export interface PrepareAutomationGovernanceOptions {
-  /** Desktop「立即运行」等人类确认。记为外部授权，不是自动化自授权。 */
-  userGranted?: boolean;
-}
 
 export class AutomationGovernanceService {
   constructor(
@@ -50,7 +46,7 @@ export class AutomationGovernanceService {
   async prepare(
     automation: AutomationRecord,
     definition: DurableWorkflowDefinition,
-    options: PrepareAutomationGovernanceOptions = {},
+    options: { assetPublicationRequired?: boolean } = {},
   ): Promise<PreparedAutomationGovernance> {
     const policyVersionId = this.ensurePolicyVersion();
     const profile = this.ensureProfile(automation, policyVersionId);
@@ -62,22 +58,54 @@ export class AutomationGovernanceService {
       profile.profileId,
       policyVersionId,
       workspaceId,
-      options.userGranted === true,
     );
-    const definitionValidation = await this.validations.validateDelivery({
-      runId: `automation-definition:${automation.id}:${automation.updatedAt}`,
-      deliveryId: definition.id,
-      artifactIds: [],
-      evidenceIds: [permissionReviewId],
-      context: {
-        validationTarget: "automation.workflow.definition",
-        definition,
-      },
-    });
-    if (!definitionValidation.accepted || definitionValidation.validationIds.length === 0) {
-      throw new Error("automation workflow definition validation failed");
+    let qualityGate: WorkflowQualityGateInput | undefined;
+    if (options.assetPublicationRequired !== false) {
+      const assetVersionNumber =
+        (this.db
+          .prepare(
+            "SELECT COALESCE(MAX(version), 0) AS max_version FROM core_asset_versions WHERE asset_id = ?",
+          )
+          .get(definition.id) as { max_version: number }).max_version + 1;
+      const assetVersionId = assetVersionResourceId(
+        definition.id,
+        assetVersionNumber,
+      );
+      const assetPublishGrantId = this.requireAssetPublishGrant(
+        automation,
+        policyVersionId,
+        definition.id,
+        assetVersionId,
+      );
+      const definitionValidation = await this.validations.validateDelivery({
+        runId: `automation-definition:${automation.id}:${automation.updatedAt}`,
+        deliveryId: definition.id,
+        artifactIds: [],
+        evidenceIds: [assetPublishGrantId],
+        context: {
+          validationTarget: "automation.workflow.definition",
+          definition,
+          assetId: definition.id,
+          assetVersionId,
+          subjectKind: "human",
+          subjectId: "local-user",
+          action: "asset.publish",
+          policyVersionId,
+        },
+      });
+      if (
+        !definitionValidation.accepted ||
+        definitionValidation.validationIds.length === 0
+      ) {
+        throw new Error("automation workflow definition validation failed");
+      }
+      const securityValidationId = definitionValidation.validationIds[0]!;
+      qualityGate = {
+        validationIds: definitionValidation.validationIds,
+        permissionReviewId: assetPublishGrantId,
+        securityValidationId,
+      };
     }
-    const securityValidationId = definitionValidation.validationIds[0]!;
     return {
       profileId: profile.profileId,
       profileVersionId: profile.id,
@@ -99,11 +127,7 @@ export class AutomationGovernanceService {
         },
         automationId: automation.id,
       },
-      qualityGate: {
-        validationIds: definitionValidation.validationIds,
-        permissionReviewId,
-        securityValidationId,
-      },
+      qualityGate,
     };
   }
 
@@ -193,51 +217,77 @@ export class AutomationGovernanceService {
     profileId: string,
     policyVersionId: string,
     workspaceId: string,
-    userGranted: boolean,
   ): string {
     const grantId = `grant:automation:${automation.id}`;
     const grant = this.db
       .prepare(
-        `SELECT effect, expires_at FROM core_grants
+        `SELECT effect, expires_at, resource_scope_json FROM core_grants
          WHERE id = ? AND subject_kind = 'agent_profile' AND subject_id = ?
-           AND action = 'agent.run' AND resource_kind = 'workspace'`,
+           AND policy_version_id = ? AND action = 'agent.run' AND resource_kind = 'workspace'`,
       )
-      .get(grantId, profileId) as { effect: string; expires_at: string | null } | undefined;
-    if (grant?.effect === "allow") {
+      .get(grantId, profileId, policyVersionId) as
+      | { effect: string; expires_at: string | null; resource_scope_json: string }
+      | undefined;
+    if (
+      grant?.effect === "allow" &&
+      grantAllowsWorkspace(grant.resource_scope_json, workspaceId)
+    ) {
       if (grant.expires_at && grant.expires_at <= new Date().toISOString()) {
         throw new AutomationGrantRequiredError("automation grant expired");
       }
       return grantId;
-    }
-    if (userGranted || process.env.FORGE_AUTOMATION_AUTO_GRANT === "1") {
-      return this.bootstrapGrant(grantId, profileId, policyVersionId, workspaceId);
     }
     throw new AutomationGrantRequiredError(
       "missing external grant for automation workspace access",
     );
   }
 
-  private bootstrapGrant(
-    grantId: string,
-    profileId: string,
+  private requireAssetPublishGrant(
+    automation: AutomationRecord,
     policyVersionId: string,
-    workspaceId: string,
+    assetId: string,
+    assetVersionId: string,
   ): string {
-    this.db
+    const grantId = `grant:automation-asset:${automation.id}`;
+    const grant = this.db
       .prepare(
-        `INSERT OR REPLACE INTO core_grants (
-          id, subject_kind, subject_id, policy_version_id, action, resource_kind,
-          resource_scope_json, effect, approval_class, expires_at, created_at
-        ) VALUES (?, 'agent_profile', ?, ?, 'agent.run', 'workspace', ?, 'allow', NULL, NULL, ?)`,
+        `SELECT effect, expires_at, resource_scope_json FROM core_grants
+         WHERE id = ? AND subject_kind = 'human' AND subject_id = 'local-user'
+           AND policy_version_id = ? AND action = 'asset.publish' AND resource_kind = 'asset'`,
       )
-      .run(
-        grantId,
-        profileId,
-        policyVersionId,
-        JSON.stringify({ resourceIds: [workspaceId], minRisk: "low" }),
-        new Date().toISOString(),
-      );
-    return grantId;
+      .get(grantId, policyVersionId) as
+      | { effect: string; expires_at: string | null; resource_scope_json: string }
+      | undefined;
+    if (
+      grant?.effect === "allow" &&
+      grantAllowsResources(grant.resource_scope_json, [assetId, assetVersionId])
+    ) {
+      if (grant.expires_at && grant.expires_at <= new Date().toISOString()) {
+        throw new AutomationGrantRequiredError("automation asset publish grant expired");
+      }
+      return grantId;
+    }
+    throw new AutomationGrantRequiredError(
+      "missing external grant for automation asset publication",
+    );
+  }
+}
+
+function grantAllowsWorkspace(resourceScopeJson: string, workspaceId: string): boolean {
+  return grantAllowsResources(resourceScopeJson, [workspaceId]);
+}
+
+function grantAllowsResources(resourceScopeJson: string, resourceIds: string[]): boolean {
+  try {
+    const scope = JSON.parse(resourceScopeJson) as { resourceIds?: unknown };
+    const grantedResourceIds = scope.resourceIds;
+    return (
+      Array.isArray(grantedResourceIds) &&
+      grantedResourceIds.length > 0 &&
+      resourceIds.every((resourceId) => grantedResourceIds.includes(resourceId))
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -283,6 +333,27 @@ export function seedAutomationGrant(
     profileId,
     policyVersionId,
     JSON.stringify({ resourceIds: [workspaceId], minRisk: "low" }),
+    now,
+  );
+  db.prepare(
+    `INSERT OR IGNORE INTO core_subjects (
+      kind, subject_id, display_name, created_at, updated_at
+    ) VALUES ('human', 'local-user', 'Local User', ?, ?)`,
+  ).run(now, now);
+  const workflowId = `automation:${automationId}`;
+  const assetPublishGrantId = `grant:automation-asset:${automationId}`;
+  db.prepare(
+    `INSERT OR REPLACE INTO core_grants (
+      id, subject_kind, subject_id, policy_version_id, action, resource_kind,
+      resource_scope_json, effect, approval_class, expires_at, created_at
+    ) VALUES (?, 'human', 'local-user', ?, 'asset.publish', 'asset', ?, 'allow', NULL, NULL, ?)`,
+  ).run(
+    assetPublishGrantId,
+    policyVersionId,
+    JSON.stringify({
+      resourceIds: [workflowId, assetVersionResourceId(workflowId, 1)],
+      minRisk: "low",
+    }),
     now,
   );
   return grantId;

@@ -16,7 +16,7 @@ import type { ValidationService } from "@forge/evidence";
 import { PolicyEngine, type ApprovalService } from "@forge/policy";
 import type { BudgetLedgerService } from "@forge/usage-ledger";
 import { WorkspaceLeaseService } from "@forge/workspace";
-import { EventStore } from "@forge/event-store";
+import { EventStore, OutboxDispatcher } from "@forge/event-store";
 import type { AgentEvent, EventEnvelope } from "@forge/protocol";
 import { createProductionEventSink } from "./core-event-sink.js";
 import { persistForgeRunResult } from "./forge-run-results.js";
@@ -36,7 +36,7 @@ export interface ProductionExecutionCompositionOptions {
   db: ConstructorParameters<typeof EventStore>[0];
   clock: ExecutionClock;
   run: ForgeAgentRunFn;
-  broadcast(event: EventEnvelope): void;
+  broadcast(event: EventEnvelope): void | { failed: number };
   onDeliveryFailure?(failure: CoreEventDeliveryFailure): void;
   governance?: {
     profiles: AgentProfileStore;
@@ -52,6 +52,33 @@ export function createProductionExecutionComposition(
   options: ProductionExecutionCompositionOptions,
 ) {
   const eventStore = new EventStore(options.db);
+  const outboxDispatcher = new OutboxDispatcher({
+    store: eventStore,
+    destination: "internal",
+    publish: (claim) => {
+      const event = claim.payload as EventEnvelope;
+      const result = options.broadcast(event);
+      if (result && result.failed > 0) {
+        throw new Error(
+          `CoreEvent broadcast failed for ${result.failed} subscriber(s)`,
+        );
+      }
+    },
+    onFailure: ({ claim, error, terminal }) => {
+      const event = claim.payload as EventEnvelope;
+      const deliveryError =
+        error instanceof Error ? error : new Error(String(error));
+      options.onDeliveryFailure?.({
+        event,
+        error: new Error(
+          `${deliveryError.message}${terminal ? " (delivery abandoned)" : " (delivery scheduled for retry)"}`,
+        ),
+      });
+    },
+    onLoopError: (error) => {
+      console.error(`[forge:events] Outbox dispatch loop failed: ${String(error)}`);
+    },
+  });
   let executionStore!: ExecutionStore;
   const eventSink = createProductionEventSink({
     events: eventStore,
@@ -148,6 +175,7 @@ export function createProductionExecutionComposition(
 
   return {
     eventStore,
+    outboxDispatcher,
     executionStore,
     executor,
     executionRecovery,

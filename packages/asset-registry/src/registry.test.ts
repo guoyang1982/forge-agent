@@ -128,6 +128,56 @@ describe("AssetRegistry", () => {
     );
   });
 
+  it.each([
+    ["an empty grant scope", "UPDATE core_grants SET resource_scope_json = '{}' WHERE id = ?"],
+    ["another subject", "UPDATE core_grants SET subject_id = 'other' WHERE id = ?"],
+    ["another action", "UPDATE core_grants SET action = 'asset.rollback' WHERE id = ?"],
+    ["an inactive policy", "UPDATE core_policy_versions SET is_active = 0 WHERE id = (SELECT policy_version_id FROM core_grants WHERE id = ?)"],
+  ])("rejects publish evidence bound to %s", (_case, mutation) => {
+    const registry = registryFixture();
+    const asset = registry.createDraft(assetDraft());
+    const draft = registry.getDraftVersion(asset.id)!;
+    const evidence = publishEvidenceIds(asset.id, draft.id);
+    seedPublishEvidence(registry.db, evidence);
+    registry.db.prepare(
+      "INSERT OR IGNORE INTO core_subjects (kind, subject_id, display_name, created_at, updated_at) VALUES ('human', 'other', 'Other', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+    ).run();
+    registry.db.prepare(mutation).run(evidence.grantId);
+
+    expect(() => registry.publish(asset.id, publishInput(asset.id, draft.id))).toThrow(
+      AssetQualityGateError,
+    );
+  });
+
+  it.each([
+    ["asset binding", "assetId"],
+    ["asset version binding", "assetVersionId"],
+    ["policy binding", "policyVersionId"],
+    ["subject kind binding", "subjectKind"],
+    ["subject id binding", "subjectId"],
+    ["action binding", "action"],
+  ])("rejects validation evidence missing its %s", (_case, field) => {
+    const registry = registryFixture();
+    const asset = registry.createDraft(assetDraft());
+    const draft = registry.getDraftVersion(asset.id)!;
+    const evidence = publishEvidenceIds(asset.id, draft.id);
+    seedPublishEvidence(registry.db, evidence);
+    for (const id of [...evidence.validationIds, evidence.securityValidationId]) {
+      const row = registry.db
+        .prepare("SELECT details_json FROM core_validations WHERE id = ?")
+        .get(id) as { details_json: string };
+      const details = JSON.parse(row.details_json) as Record<string, unknown>;
+      delete details[field];
+      registry.db
+        .prepare("UPDATE core_validations SET details_json = ? WHERE id = ?")
+        .run(JSON.stringify(details), id);
+    }
+
+    expect(() => registry.publish(asset.id, publishInput(asset.id, draft.id))).toThrow(
+      AssetQualityGateError,
+    );
+  });
+
   it("rollback creates a published version with the selected content", () => {
     const registry = registryFixture();
     const asset = registry.createDraft(assetDraft());
@@ -145,7 +195,7 @@ describe("AssetRegistry", () => {
     seedPublishEvidence(registry.db, publishEvidenceIds(asset.id, draftV2.id));
     registry.publish(asset.id, publishInput(asset.id, draftV2.id, { description: "version two" }));
 
-    seedRollbackGrant(registry.db, "grant:rollback:1");
+    seedRollbackGrant(registry.db, "grant:rollback:1", asset.id, v1.id);
     const rolled = registry.rollback(asset.id, v1.id, {
       grantId: "grant:rollback:1",
       actor: { kind: "human", id: "local" },
@@ -163,7 +213,7 @@ describe("AssetRegistry", () => {
     const registry = registryFixture();
     const asset = registry.createDraft(assetDraft());
     const draft = registry.getDraftVersion(asset.id)!;
-    seedRollbackGrant(registry.db, "grant:rollback:1");
+    seedRollbackGrant(registry.db, "grant:rollback:1", asset.id, draft.id);
     expect(() =>
       registry.rollback(asset.id, draft.id, {
         grantId: "grant:rollback:1",
@@ -196,7 +246,7 @@ describe("AssetRegistry", () => {
     const v2 = registry.publish(asset.id, publishInput(asset.id, draftV2.id, { description: "version two" }));
     expect(v2.version).toBe(2);
 
-    seedRollbackGrant(registry.db, "grant:rollback:2");
+    seedRollbackGrant(registry.db, "grant:rollback:2", asset.id, v1.id);
     const rolled = registry.rollback(asset.id, v1.id, {
       grantId: "grant:rollback:2",
       actor: { kind: "human", id: "local" },
@@ -217,6 +267,32 @@ describe("AssetRegistry", () => {
     registry.publish(asset.id, publishInput(asset.id, draft.id));
     expect(registry.resolveVersion(asset.id).version).toBe(1);
     expect(() => registry.resolveVersion("missing")).toThrow(AssetNotFoundError);
+  });
+
+  it.each([
+    ["an empty resource scope", "UPDATE core_grants SET resource_scope_json = '{}' WHERE id = ?"],
+    ["a different actor", "UPDATE core_grants SET subject_id = 'other' WHERE id = ?"],
+    ["an inactive policy", "UPDATE core_policy_versions SET is_active = 0 WHERE id = (SELECT policy_version_id FROM core_grants WHERE id = ?)"],
+  ])("rejects rollback authorization bound to %s", (_case, mutation) => {
+    const registry = registryFixture();
+    const asset = registry.createDraft(assetDraft());
+    const draft = registry.getDraftVersion(asset.id)!;
+    seedPublishEvidence(registry.db, publishEvidenceIds(asset.id, draft.id));
+    const published = registry.publish(asset.id, publishInput(asset.id, draft.id));
+    const grantId = "grant:rollback:scoped";
+    seedRollbackGrant(registry.db, grantId, asset.id, published.id);
+    registry.db.prepare(
+      "INSERT OR IGNORE INTO core_subjects (kind, subject_id, display_name, created_at, updated_at) VALUES ('human', 'other', 'Other', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+    ).run();
+    registry.db.prepare(mutation).run(grantId);
+
+    expect(() =>
+      registry.rollback(asset.id, published.id, {
+        grantId,
+        actor: { kind: "human", id: "local" },
+        reason: "restore",
+      }),
+    ).toThrow(AssetQualityGateError);
   });
 });
 

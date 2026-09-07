@@ -287,7 +287,17 @@ export class GovernedStepExecutor {
       let validated = false;
       let budgetCommitted = false;
 
-      const stepOutcome = await this.ports.step.execute(stepInput, signal);
+      let stepOutcome: StepOutcome;
+      try {
+        stepOutcome = await this.ports.step.execute(stepInput, signal);
+      } catch (error) {
+        // Once the external port has been entered, a rejected response cannot
+        // prove whether its side effect occurred. Keep the claim terminally
+        // blocked for manual reconciliation instead of allowing a retry to
+        // execute the same idempotency key again.
+        this.markIdempotencyUncertain(input);
+        throw error;
+      }
 
       if (stepOutcome.state === "waiting") {
         this.releaseIdempotencyClaim(input);
@@ -307,73 +317,78 @@ export class GovernedStepExecutor {
         return stepOutcome;
       }
 
-      if (stepOutcome.state === "succeeded" && input.idempotencyKey) {
-        this.store.markIdempotencySideEffectCommitted(
-          input.idempotencyKey,
-          input.attemptId,
-          stepOutcome.outputRef,
-          this.clock.now(),
-        );
-        sideEffectCommitted = true;
-      }
-
-      if (signal.aborted) {
-        this.handleIdempotencyAbort(input, sideEffectCommitted, validated, budgetCommitted);
-        return abortedOutcome();
-      }
-      const validation = await this.ports.evidence.validateDelivery({
-        ...validationInput,
-        context: { ...validationInput.context, outputRef: stepOutcome.outputRef },
-      });
-
-      if (!validation.accepted) {
-        if (sideEffectCommitted) {
-          this.markIdempotencyUncertain(input);
-        } else {
-          this.releaseIdempotencyClaim(input);
+      try {
+        if (input.idempotencyKey) {
+          this.store.markIdempotencySideEffectCommitted(
+            input.idempotencyKey,
+            input.attemptId,
+            stepOutcome.outputRef,
+            this.clock.now(),
+          );
+          sideEffectCommitted = true;
         }
-        return {
-          state: "failed",
-          error: { code: "VALIDATION_FAILED" },
-          retryable: false,
-        };
-      }
 
-      if (input.idempotencyKey && sideEffectCommitted) {
-        this.store.markIdempotencyValidated(
-          input.idempotencyKey,
-          input.attemptId,
-          this.clock.now(),
-        );
-        validated = true;
-      }
+        if (signal.aborted) {
+          this.handleIdempotencyAbort(input, sideEffectCommitted, validated, budgetCommitted);
+          return abortedOutcome();
+        }
+        const validation = await this.ports.evidence.validateDelivery({
+          ...validationInput,
+          context: { ...validationInput.context, outputRef: stepOutcome.outputRef },
+        });
 
-      if (signal.aborted) {
-        this.handleIdempotencyAbort(input, sideEffectCommitted, validated, budgetCommitted);
-        return abortedOutcome();
-      }
-      if (reservationId) {
-        await this.ports.budget.commit(
-          reservationId,
-          input.budgetCommitMinor ?? input.budgetAmountMinor ?? 0n,
-        );
-        reservationId = undefined;
-        budgetCommitted = true;
-      }
+        if (!validation.accepted) {
+          if (sideEffectCommitted) {
+            this.markIdempotencyUncertain(input);
+          } else {
+            this.releaseIdempotencyClaim(input);
+          }
+          return {
+            state: "failed",
+            error: { code: "VALIDATION_FAILED" },
+            retryable: false,
+          };
+        }
 
-      if (signal.aborted) {
-        this.handleIdempotencyAbort(input, sideEffectCommitted, validated, budgetCommitted);
-        return abortedOutcome();
-      }
-      if (input.idempotencyKey) {
-        this.store.completeIdempotencyKey(
-          input.idempotencyKey,
-          input.attemptId,
-          stepOutcome.outputRef,
-        );
-      }
+        if (input.idempotencyKey && sideEffectCommitted) {
+          this.store.markIdempotencyValidated(
+            input.idempotencyKey,
+            input.attemptId,
+            this.clock.now(),
+          );
+          validated = true;
+        }
 
-      return stepOutcome;
+        if (signal.aborted) {
+          this.handleIdempotencyAbort(input, sideEffectCommitted, validated, budgetCommitted);
+          return abortedOutcome();
+        }
+        if (reservationId) {
+          await this.ports.budget.commit(
+            reservationId,
+            input.budgetCommitMinor ?? input.budgetAmountMinor ?? 0n,
+          );
+          reservationId = undefined;
+          budgetCommitted = true;
+        }
+
+        if (signal.aborted) {
+          this.handleIdempotencyAbort(input, sideEffectCommitted, validated, budgetCommitted);
+          return abortedOutcome();
+        }
+        if (input.idempotencyKey) {
+          this.store.completeIdempotencyKey(
+            input.idempotencyKey,
+            input.attemptId,
+            stepOutcome.outputRef,
+          );
+        }
+
+        return stepOutcome;
+      } catch (error) {
+        this.markIdempotencyUncertain(input);
+        throw error;
+      }
     } finally {
       if (!retainResourcesForRetry) {
         if (leaseId) {

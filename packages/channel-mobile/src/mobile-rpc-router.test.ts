@@ -379,6 +379,7 @@ describe("MobileRpcRouter", () => {
       ).resolves.toMatchObject({ ok: true });
 
       expect(events.length).toBeGreaterThanOrEqual(2);
+      expect(calls.map((call) => call.method)).not.toContain("run.create");
       const runInput = legacyRunInput(calls.find((call) => call.method === "run")?.params);
       expect(runInput).toMatchObject({
         cwd: realpathSync.native(root),

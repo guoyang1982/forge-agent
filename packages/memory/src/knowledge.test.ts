@@ -21,6 +21,18 @@ afterEach(() => {
 });
 
 describe("KnowledgeStore", () => {
+  it("rejects new knowledge without an explicit tenant scope", async () => {
+    const store = knowledgeFixture();
+    await expect(
+      store.syncSource({
+        name: "unscoped",
+        sourceKind: "document",
+        content: "must not become globally visible",
+        ownerSubject: { kind: "human", id: "local" },
+      }),
+    ).rejects.toThrow(/tenant scope/i);
+  });
+
   it("creates a new source version only when content changes", async () => {
     const store = knowledgeFixture();
     const first = await store.syncSource(source("guide", "alpha"));
@@ -39,7 +51,9 @@ describe("KnowledgeStore", () => {
 
   it("returns source version and locator with every hit", async () => {
     const store = await knowledgeFixtureWithDocument();
-    const hit = (await store.search({ query: "refund", limit: 5 }))[0];
+    const hit = (
+      await store.search({ query: "refund", limit: 5, scope: localScope() })
+    )[0];
     expect(hit).toMatchObject({
       sourceVersionId: expect.any(String),
       locator: expect.any(String),
@@ -57,18 +71,18 @@ describe("KnowledgeStore", () => {
     const store = knowledgeFixture();
     await store.syncSource({
       ...source("scoped", "company secret playbook"),
-      accessScope: { companyId: "company-a" },
+      accessScope: { tenantId: "tenant-a", organizationId: "org-a" },
     });
     expect(
       await store.search({
         query: "playbook",
-        scope: { companyId: "company-b" },
+        scope: { tenantId: "tenant-b", organizationId: "org-a" },
       }),
     ).toEqual([]);
     expect(
       (await store.search({
         query: "playbook",
-        scope: { companyId: "company-a" },
+        scope: { tenantId: "tenant-a", organizationId: "org-a" },
       })).length,
     ).toBeGreaterThan(0);
   });
@@ -77,7 +91,7 @@ describe("KnowledgeStore", () => {
     const store = knowledgeFixture();
     await store.syncSource({
       ...source("scoped", "company secret playbook"),
-      accessScope: { companyId: "company-a" },
+      accessScope: { tenantId: "tenant-a", organizationId: "org-a" },
     });
     expect(await store.search({ query: "playbook" })).toEqual([]);
   });
@@ -86,7 +100,7 @@ describe("KnowledgeStore", () => {
     const store = knowledgeFixture();
     await store.syncSource({
       ...source("scoped", "company secret playbook"),
-      accessScope: { companyId: "company-a" },
+      accessScope: { tenantId: "tenant-a", organizationId: "org-a" },
       chunks: [
         {
           locator: "policy.md:chunk:0",
@@ -97,29 +111,79 @@ describe("KnowledgeStore", () => {
     const hit = (
       await store.search({
         query: "playbook",
-        scope: { companyId: "company-a" },
+        scope: { tenantId: "tenant-a", organizationId: "org-a" },
       })
     )[0]!;
     expect(store.getCitation(hit.chunkId)).toBeNull();
     expect(
-      store.getCitation(hit.chunkId, { companyId: "company-a" }),
+      store.getCitation(hit.chunkId, {
+        tenantId: "tenant-a",
+        organizationId: "org-a",
+      }),
     ).toMatchObject({ chunkId: hit.chunkId });
+  });
+
+  it("does not expose knowledge to another organization in the same tenant", async () => {
+    const store = knowledgeFixture();
+    await store.syncSource({
+      ...source("org-private", "private launch plan"),
+      accessScope: { tenantId: "tenant-a", organizationId: "org-a" },
+    });
+
+    expect(
+      await store.search({
+        query: "launch",
+        scope: { tenantId: "tenant-a", organizationId: "org-b" },
+      }),
+    ).toEqual([]);
+  });
+
+  it("rejects overwriting or deleting a source from another organization", async () => {
+    const store = knowledgeFixture();
+    const original = await store.syncSource({
+      ...source("owned-source", "org a content"),
+      accessScope: { tenantId: "tenant-a", organizationId: "org-a" },
+    });
+
+    await expect(
+      store.syncSource({
+        ...source("owned-source", "org b replacement"),
+        id: original.sourceId,
+        accessScope: { tenantId: "tenant-a", organizationId: "org-b" },
+      }),
+    ).rejects.toThrow(/scope/i);
+    expect(() =>
+      store.deleteSource(original.sourceId, {
+        tenantId: "tenant-a",
+        organizationId: "org-b",
+      }),
+    ).toThrow(/scope/i);
+    expect(
+      await store.search({
+        query: "org a",
+        scope: { tenantId: "tenant-a", organizationId: "org-a" },
+      }),
+    ).toHaveLength(1);
   });
 
   it("removes deleted sources from search results", async () => {
     const store = knowledgeFixture();
     const synced = await store.syncSource(source("guide", "alpha content"));
     expect(
-      (await store.search({ query: "alpha", limit: 5 })).length,
+      (await store.search({ query: "alpha", limit: 5, scope: localScope() })).length,
     ).toBeGreaterThan(0);
-    store.deleteSource(synced.sourceId);
-    expect(await store.search({ query: "alpha", limit: 5 })).toEqual([]);
+    store.deleteSource(synced.sourceId, localScope());
+    expect(
+      await store.search({ query: "alpha", limit: 5, scope: localScope() }),
+    ).toEqual([]);
   });
 
   it("resolves citations by chunk id", async () => {
     const store = await knowledgeFixtureWithDocument();
-    const hit = (await store.search({ query: "refund", limit: 1 }))[0]!;
-    const citation = store.getCitation(hit.chunkId);
+    const hit = (
+      await store.search({ query: "refund", limit: 1, scope: localScope() })
+    )[0]!;
+    const citation = store.getCitation(hit.chunkId, localScope());
     expect(citation).toMatchObject({
       chunkId: hit.chunkId,
       sourceVersionId: hit.sourceVersionId,
@@ -137,13 +201,18 @@ function knowledgeFixture(): KnowledgeStore {
     migrationsDir,
     owner: "test",
   });
-  seedPublishEvidence(forgeStore.db, {
-    grantId: "grant:publish:knowledge",
-    validationIds: ["validation-pass"],
-    securityValidationId: "security-pass",
-  });
   const assets = new AssetRegistry(forgeStore.db);
-  return new KnowledgeStore(forgeStore.db, assets, passingQualityGate());
+  return new KnowledgeStore(forgeStore.db, assets, (target) => {
+    const gate = passingQualityGate();
+    seedPublishEvidence(forgeStore.db, {
+      grantId: gate.permissionReviewId,
+      validationIds: gate.validationIds,
+      securityValidationId: gate.securityValidationId,
+      assetId: target.assetId,
+      assetVersionId: target.assetVersionId,
+    });
+    return gate;
+  });
 }
 
 async function knowledgeFixtureWithDocument(): Promise<KnowledgeStore> {
@@ -165,8 +234,13 @@ function source(name: string, content: string): KnowledgeSourceInput {
     name,
     sourceKind: "document",
     content,
+    accessScope: localScope(),
     ownerSubject: { kind: "human", id: "local" },
   };
+}
+
+function localScope() {
+  return { tenantId: "local" };
 }
 
 function passingQualityGate(): KnowledgeQualityGateInput {

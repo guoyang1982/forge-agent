@@ -69,6 +69,26 @@ describe("TriggerStore", () => {
 
     expect(() => workerA.complete(input, first.leaseToken!)).toThrow(TriggerLeaseError);
   });
+
+  it.each(["heartbeat", "complete", "fail"] as const)(
+    "rejects %s after the current lease expires even before takeover",
+    (operation) => {
+      const db = openTriggerDb();
+      const worker = new TriggerStore(db, { ownerId: "worker-a", leaseTtlMs: 60_000 });
+      const input = { source: "webhook", externalId: `evt-expired-${operation}` };
+      const accepted = worker.accept(input);
+      db.prepare(
+        `UPDATE core_workflow_trigger_receipts
+         SET lease_expires_at = ?
+         WHERE source = ? AND external_id = ?`,
+      ).run("2000-01-01T00:00:00.000Z", input.source, input.externalId);
+
+      expect(() => worker[operation](input, accepted.leaseToken!)).toThrow(
+        TriggerLeaseError,
+      );
+      expect(worker.getReceipt(input)?.state).toBe("processing");
+    },
+  );
 });
 
 function triggerFixture(): TriggerStore {

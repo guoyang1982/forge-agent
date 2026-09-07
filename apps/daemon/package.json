@@ -15,6 +15,7 @@
     "@forge/agent-core": "workspace:*",
     "@forge/browser-core": "workspace:*",
     "@forge/automation": "workspace:*",
+    "@forge/asset-registry": "workspace:*",
     "@forge/channel": "workspace:*",
     "@forge/channel-core": "workspace:*",
     "@forge/channel-ilink": "workspace:*",

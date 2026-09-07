@@ -24,6 +24,7 @@ import type {
   ConnectorGatewayEvent,
   ConnectorProposalRecord,
   ConnectorProposalPreview,
+  ResolvedCredential,
 } from "./types.js";
 
 export interface ConnectorBudgetPolicy {
@@ -64,12 +65,11 @@ export class ConnectorAccountMismatchError extends Error {
 const TERMINAL_STATES = new Set<ConnectorActionRecord["state"]>([
   "succeeded",
   "failed",
+  "unknown",
   "reconciled",
 ]);
 
 export class ConnectorGateway {
-  private readonly knownSecrets = new Set<string>();
-
   constructor(private readonly deps: ConnectorGatewayDeps) {}
 
   async propose(
@@ -91,7 +91,30 @@ export class ConnectorGateway {
       throw new Error(decision.reason ?? "connector action denied");
     }
 
-    const preview = await adapter.propose(input);
+    const account = this.getAccount(input.connectorAccountId);
+    const credential = await this.deps.credentials.resolve(account.credential_ref);
+    const secrets = credentialSecretStrings(credential);
+    let preview: ConnectorProposalPreview;
+    let persistedPayload: Record<string, unknown>;
+    try {
+      const proposedPreview = await adapter.propose(input);
+      const redactedPreview = redactObject(
+        {
+          action: proposedPreview.action,
+          summary: proposedPreview.summary,
+          risk: proposedPreview.risk,
+        },
+        secrets,
+      );
+      preview = {
+        action: String(redactedPreview.action),
+        summary: String(redactedPreview.summary),
+        risk: proposedPreview.risk,
+      };
+      persistedPayload = redactObject(input.payload, secrets);
+    } finally {
+      disposeCredential(credential);
+    }
     const now = new Date().toISOString();
     const existing = this.findByIdempotency(
       input.connectorAccountId,
@@ -106,8 +129,9 @@ export class ConnectorGateway {
       .prepare(
         `INSERT INTO core_connector_actions (
           id, connector_id, connector_account_id, action, state, idempotency_key,
-          proposal_json, result_json, approval_id, run_id, step_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 'proposed', ?, ?, NULL, NULL, ?, ?, ?, ?)`,
+          proposal_json, result_json, approval_id, run_id, step_id,
+          subject_kind, subject_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'proposed', ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -115,9 +139,11 @@ export class ConnectorGateway {
         input.connectorAccountId,
         input.action,
         input.idempotencyKey,
-        JSON.stringify(redactObject(input.payload, [...this.knownSecrets])),
+        JSON.stringify(persistedPayload),
         input.runId ?? null,
         input.stepId ?? null,
+        input.subject.kind,
+        input.subject.id,
         now,
         now,
       );
@@ -162,7 +188,14 @@ export class ConnectorGateway {
     }
 
     const now = new Date().toISOString();
-    if (!this.tryClaimExecution(proposalId, approvalId, now)) {
+    try {
+      this.deps.db.transaction(() => {
+        if (!this.tryClaimExecution(proposalId, approvalId, now)) {
+          throw new ConnectorApprovalError("connector proposal is not executable");
+        }
+        this.deps.approvals.consumeApproval(approvalId);
+      })();
+    } catch (error) {
       const current = this.getAction(proposalId);
       if (!current) {
         throw new Error(`connector proposal not found: ${proposalId}`);
@@ -173,16 +206,13 @@ export class ConnectorGateway {
       if (current.state === "executing") {
         return this.waitForTerminalState(proposalId);
       }
-      throw new ConnectorApprovalError("connector proposal is not executable");
+      if (error instanceof ConnectorApprovalError) throw error;
+      throw new ConnectorApprovalError(String(error));
     }
 
     let reservationId: string | undefined;
-    const adapter = this.requireAdapter(proposal.connectorId);
-    const account = this.getAccount(proposal.connectorAccountId);
-    let credential = await this.deps.credentials.resolve(account.credential_ref);
-    for (const secret of credentialSecretStrings(credential)) {
-      this.knownSecrets.add(secret);
-    }
+    let credential: ResolvedCredential | undefined;
+    let externalAttemptStarted = false;
 
     const approved: ApprovedConnectorAction = {
       proposalId: proposal.id,
@@ -194,6 +224,10 @@ export class ConnectorGateway {
     };
 
     try {
+      const adapter = this.requireAdapter(proposal.connectorId);
+      const account = this.getAccount(proposal.connectorAccountId);
+      credential = await this.deps.credentials.resolve(account.credential_ref);
+
       if (this.deps.budgetLedger && this.deps.budget) {
         reservationId = randomUUID();
         this.deps.budgetLedger.reserve({
@@ -205,8 +239,16 @@ export class ConnectorGateway {
           currency: this.deps.budget.currency,
           expiresAt: new Date(Date.now() + 60_000).toISOString(),
         });
+        this.deps.db
+          .prepare(
+            `UPDATE core_connector_actions
+             SET budget_reservation_id = ?, updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(reservationId, now, proposal.id);
       }
 
+      externalAttemptStarted = true;
       const result = await adapter.execute(approved, credential);
       const secrets = credentialSecretStrings(credential);
       const resultJson = JSON.stringify(
@@ -243,21 +285,33 @@ export class ConnectorGateway {
       });
       return updated;
     } catch (error) {
-      const secrets = credentialSecretStrings(credential);
+      const secrets = credential ? credentialSecretStrings(credential) : [];
       const message = redactSecrets(String(error), secrets);
+      const state = externalAttemptStarted ? "unknown" : "failed";
       this.deps.db
         .prepare(
           `UPDATE core_connector_actions
-           SET state = 'failed', result_json = ?, updated_at = ?
+           SET state = ?, result_json = ?, updated_at = ?
            WHERE id = ?`,
         )
-        .run(JSON.stringify({ ok: false, error: message }), now, proposal.id);
-      if (reservationId && this.deps.budgetLedger) {
-        this.deps.budgetLedger.release(reservationId, "connector action errored");
+        .run(state, JSON.stringify({ ok: false, error: message }), now, proposal.id);
+      if (state === "unknown") {
+        this.emit("connector.unknown", proposal.id, {
+          state,
+          error: message,
+        });
+      }
+      if (!externalAttemptStarted && reservationId && this.deps.budgetLedger) {
+        this.deps.budgetLedger.release(
+          reservationId,
+          "connector action failed before dispatch",
+        );
       }
       throw new Error(message);
     } finally {
-      disposeCredential(credential);
+      if (credential) {
+        disposeCredential(credential);
+      }
     }
   }
 
@@ -292,8 +346,35 @@ export class ConnectorGateway {
             now,
             action.id,
           );
+        if (
+          action.budgetReservationId &&
+          this.deps.budgetLedger &&
+          this.deps.budget
+        ) {
+          if (result.ok) {
+            this.deps.budgetLedger.commit(
+              action.budgetReservationId,
+              this.deps.budget.amountMinor,
+            );
+          } else {
+            this.deps.budgetLedger.release(
+              action.budgetReservationId,
+              "connector reconciliation failed",
+            );
+          }
+        }
       }
-      return this.getAction(action.id)!;
+      const updated = this.getAction(action.id)!;
+      this.emit(
+        updated.state === "reconciled"
+          ? "connector.reconciled"
+          : updated.state === "failed"
+            ? "connector.reconciliation_failed"
+            : "connector.reconciliation_unknown",
+        updated.id,
+        { state: updated.state },
+      );
+      return updated;
     } finally {
       disposeCredential(credential);
     }
@@ -324,16 +405,36 @@ export class ConnectorGateway {
     if (approval.state !== "approved") {
       throw new ConnectorApprovalError(`approval is ${approval.state}`);
     }
+    if (approval.consumedAt) {
+      throw new ConnectorApprovalError("approval already consumed");
+    }
+    if (
+      approval.subject.kind !== proposal.subject.kind ||
+      approval.subject.id !== proposal.subject.id
+    ) {
+      throw new ConnectorApprovalError("approval subject mismatch");
+    }
     if (approval.action !== `connector.${proposal.action}`) {
       throw new ConnectorApprovalError("approval action mismatch");
     }
     if (
-      approval.resource.kind !== "connector" ||
-      approval.resource.id !== proposal.connectorId
+      approval.resource.kind !== "connector_proposal" ||
+      approval.resource.id !== proposal.id
     ) {
       throw new ConnectorApprovalError("approval resource mismatch");
     }
-    const expectedHash = hashApprovalParameters(payload);
+    if (approval.runId !== proposal.runId || approval.stepId !== proposal.stepId) {
+      throw new ConnectorApprovalError("approval run or step mismatch");
+    }
+    const activePolicy = this.deps.db
+      .prepare("SELECT id FROM core_policy_versions WHERE id = ? AND is_active = 1")
+      .get(approval.policyVersionId);
+    if (!activePolicy) {
+      throw new ConnectorApprovalError("approval policy is not active");
+    }
+    const expectedHash = hashApprovalParameters(
+      connectorApprovalParameters(proposal, payload),
+    );
     if (approval.parametersHash !== expectedHash) {
       throw new ApprovalHashMismatchError();
     }
@@ -418,6 +519,7 @@ export class ConnectorGateway {
     const row = this.deps.db
       .prepare(
         `SELECT id, connector_id, connector_account_id, action, state, idempotency_key, approval_id
+                , subject_kind, subject_id, run_id, step_id
          FROM core_connector_actions
          WHERE connector_account_id = ? AND idempotency_key = ?`,
       )
@@ -430,6 +532,10 @@ export class ConnectorGateway {
           state: string;
           idempotency_key: string;
           approval_id: string | null;
+          subject_kind: string | null;
+          subject_id: string | null;
+          run_id: string | null;
+          step_id: string | null;
         }
       | undefined;
     return row
@@ -441,6 +547,12 @@ export class ConnectorGateway {
           state: row.state as ConnectorProposalRecord["state"],
           idempotencyKey: row.idempotency_key,
           approvalId: row.approval_id ?? undefined,
+          subject: {
+            kind: row.subject_kind ?? "unknown",
+            id: row.subject_id ?? "unknown",
+          },
+          runId: row.run_id ?? undefined,
+          stepId: row.step_id ?? undefined,
         }
       : null;
   }
@@ -449,11 +561,18 @@ export class ConnectorGateway {
     const row = this.deps.db
       .prepare(
         `SELECT id, connector_id, connector_account_id, action, state, idempotency_key,
-                result_json, approval_id, run_id, step_id
+                result_json, approval_id, run_id, step_id, budget_reservation_id
+                , subject_kind, subject_id
          FROM core_connector_actions WHERE id = ?`,
       )
       .get(id) as ActionRow | undefined;
-    return row ? { ...mapAction(row), resultJson: row.result_json ?? undefined } : null;
+    return row
+      ? {
+          ...mapAction(row),
+          resultJson: row.result_json ?? undefined,
+          budgetReservationId: row.budget_reservation_id ?? undefined,
+        }
+      : null;
   }
 
   private readProposalPayload(actionId: string): Record<string, unknown> {
@@ -479,6 +598,9 @@ interface ActionRow {
   approval_id: string | null;
   run_id: string | null;
   step_id: string | null;
+  budget_reservation_id: string | null;
+  subject_kind: string | null;
+  subject_id: string | null;
 }
 
 function mapAction(row: ActionRow): ConnectorProposalRecord {
@@ -490,6 +612,28 @@ function mapAction(row: ActionRow): ConnectorProposalRecord {
     state: row.state as ConnectorProposalRecord["state"],
     idempotencyKey: row.idempotency_key,
     approvalId: row.approval_id ?? undefined,
+    subject: {
+      kind: row.subject_kind ?? "unknown",
+      id: row.subject_id ?? "unknown",
+    },
+    runId: row.run_id ?? undefined,
+    stepId: row.step_id ?? undefined,
+  };
+}
+
+function connectorApprovalParameters(
+  proposal: ConnectorProposalRecord,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    proposalId: proposal.id,
+    connectorId: proposal.connectorId,
+    connectorAccountId: proposal.connectorAccountId,
+    action: proposal.action,
+    idempotencyKey: proposal.idempotencyKey,
+    runId: proposal.runId ?? null,
+    stepId: proposal.stepId ?? null,
+    payload,
   };
 }
 

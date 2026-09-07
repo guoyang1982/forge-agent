@@ -19,6 +19,16 @@ afterEach(() => {
 });
 
 describe("GovernedMemoryStore", () => {
+  it("rejects new memories without an explicit tenant scope", () => {
+    const store = governedMemoryFixture();
+    expect(() =>
+      store.propose({
+        ...candidate("unscoped memory"),
+        scope: { employeeId: "e1" },
+      }),
+    ).toThrow(/tenant scope/i);
+  });
+
   it("does not expose a candidate before an ADD decision", () => {
     const store = governedMemoryFixture();
     store.propose(candidate("prefer concise answers"));
@@ -42,14 +52,16 @@ describe("GovernedMemoryStore", () => {
     const store = governedMemoryFixtureWithApprovedRows();
     expect(
       store.recall({
-        companyId: "company-b",
+        tenantId: "tenant-b",
+        organizationId: "org-a",
         employeeId: "e1",
         now: new Date().toISOString(),
       }),
     ).toEqual([]);
     expect(
       store.recall({
-        companyId: "company-a",
+        tenantId: "tenant-a",
+        organizationId: "org-a",
         employeeId: "e1",
         now: new Date().toISOString(),
       }),
@@ -62,7 +74,8 @@ describe("GovernedMemoryStore", () => {
     store.decide({ candidateId: expired.id, decision: "ADD" });
     expect(
       store.recall({
-        companyId: "company-a",
+        tenantId: "tenant-a",
+        organizationId: "org-a",
         employeeId: "e1",
         now: new Date().toISOString(),
       }),
@@ -116,7 +129,11 @@ describe("GovernedMemoryStore", () => {
     expect(() =>
       store.propose({
         claim: "User A told user B the launch date",
-        scope: { companyId: "company-a", shared: true },
+        scope: {
+          tenantId: "tenant-a",
+          organizationId: "org-a",
+          shared: true,
+        },
         sourceKind: "conversation",
         sourceRef: "run:1",
       }),
@@ -128,7 +145,8 @@ describe("GovernedMemoryStore", () => {
     const proposed = store.propose({
       ...candidate("project launch date"),
       scope: {
-        companyId: "company-a",
+        tenantId: "tenant-a",
+        organizationId: "org-a",
         employeeId: "e1",
         projectId: "project-1",
       },
@@ -147,6 +165,41 @@ describe("GovernedMemoryStore", () => {
     expect(() =>
       store.decide({ candidateId: proposed.id, decision: "DELETE" }),
     ).toThrow(/already decided/);
+  });
+
+  it("does not recall memories from another organization in the same tenant", () => {
+    const store = governedMemoryFixtureWithApprovedRows();
+    expect(
+      store.recall({
+        tenantId: "tenant-a",
+        organizationId: "org-b",
+        employeeId: "e1",
+      }),
+    ).toEqual([]);
+  });
+
+  it("rejects cross-tenant updates and invalidation", () => {
+    const store = governedMemoryFixtureWithApprovedRows();
+    const original = store.recall(recallContext())[0]!;
+
+    expect(() =>
+      store.propose({
+        ...candidate("tenant-b replacement"),
+        scope: {
+          tenantId: "tenant-b",
+          organizationId: "org-a",
+          employeeId: "e1",
+        },
+        targetMemoryId: original.memoryId,
+      }),
+    ).toThrow(/scope/i);
+    expect(() =>
+      store.invalidate(original.memoryId, {
+        tenantId: "tenant-b",
+        organizationId: "org-a",
+      }),
+    ).toThrow(/scope/i);
+    expect(store.recall(recallContext())).toHaveLength(1);
   });
 
   it("ignores reserved metadata keys supplied by callers", () => {
@@ -175,7 +228,10 @@ describe("GovernedMemoryStore", () => {
     const store = governedMemoryFixture();
     const proposed = store.propose(candidate("temporary note"));
     store.decide({ candidateId: proposed.id, decision: "ADD" });
-    store.invalidate(proposed.id);
+    store.invalidate(proposed.id, {
+      tenantId: "tenant-a",
+      organizationId: "org-a",
+    });
     expect(store.recall(recallContext())).toEqual([]);
   });
 });
@@ -195,7 +251,11 @@ function governedMemoryFixtureWithApprovedRows(): GovernedMemoryStore {
   const store = governedMemoryFixture();
   const proposed = store.propose({
     ...candidate("company-a playbook"),
-    scope: { companyId: "company-a", employeeId: "e1" },
+    scope: {
+      tenantId: "tenant-a",
+      organizationId: "org-a",
+      employeeId: "e1",
+    },
     expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
   });
   store.decide({ candidateId: proposed.id, decision: "ADD" });
@@ -205,7 +265,11 @@ function governedMemoryFixtureWithApprovedRows(): GovernedMemoryStore {
 function candidate(claim: string): MemoryCandidateInput {
   return {
     claim,
-    scope: { companyId: "company-a", employeeId: "e1" },
+    scope: {
+      tenantId: "tenant-a",
+      organizationId: "org-a",
+      employeeId: "e1",
+    },
     sourceKind: "agent_inference",
     sourceRef: "run:test",
     evidenceIds: ["evidence-1"],
@@ -214,7 +278,8 @@ function candidate(claim: string): MemoryCandidateInput {
 
 function recallContext(): RecallContext {
   return {
-    companyId: "company-a",
+    tenantId: "tenant-a",
+    organizationId: "org-a",
     employeeId: "e1",
     now: new Date().toISOString(),
   };

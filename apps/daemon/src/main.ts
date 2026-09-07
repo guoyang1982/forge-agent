@@ -180,7 +180,14 @@ const productionExecution = createProductionExecutionComposition({
         validations,
       },
 });
-const { eventStore, executionStore, executor, executionRecovery, bindFirstPartyEmit } =
+const {
+  eventStore,
+  outboxDispatcher,
+  executionStore,
+  executor,
+  executionRecovery,
+  bindFirstPartyEmit,
+} =
   productionExecution;
 schedulerHost = new AutomationSchedulerHost({
   store: automationStore,
@@ -306,6 +313,7 @@ async function main(): Promise<void> {
   }
 
   await host.start();
+  outboxDispatcher.start();
   writePid();
   console.log(`Forge daemon listening on ${context.socketPath}`);
 
@@ -313,7 +321,8 @@ async function main(): Promise<void> {
   const shutdown = () => {
     if (shuttingDown) return;
     shuttingDown = true;
-    void host.stop()
+    void outboxDispatcher.stop()
+      .then(() => host.stop())
       .catch((error) => {
         console.error(`[forge] daemon shutdown failed: ${String(error)}`);
         process.exitCode = 1;
