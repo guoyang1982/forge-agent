@@ -216,6 +216,33 @@ describe("cross-session isolation", () => {
       source.match(/function updateRunActivitySummary[\s\S]*?\n}\n/)?.[0] ?? "";
     expect(summary).toContain("omitDuration");
   });
+
+  it("keeps ACP permission banners on the session that requested them", () => {
+    const source = appSource();
+    const ui = readFileSync(join(here, "session-run-ui.js"), "utf-8");
+    const guard =
+      source.match(/function pendingPermissionVisibleForView[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(guard).toBeTruthy();
+    const { pendingPermissionVisibleForView } = new Function(
+      `${guard}\nreturn { pendingPermissionVisibleForView };`,
+    )();
+
+    const running = { id: "p1", sessionId: "analyze", kind: "acp" };
+    expect(pendingPermissionVisibleForView(running, "game")).toBe(false);
+    expect(pendingPermissionVisibleForView(running, "analyze")).toBe(true);
+    expect(pendingPermissionVisibleForView(running, "")).toBe(false);
+    expect(pendingPermissionVisibleForView({ id: "p2" }, "")).toBe(true);
+
+    const show =
+      source.match(/function showNetworkPermissionRequest[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(show).toContain("eventRouteSessionId");
+    expect(show).toContain("sessionId");
+
+    const render =
+      source.match(/function renderNetworkPermissionBanner[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(render).toContain("pendingPermissionVisibleForView");
+    expect(ui).toContain("renderNetworkPermissionBanner");
+  });
 });
 
 describe("session restore performance", () => {

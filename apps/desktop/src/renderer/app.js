@@ -75,11 +75,30 @@ function formatNetworkPermissionMeta(ev) {
   return parts.join(" · ");
 }
 
+function pendingPermissionVisibleForView(ev, viewingSessionId) {
+  const sid = ev?.sessionId || "";
+  const viewing = viewingSessionId || "";
+  if (viewing) return sid === viewing;
+  return !sid;
+}
+
+function currentViewingSessionId() {
+  return (
+    sessionRuns?.getViewingSessionId?.() ||
+    state.viewingTimelineSessionId ||
+    ""
+  );
+}
+
 function renderNetworkPermissionBanner() {
   const host = $("networkPermissionHost");
   if (!host) return;
   const composerCard = $("composerCard");
-  if (!state.pendingNetworkPermissions.size) {
+  const viewing = currentViewingSessionId();
+  const visible = [...state.pendingNetworkPermissions.values()].filter((ev) =>
+    pendingPermissionVisibleForView(ev, viewing),
+  );
+  if (!visible.length) {
     host.classList.add("hidden");
     host.innerHTML = "";
     composerCard?.classList.remove("permission-active");
@@ -87,7 +106,7 @@ function renderNetworkPermissionBanner() {
   }
   host.classList.remove("hidden");
   composerCard?.classList.add("permission-active");
-  host.innerHTML = [...state.pendingNetworkPermissions.values()]
+  host.innerHTML = visible
     .map((ev) => {
       if (ev.kind === "mcp") {
         const detail = ev.detail || {};
@@ -178,7 +197,15 @@ function renderNetworkPermissionBanner() {
 
 function showNetworkPermissionRequest(ev) {
   if (!ev?.id || state.pendingNetworkPermissions.has(ev.id)) return;
-  state.pendingNetworkPermissions.set(ev.id, ev);
+  const sessionId =
+    ev.sessionId ||
+    state.eventRouteSessionId ||
+    state.liveRunSessionId ||
+    "";
+  state.pendingNetworkPermissions.set(
+    ev.id,
+    sessionId ? { ...ev, sessionId } : ev,
+  );
   renderNetworkPermissionBanner();
 }
 
@@ -1375,13 +1402,18 @@ function findTimelineRunActivityEntry(timelineState) {
 
 function findTimelineSubagentChild(runEntry, body) {
   if (!runEntry?.children?.length || !body) return null;
-  const mention = body
-    .closest?.("details.subagent-talent-activity")
-    ?.dataset?.talentMention;
+  const mention = normalizeTalentMention(
+    body.closest?.("details.subagent-talent-activity")?.dataset?.talentMention,
+  );
   if (!mention) return null;
   for (let i = runEntry.children.length - 1; i >= 0; i--) {
     const child = runEntry.children[i];
-    if (child.type === "subagent" && child.talent?.mention === mention) return child;
+    if (
+      child.type === "subagent" &&
+      normalizeTalentMention(child.talent?.mention) === mention
+    ) {
+      return child;
+    }
   }
   return null;
 }
@@ -2003,15 +2035,11 @@ function renderStructuredSubagentEntry(entry, container, sessionId) {
   details.open = entry.open !== false;
   details.dataset.talentMention = talent.mention || "";
   const emoji = talent.emoji || "🧑";
-  const label =
-    entry.label ||
-    `${emoji} ${talent.displayName || talent.mention || "人才"} · ${entry.taskLabel || ""}`;
   details.innerHTML = `
-    <summary class="run-activity-summary">
-      <span class="run-activity-chevron" aria-hidden="true">›</span>
-      <span class="run-activity-label">${escapeHtml(label)}</span>
-      <span class="run-activity-meta">${escapeHtml(entry.meta || "")}</span>
-    </summary>
+    ${buildSubagentSummaryHtml(talent, entry.taskLabel, entry.dispatchWave, {
+      finalized: entry.finalized,
+      meta: entry.meta || "",
+    })}
     <div class="run-activity-body subagent-talent-body"></div>`;
   bindRunActivityPin(details);
   const body = details.querySelector(".subagent-talent-body");
@@ -2684,6 +2712,7 @@ function initSessionRuns() {
     refreshLiveTimelineIfViewing,
     isViewSwitchCurrent,
     captureOutgoingTimeline,
+    renderNetworkPermissionBanner,
     sessionBelongsToActiveProject,
     rememberSessionCwd,
     sessionCwdMatches,
@@ -3363,9 +3392,8 @@ function renderCodexActivityChip(payload) {
   }
   const previousStats = line?.dataset.codexStats || "";
   if (!line) {
-    // Same rule as beginToolLine: talent-routed chips skip the root tool group.
-    const grouped = !state.pushEventMountOverride;
-    if (grouped && !state.stepToolGroupBody?.isConnected) beginStepToolGroup();
+    // Same rule as beginToolLine: group chips on the current mount (talent fold or stream).
+    beginStepToolGroup();
     const mount = getToolEventMount();
     line = document.createElement("div");
     line.className = "codex-activity-chip";
@@ -3373,7 +3401,7 @@ function renderCodexActivityChip(payload) {
     line.dataset.timelineNodeId = timelineEntryId();
     line.dataset.iconKey = String(payload.icon || "command");
     mount.appendChild(line);
-    if (grouped) bumpStepToolGroupCount();
+    bumpStepToolGroupCount();
   }
   const running = payload.status === "running";
   line.classList.toggle("is-running", running);
@@ -4740,6 +4768,8 @@ const SUBAGENT_ROUTED_EVENT_TYPES = new Set([
   "tool_end",
   "text_delta",
   "warning",
+  "runtime_activity",
+  "codex_activity",
 ]);
 
 /** Rebind subagent card bodies after timeline innerHTML restore (stale map → detached nodes). */
@@ -4837,6 +4867,47 @@ function appendSubagentStreamText(talent, delta) {
   if (runActivityBodyShouldAutoScroll()) scheduleRunViewScroll();
 }
 
+function formatSubagentTaskBrief(taskLabel, max = 42) {
+  let text = String(taskLabel || "").trim();
+  if (!text) return "";
+  text = text.replace(/^@[\w.-]+\s+/u, "");
+  text = text.split(/[。.]?\s*团队目标[:：]/)[0] || "";
+  text = text.replace(/。请基于[^。]+继续/g, "");
+  text = text.replace(/^(?:承接上游)[，,]\s*/u, "");
+  text = text.replace(/[。.\s]+$/u, "");
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}…`;
+}
+
+function buildSubagentSummaryHtml(talent, taskLabel, dispatchWave, options = {}) {
+  const emoji = talent?.emoji || "🧑";
+  const name = talent?.displayName || talent?.mention || "人才";
+  const finalized = Boolean(options.finalized);
+  const meta = options.meta || (finalized ? "" : "进行中…");
+  const wave =
+    !finalized && dispatchWave && Number(dispatchWave.total) > 1
+      ? `<span class="subagent-talent-chip">波次 ${escapeHtml(String(dispatchWave.index))}/${escapeHtml(String(dispatchWave.total))}</span>`
+      : "";
+  const handoff =
+    !finalized && dispatchWave?.hasPriorResults
+      ? `<span class="subagent-talent-chip">承接上游</span>`
+      : "";
+  const role = finalized ? "" : formatSubagentTaskBrief(taskLabel);
+  const title = finalized ? `${emoji} ${name} · 完成` : `${emoji} ${name}`;
+  return `
+    <summary class="run-activity-summary subagent-talent-summary">
+      <span class="run-activity-chevron" aria-hidden="true">›</span>
+      <span class="subagent-talent-heading">
+        <span class="subagent-talent-title">
+          <span class="run-activity-label subagent-talent-name">${escapeHtml(title)}</span>
+          ${wave}${handoff}
+        </span>
+        ${role ? `<span class="subagent-talent-role">${escapeHtml(role)}</span>` : ""}
+      </span>
+      <span class="run-activity-meta">${escapeHtml(meta)}</span>
+    </summary>`;
+}
+
 function createSubagentActivityGroup(talent, taskLabel, dispatchWave) {
   if (!talent?.mention) return null;
   const mentionKey = normalizeTalentMention(talent.mention);
@@ -4846,23 +4917,12 @@ function createSubagentActivityGroup(talent, taskLabel, dispatchWave) {
   ensureRunActivity();
   if (!state.runActivityBody) return null;
 
-  const waveHint =
-    dispatchWave && dispatchWave.total > 1
-      ? `波次 ${dispatchWave.index}/${dispatchWave.total}${
-          dispatchWave.hasPriorResults ? " · 承接上游" : ""
-        } · `
-      : "";
   const details = document.createElement("details");
   details.className = "run-activity subagent-talent-activity subagent-talent-active";
   details.open = true;
   details.dataset.talentMention = mentionKey;
-  const emoji = talent.emoji || "🧑";
   details.innerHTML = `
-    <summary class="run-activity-summary">
-      <span class="run-activity-chevron" aria-hidden="true">›</span>
-      <span class="run-activity-label">${escapeHtml(`${emoji} ${talent.displayName} · ${waveHint}${taskLabel}`)}</span>
-      <span class="run-activity-meta">进行中…</span>
-    </summary>
+    ${buildSubagentSummaryHtml(talent, taskLabel, dispatchWave)}
     <div class="run-activity-body subagent-talent-body"></div>
   `;
   bindRunActivityPin(details);
@@ -4890,10 +4950,15 @@ function finalizeSubagentActivityGroup(talent, resultText) {
   const { details } = entry;
   const body = getSubagentBodyForTalent(talent.mention) || entry.body;
   details.classList.remove("subagent-talent-active");
+  const emoji = talent.emoji || "🧑";
+  const heading = details.querySelector(".subagent-talent-heading");
   const labelEl = details.querySelector(".run-activity-label");
   const metaEl = details.querySelector(".run-activity-meta");
-  const emoji = talent.emoji || "🧑";
-  if (labelEl) labelEl.textContent = `${emoji} ${talent.displayName} · 完成`;
+  if (heading) {
+    heading.innerHTML = `<span class="subagent-talent-title"><span class="run-activity-label subagent-talent-name">${escapeHtml(`${emoji} ${talent.displayName} · 完成`)}</span></span>`;
+  } else if (labelEl) {
+    labelEl.textContent = `${emoji} ${talent.displayName} · 完成`;
+  }
   if (metaEl) {
     const startedAt = Number(entry.startedAt) || Date.now();
     metaEl.textContent = formatDurationMs(
@@ -10572,12 +10637,11 @@ function beginToolLine(name, args, callId, talentOverride) {
   // Talent-routed events mount straight into the talent fold; creating or
   // counting the root "工具操作" group there would leave an empty group with a
   // phantom count at the top level.
-  const grouped = !state.pushEventMountOverride;
-  if (grouped && !state.stepToolGroupBody?.isConnected) beginStepToolGroup();
+  beginStepToolGroup();
   const mount = getToolEventMount();
   trackRunActivityStats(toolLineText(name, args, false, talentOverride), "tool-event is-running");
   const line = pushEventIn(mount, toolLineText(name, args, false, talentOverride), "tool-event is-running", detail);
-  if (grouped) bumpStepToolGroupCount();
+  bumpStepToolGroupCount();
   const liveLabel = toolLineText(name, args, false, talentOverride).replace(/^⏺\s*/, "");
   const key = toolLineKey(name, callId);
   if (isFileEditRuntimeTool(name)) {
@@ -10681,15 +10745,14 @@ function completeToolLine(name, result, callId) {
     }
   }
   // Start line lost (view switch mid-tool) — emit a single completed line.
-  const grouped = !state.pushEventMountOverride;
-  if (grouped && !state.stepToolGroupBody?.isConnected) beginStepToolGroup();
+  beginStepToolGroup();
   pushEventIn(
     getToolEventMount(),
     toolLineText(name, {}, true),
     "tool-event is-done",
     buildToolEventDetail(name, {}, result),
   );
-  if (grouped) bumpStepToolGroupCount();
+  bumpStepToolGroupCount();
   maybeCollapseStepToolGroup();
 }
 
@@ -11019,12 +11082,12 @@ function updateStepToolGroupSummary(details = state.stepToolGroupEl, count = sta
 }
 
 function beginStepToolGroup() {
-  if (state.stepToolGroupBody?.isConnected) return;
-  ensureRunActivity();
-  const body = state.runActivityBody;
-  if (!body) return;
+  const mount = state.pushEventMountOverride || (ensureRunActivity(), state.runActivityBody);
+  if (!mount) return;
+  if (state.stepToolGroupEl?.isConnected && mount.contains(state.stepToolGroupEl)) return;
+  if (state.stepToolGroupEl?.isConnected) endStepToolGroup();
   const details = createStepToolGroupElement(false);
-  body.appendChild(details);
+  mount.appendChild(details);
   state.stepToolGroupEl = details;
   state.stepToolGroupBody = details.querySelector(".step-tool-group-body");
   state.stepToolGroupCount = 0;
@@ -11045,7 +11108,16 @@ function maybeCollapseStepToolGroup() {
 }
 
 function getToolEventMount() {
-  if (state.pushEventMountOverride) return state.pushEventMountOverride;
+  const override = state.pushEventMountOverride;
+  if (override) {
+    if (
+      state.stepToolGroupBody?.isConnected &&
+      override.contains(state.stepToolGroupBody)
+    ) {
+      return state.stepToolGroupBody;
+    }
+    return override;
+  }
   if (state.stepToolGroupBody?.isConnected) return state.stepToolGroupBody;
   ensureRunActivity();
   if (state.runActivityBody) {
@@ -19252,14 +19324,11 @@ function handleLiveAgentEventBody(ev, opts = {}) {
         const taskBody = taskText.includes(": ")
           ? taskText.slice(taskText.indexOf(": ") + 2)
           : taskText;
-        const group = createSubagentActivityGroup(
+        createSubagentActivityGroup(
           t,
-          truncateToolSummary(taskBody, 80),
+          taskBody,
           ev.dispatchWave,
         );
-        if (group?.body) {
-          pushEventIn(group.body, `▶ ${t.displayName} 开始任务`, "status");
-        }
       } else {
         pushEvent(`🤖 子代理 · ${truncateToolSummary(ev.task || "", 80)}`, "skill-hit");
       }

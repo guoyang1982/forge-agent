@@ -1430,6 +1430,8 @@ const SUBAGENT_FORWARD_EVENTS = new Set([
   "tool_end",
   "text_delta",
   "warning",
+  "runtime_activity",
+  "codex_activity",
 ]);
 
 function forwardTalentSubagentEvent(

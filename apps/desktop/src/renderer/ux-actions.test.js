@@ -311,6 +311,38 @@ describe("command confirmation", () => {
   });
 });
 
+describe("subagent talent header", () => {
+  it("keeps the fold title to name, wave, and role without the team goal", () => {
+    const source = appSource();
+    const css = readFileSync(join(here, "styles.css"), "utf-8");
+    const fn =
+      source.match(/function formatSubagentTaskBrief[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(fn).toBeTruthy();
+    const { formatSubagentTaskBrief } = new Function(
+      `${fn}\nreturn { formatSubagentTaskBrief };`,
+    )();
+
+    expect(
+      formatSubagentTaskBrief(
+        "承接上游，负责渠道和传播策略。团队目标：再检查下 围绕这个主题完成内容策划、成稿和发布建议：发布ai的相关内容",
+      ),
+    ).toBe("负责渠道和传播策略");
+    expect(
+      formatSubagentTaskBrief(
+        "@mika 负责渠道和传播策略。请基于 @xiaoman 的结果继续。团队目标：发布 AI 内容",
+      ),
+    ).toBe("负责渠道和传播策略");
+
+    const create =
+      source.match(/function createSubagentActivityGroup[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(create).toContain("buildSubagentSummaryHtml");
+    expect(create).not.toContain("${emoji} ${talent.displayName} · ${waveHint}${taskLabel}");
+    expect(source).toContain("subagent-talent-chip");
+    expect(css).toContain(".subagent-talent-role");
+    expect(css).toContain(".subagent-talent-summary");
+  });
+});
+
 describe("settings page layout", () => {
   it("renders settings as a full-page sidebar view instead of a modal card", () => {
     const html = readFileSync(join(here, "index.html"), "utf-8");
@@ -1371,5 +1403,62 @@ describe("collapsible left sidebar and compact window", () => {
     expect(source).toContain("never reopen it on resource pages");
     expect(css).toContain(".composer-footer-left");
     expect(css).toMatch(/flex-wrap:\s*wrap/);
+  });
+});
+
+describe("subagent talent fold nesting", () => {
+  it("keeps thinking and tool groups inside the talent fold instead of the flat stream", () => {
+    const source = appSource();
+    const routed =
+      source.match(/const SUBAGENT_ROUTED_EVENT_TYPES = new Set\(\[[\s\S]*?\]\)/)?.[0] ?? "";
+    expect(routed).toContain('"runtime_activity"');
+    expect(routed).toContain('"codex_activity"');
+
+    const beginGroup =
+      source.match(/function beginStepToolGroup[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(beginGroup).toContain("pushEventMountOverride");
+    expect(beginGroup).toContain("mount.contains(state.stepToolGroupEl)");
+
+    const beginTool = source.match(/function beginToolLine[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(beginTool).not.toContain("const grouped = !state.pushEventMountOverride");
+    const chip = source.match(/function renderCodexActivityChip[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(chip).not.toContain("const grouped = !state.pushEventMountOverride");
+
+    const start =
+      source.match(/if \(ev.type === "subagent_start"\) \{[\s\S]*?return;\n    \}/)?.[0] ?? "";
+    expect(start).not.toContain("开始任务");
+
+    const daemon = readFileSync(
+      join(here, "../../../../apps/daemon/src/services/run-service.ts"),
+      "utf-8",
+    );
+    const forward =
+      daemon.match(/const SUBAGENT_FORWARD_EVENTS = new Set\(\[[\s\S]*?\]\)/)?.[0] ?? "";
+    expect(forward).toContain('"runtime_activity"');
+    expect(forward).toContain('"codex_activity"');
+
+    const css = readFileSync(join(here, "styles.css"), "utf-8");
+    expect(css).toContain(".subagent-talent-body .step-tool-group");
+    expect(css).toContain(".subagent-talent-body .event.thinking");
+  });
+});
+
+describe("compact modified-files list", () => {
+  it("hugs file rows instead of stretching status across the timeline", () => {
+    const css = readFileSync(join(here, "styles.css"), "utf-8");
+    const bar = css.match(/^\.run-files-changed-bar\s*\{[^}]+\}/m)?.[0] ?? "";
+    const list = css.match(/^\.modified-files-list\s*\{[^}]+\}/m)?.[0] ?? "";
+    const btn = css.match(/^\.modified-file-btn\s*\{[^}]+\}/m)?.[0] ?? "";
+    const status = css.match(/^\.modified-file-status\s*\{[^}]+\}/m)?.[0] ?? "";
+
+    expect(bar).toMatch(/width:\s*fit-content/);
+    expect(bar).toMatch(/max-width:\s*100%/);
+    expect(list).toMatch(/align-items:\s*flex-start/);
+    expect(btn).toMatch(/width:\s*auto/);
+    expect(btn).toMatch(/max-width:\s*100%/);
+    expect(btn).toMatch(/justify-content:\s*flex-start/);
+    expect(btn).not.toMatch(/justify-content:\s*space-between/);
+    expect(btn).not.toMatch(/(?<!max-)width:\s*100%/);
+    expect(status).toMatch(/border-radius:\s*999px/);
   });
 });
