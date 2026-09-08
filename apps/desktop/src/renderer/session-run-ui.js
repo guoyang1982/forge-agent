@@ -313,6 +313,7 @@
 
     function switchSessionView(project, newSessionId, prevSessionId, options = {}) {
       const st = getState();
+      helpers.abortPendingProjectDraft?.(project.id);
       st.unreadDoneSessions?.delete(newSessionId);
       const outgoingSessionId =
         options.outgoingSessionId || st.viewingTimelineSessionId || "";

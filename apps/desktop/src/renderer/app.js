@@ -2687,6 +2687,16 @@ function saveRunPatchesForSession(sessionId) {
   state.runPatchesBySession.set(sessionId, new Map(state.runPatches));
 }
 
+function abortPendingProjectDraft(projectId) {
+  if (!projectId || !state.pendingNewSessionByProject.has(projectId)) return;
+  for (const [crId, meta] of [...state.clientRuns]) {
+    if (meta.projectId === projectId) sessionRuns?.clearClientRun(crId);
+  }
+  state.pendingNewSessionByProject.delete(projectId);
+  clearLiveStatusLine();
+  sessionRuns?.syncComposerRunChrome();
+}
+
 function initSessionRuns() {
   sessionRuns = window.ForgeSessionRunUi.createSessionRunApi(() => state, {
     $,
@@ -2717,6 +2727,7 @@ function initSessionRuns() {
     refreshLiveTimelineIfViewing,
     isViewSwitchCurrent,
     captureOutgoingTimeline,
+    abortPendingProjectDraft,
     renderNetworkPermissionBanner,
     sessionBelongsToActiveProject,
     rememberSessionCwd,
@@ -19095,6 +19106,12 @@ function bindActions() {
         attachments: attachments.length ? attachments : undefined,
         runtime,
       });
+      if (!result?.sessionId && !routeSid) {
+        throw new Error(
+          (result?.finalText || "").trim() ||
+            "Forge Agent 未返回有效会话，请重试",
+        );
+      }
       if (result?.sessionId) {
         state.runtimeBySession.set(result.sessionId, runtimeProvider);
         if (sessionRuns.isViewingSession(result.sessionId)) {
