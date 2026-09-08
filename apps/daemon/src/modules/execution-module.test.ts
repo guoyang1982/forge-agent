@@ -16,7 +16,7 @@ import { ForgeStore } from "@forge/store";
 import { CancelService } from "../services/cancel-service.js";
 import { RpcFaultError, TypedRouter } from "../host/router.js";
 import type { ForgeDaemonContext } from "./context.js";
-import { registerExecutionHandlers } from "./execution-module.js";
+import { createExecutionModule, registerExecutionHandlers } from "./execution-module.js";
 
 const migrationsDir = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -77,6 +77,39 @@ describe("execution module", () => {
     expect(result).toEqual({ ok: true, runId: "run-1", state: "cancelled" });
   });
 
+  it("cancels only the session bound to the requested run", async () => {
+    const { router, context } = executionRouterFixture();
+    const runA = context.cancelService.registerRun("session-a");
+    const runB = context.cancelService.registerRun("session-b");
+    await router.handle(
+      "run.create",
+      singleStepRunSpec({
+        id: "run-a",
+        sessionId: "session-a",
+      }),
+      rpcContext(),
+    );
+    await router.handle(
+      "run.create",
+      singleStepRunSpec({
+        id: "run-b",
+        sessionId: "session-b",
+      }),
+      rpcContext(),
+    );
+
+    await router.handle(
+      "run.cancel",
+      { runId: "run-a", reason: "user stop" },
+      rpcContext(),
+    );
+
+    expect(runA.signal.aborted).toBe(true);
+    expect(runB.signal.aborted).toBe(false);
+    expect(context.executionStore.getRun("run-a")?.state).toBe("cancelled");
+    expect(context.executionStore.getRun("run-b")?.state).toBe("running");
+  });
+
   it("rejects invalid run specs at the module boundary", async () => {
     const { router } = executionRouterFixture();
     const error = await router
@@ -133,6 +166,29 @@ describe("execution module", () => {
     expect(result.tree.kind).toBe("run");
     expect(result.tree.name).toBe("fix it");
   });
+
+  it("recovers interrupted attempts before reclaiming expired workspace leases", async () => {
+    const { context } = executionRouterFixture();
+    const order: string[] = [];
+    context.workspaceLeases = {
+      reclaimExpired: () => {
+        order.push("reclaim");
+        return [];
+      },
+    } as ForgeDaemonContext["workspaceLeases"];
+    context.executionRecovery = {
+      recoverOnStartup: async () => {
+        order.push("recover");
+      },
+    } as ForgeDaemonContext["executionRecovery"];
+    context.wakeExecutor = () => {
+      order.push("wake");
+    };
+
+    await createExecutionModule().start?.(context);
+
+    expect(order).toEqual(["recover", "reclaim", "wake"]);
+  });
 });
 
 function executionRouterFixture(): {
@@ -183,6 +239,7 @@ function executionRouterFixture(): {
     artifacts: {} as ForgeDaemonContext["artifacts"],
     validations: {} as ForgeDaemonContext["validations"],
     automationGovernance: {} as ForgeDaemonContext["automationGovernance"],
+    workspaceLeases: { reclaimExpired: () => [] } as ForgeDaemonContext["workspaceLeases"],
     executor,
     executionRecovery,
     executionClock: clock,
@@ -202,9 +259,10 @@ function executionRouterFixture(): {
   return { router, context };
 }
 
-function singleStepRunSpec(): RunSpec {
+function singleStepRunSpec(input?: { id?: string; sessionId?: string }): RunSpec {
+  const id = input?.id ?? "run-1";
   return {
-    id: "run-1",
+    id,
     requestedBy: { kind: "human", id: "user-1" },
     actingSubject: { kind: "agent_profile", id: "forge-default" },
     objective: "fix it",
@@ -215,7 +273,11 @@ function singleStepRunSpec(): RunSpec {
         id: "step-1",
         kind: "forge.agent",
         dependsOn: [],
-        input: { cwd: "/repo", message: "fix it" },
+        input: {
+          cwd: "/repo",
+          message: "fix it",
+          ...(input?.sessionId ? { sessionId: input.sessionId } : {}),
+        },
         retry: { maxAttempts: 1, backoffMs: 0, maxBackoffMs: 0 },
         timeoutMs: 60_000,
       },

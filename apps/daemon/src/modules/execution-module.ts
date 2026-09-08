@@ -44,6 +44,8 @@ export function createExecutionModule(): DaemonModule<ForgeDaemonContext> {
     },
     start: async (context) => {
       await context.executionRecovery.recoverOnStartup();
+      context.workspaceLeases?.reclaimExpired(context.executionClock.now());
+      context.wakeExecutor();
     },
   };
 }
@@ -92,15 +94,17 @@ async function handleRunCancel(
   correlationId: string,
 ) {
   if (params.runId) {
-    context.executor.cancelRun(params.runId, params.reason ?? "cancelled by client");
-    for (const sessionId of context.cancelService.activeSessionIds()) {
-      context.cancelService.cancel(sessionId);
-    }
     const run = context.executionStore.getRun(params.runId);
     if (!run) {
       throw invalidRequest("run not found", correlationId);
     }
-    return { ok: true as const, runId: run.id, state: run.state };
+    context.executor.cancelRun(params.runId, params.reason ?? "cancelled by client");
+    const sessionId = sessionIdFromRun(run.spec);
+    if (sessionId) {
+      context.cancelService.cancel(sessionId);
+    }
+    const cancelled = context.executionStore.getRun(params.runId) ?? run;
+    return { ok: true as const, runId: cancelled.id, state: cancelled.state };
   }
   if (params.sessionId) {
     const canceled = context.firstPartyRuns.cancel(params.sessionId);

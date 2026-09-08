@@ -39,6 +39,7 @@ import { createProductionExecutionComposition } from "./services/production-exec
 import { createProductionValidatorRegistry } from "./services/production-validators.js";
 import { AutomationGovernanceService } from "./services/automation-governance.js";
 import { FirstPartyRunCoordinator } from "./services/first-party-run.js";
+import { createExecutorPump } from "./services/executor-pump.js";
 
 const SERVER_VERSION = "0.2.0";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -208,19 +209,22 @@ schedulerHost = new AutomationSchedulerHost({
       },
     }, opts),
 });
+const executorPump = createExecutorPump({
+  tick: (limit) => executor.tick(limit),
+  afterTick: () =>
+    reconcileAutomationRuns({
+      store: automationStore,
+      channelStore,
+      durable: { db: forgeStore.db, executionStore },
+    }).then(() => undefined),
+  nextDueAt: () => executionStore.nextDueAt(executionClock.now()),
+  nowMs: () => executionClock.nowMs(),
+  onError: (error) => {
+    console.error(`[forge:execution] tick failed: ${String(error)}`);
+  },
+});
 const wakeExecutor = () => {
-  void executor
-    .tick()
-    .then(() =>
-      reconcileAutomationRuns({
-        store: automationStore,
-        channelStore,
-        durable: { db: forgeStore.db, executionStore },
-      }),
-    )
-    .catch((error) => {
-      console.error(`[forge:execution] tick failed: ${String(error)}`);
-    });
+  executorPump.wake();
 };
 
 const firstPartyRuns = new FirstPartyRunCoordinator({
@@ -251,6 +255,7 @@ const context: ForgeDaemonContext = {
   executionStore,
   eventStore,
   workspaceGroups,
+  workspaceLeases,
   approvals,
   budgetLedger,
   agentProfiles,
@@ -322,7 +327,10 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     void outboxDispatcher.stop()
-      .then(() => host.stop())
+      .then(() => {
+        executorPump.stop();
+        return host.stop();
+      })
       .catch((error) => {
         console.error(`[forge] daemon shutdown failed: ${String(error)}`);
         process.exitCode = 1;

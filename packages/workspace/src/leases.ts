@@ -73,23 +73,22 @@ export class WorkspaceLeaseService {
       if (input.mode === "write") {
         const active = this.db
           .prepare(
-            `SELECT id, expires_at
+            `SELECT id, expires_at, run_id, step_id, attempt_id
              FROM core_workspace_leases
              WHERE workspace_id = ?
                AND mode = 'write'
                AND released_at IS NULL`,
           )
-          .get(input.workspaceId) as { id: string; expires_at: string } | undefined;
+          .get(input.workspaceId) as LeaseHolderRow | undefined;
 
         if (active) {
-          if (active.expires_at <= acquiredAt) {
-            throw new WorkspaceLeaseExpiredError(
-              `workspace ${input.workspaceId} has an expired write lease pending recovery`,
+          if (active.expires_at <= acquiredAt && !this.holderStillOwns(active)) {
+            this.release(active.id, "expired");
+          } else {
+            throw new WorkspaceConflictError(
+              `workspace ${input.workspaceId} already has an active write lease`,
             );
           }
-          throw new WorkspaceConflictError(
-            `workspace ${input.workspaceId} already has an active write lease`,
-          );
         }
       }
 
@@ -141,6 +140,56 @@ export class WorkspaceLeaseService {
     return this.getLease(leaseId);
   }
 
+  reclaimExpired(now = new Date().toISOString()): string[] {
+    const expired = this.db
+      .prepare(
+        `SELECT id, expires_at, run_id, step_id, attempt_id
+         FROM core_workspace_leases
+         WHERE released_at IS NULL
+           AND expires_at <= ?`,
+      )
+      .all(now) as LeaseHolderRow[];
+    const ids: string[] = [];
+    for (const row of expired) {
+      if (this.holderStillOwns(row)) {
+        continue;
+      }
+      this.release(row.id, "expired");
+      ids.push(row.id);
+    }
+    return ids;
+  }
+
+  private holderStillOwns(lease: LeaseHolderRow): boolean {
+    if (lease.attempt_id) {
+      const attempt = this.db
+        .prepare(`SELECT state FROM core_attempts WHERE id = ?`)
+        .get(lease.attempt_id) as { state: string } | undefined;
+      if (
+        attempt &&
+        (attempt.state === "running" ||
+          attempt.state === "waiting" ||
+          attempt.state === "created")
+      ) {
+        return true;
+      }
+    }
+    if (!lease.step_id) {
+      return false;
+    }
+    const retryWait = this.db
+      .prepare(
+        `SELECT 1 AS present
+         FROM core_step_waits
+         WHERE run_id = ?
+           AND step_id = ?
+           AND state = 'waiting'
+           AND wait_kind = 'retry'`,
+      )
+      .get(lease.run_id, lease.step_id) as { present: number } | undefined;
+    return Boolean(retryWait);
+  }
+
   release(leaseId: string, reason = "released"): WorkspaceLease {
     const releasedAt = new Date().toISOString();
     const result = this.db
@@ -183,6 +232,14 @@ export class WorkspaceLeaseService {
     return mapLease(row);
   }
 }
+
+type LeaseHolderRow = {
+  id: string;
+  expires_at: string;
+  run_id: string;
+  step_id: string | null;
+  attempt_id: string | null;
+};
 
 function mapLease(row: {
   id: string;

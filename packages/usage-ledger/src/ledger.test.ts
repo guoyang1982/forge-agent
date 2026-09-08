@@ -64,6 +64,30 @@ describe("BudgetLedgerService", () => {
     ).toThrow(BudgetExceededError);
   });
 
+  it("counts child reservations against the parent account total", () => {
+    const ledger = budgetFixture({
+      limitMinor: 1000n,
+      children: [
+        { id: "child-1", limitMinor: 800n },
+        { id: "child-2", limitMinor: 800n },
+      ],
+    });
+    ledger.reserve({
+      ...reservation("child-1-res", 700n),
+      accountId: "child-1",
+    });
+    expect(() =>
+      ledger.reserve({
+        ...reservation("child-2-res", 700n),
+        accountId: "child-2",
+      }),
+    ).toThrow(BudgetExceededError);
+    expect(ledger.balance("account-1")).toMatchObject({
+      reservedMinor: 700n,
+      availableMinor: 300n,
+    });
+  });
+
   it("rejects currency mismatches", () => {
     const ledger = budgetFixture({ limitMinor: 1000n });
     expect(() =>
@@ -93,6 +117,41 @@ describe("BudgetLedgerService", () => {
     expect(() => ledger.commit(reserved.id, 100n)).toThrow(ReservationExpiredError);
   });
 
+  it("renews a reservation so a late commit still settles", () => {
+    const ledger = budgetFixture({ limitMinor: 1000n });
+    const reserved = ledger.reserve({
+      ...reservation("long-task", 700n),
+      expiresAt: "2020-01-01T00:00:00.000Z",
+    });
+    ledger.renew(reserved.id, new Date(Date.now() + 60_000).toISOString());
+    expect(ledger.commit(reserved.id, 100n).state).toBe("committed");
+    expect(ledger.balance("account-1").committedMinor).toBe(100n);
+  });
+
+  it("rejects expired renewal when another reservation has used the capacity", () => {
+    const ledger = budgetFixture({ limitMinor: 1000n });
+    const expiredAt = "2020-01-01T00:00:00.000Z";
+    ledger.reserve({ ...reservation("old", 700n), expiresAt: expiredAt });
+    ledger.reserve(reservation("new", 900n));
+    expect(() => ledger.renew("old", reservation("unused", 0n).expiresAt))
+      .toThrow(BudgetExceededError);
+    expect(ledger.getReservation("old").expiresAt).toBe(expiredAt);
+    expect(ledger.balance("account-1").reservedMinor).toBe(900n);
+  });
+
+  it("checks sibling usage on expired renewal without double counting active renewals", () => {
+    const ledger = budgetFixture({ limitMinor: 1000n, children: [
+      { id: "child-1", limitMinor: 1000n },
+      { id: "child-2", limitMinor: 1000n },
+    ] });
+    ledger.reserve({ ...reservation("old", 700n), accountId: "child-1",
+      expiresAt: "2020-01-01T00:00:00.000Z" });
+    const fresh = ledger.reserve({ ...reservation("new", 900n), accountId: "child-2" });
+    expect(() => ledger.renew("new", fresh.expiresAt)).not.toThrow();
+    expect(() => ledger.renew("old", fresh.expiresAt)).toThrow(BudgetExceededError);
+    expect(ledger.balance("account-1").reservedMinor).toBe(900n);
+  });
+
   it("records direct usage with provider and model dimensions", () => {
     const ledger = budgetFixture({ limitMinor: 1000n });
     ledger.recordUsage({
@@ -112,6 +171,7 @@ describe("BudgetLedgerService", () => {
 function budgetFixture(options: {
   limitMinor: bigint;
   child?: { id: string; limitMinor: bigint };
+  children?: Array<{ id: string; limitMinor: bigint }>;
 }) {
   const store = openStore();
   const ledger = new BudgetLedgerService(store.db);
@@ -121,13 +181,14 @@ function budgetFixture(options: {
     currency: "USD",
     hardLimitMinor: options.limitMinor,
   });
-  if (options.child) {
+  const children = options.children ?? (options.child ? [options.child] : []);
+  for (const child of children) {
     ledger.createAccount({
-      id: options.child.id,
-      name: "child",
+      id: child.id,
+      name: child.id,
       currency: "USD",
       parentAccountId: "account-1",
-      hardLimitMinor: options.child.limitMinor,
+      hardLimitMinor: child.limitMinor,
     });
   }
   return ledger;

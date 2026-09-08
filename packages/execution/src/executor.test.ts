@@ -245,10 +245,10 @@ describe("ExecutionRecovery", () => {
     expect(fx.store.getAttempt(fx.attemptId)?.state).toBe("abandoned");
   });
 
-  it("retries interrupted idempotent attempts safely", async () => {
+  it("does not retry interrupted idempotent attempts without reconcile", async () => {
     const fx = interruptedFixture({ idempotencyKey: "publish-once" });
     await fx.recovery.recoverOnStartup();
-    expect(fx.store.getStep("run-1", "publish")?.state).toBe("runnable");
+    expect(fx.store.getStep("run-1", "publish")?.state).toBe("waiting");
     expect(fx.store.getAttempt(fx.attemptId)?.state).toBe("abandoned");
   });
 });

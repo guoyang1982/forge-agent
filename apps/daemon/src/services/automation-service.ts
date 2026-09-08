@@ -710,6 +710,7 @@ export async function handleCreateAutomation(
     ...req.draft,
     cwd: absCwd,
   });
+  deps.getDurable().governance.authorize(automation);
   await deps.getScheduler().reschedule(automation.id);
   return { automation };
 }
@@ -742,6 +743,7 @@ export async function handleUpdateAutomation(
   if (!automation) {
     throw new Error("automation not found");
   }
+  deps.getDurable().governance.authorize(automation);
   await deps.getScheduler().reschedule(req.id);
   return { automation };
 }

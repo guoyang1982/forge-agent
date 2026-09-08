@@ -86,6 +86,27 @@ describe("AutomationGovernanceService local bootstrap", () => {
     ).not.toBe("forge-default");
   });
 
+  it("issues grants from an explicit user authorization", async () => {
+    const fx = fixture();
+    fx.governance.ensureLocalPolicy();
+    const grantId = fx.governance.authorize(fx.automation);
+    expect(grantId).toBe(fx.grantId);
+    expect(fx.grantCount()).toBe(2);
+    await expect(fx.governance.prepare(fx.automation, fx.definition)).resolves.toMatchObject({
+      budgetAccountId: expect.stringContaining("automation-budget:"),
+    });
+  });
+
+  it("migrates existing automations that have no grants", async () => {
+    const fx = fixture();
+    fx.governance.ensureLocalPolicy();
+    expect(fx.grantCount()).toBe(0);
+    expect(fx.governance.migrateExisting([fx.automation])).toBe(1);
+    expect(fx.grantCount()).toBe(2);
+    await expect(fx.governance.prepare(fx.automation, fx.definition)).resolves.toBeTruthy();
+    expect(fx.governance.migrateExisting([fx.automation])).toBe(0);
+  });
+
   it("rejects an existing grant scoped to a different workspace", async () => {
     const fx = fixture();
     fx.seedExternalGrant("automation-workspace:other");

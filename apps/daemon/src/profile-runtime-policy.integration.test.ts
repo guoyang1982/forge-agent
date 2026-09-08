@@ -216,6 +216,9 @@ async function runtimePolicyFixture() {
       acquire: async () => {
         throw new Error("workspace lease not expected");
       },
+      renew: async () => {
+        throw new Error("workspace renew not expected");
+      },
       release: async () => {},
     },
     policy: {
@@ -240,6 +243,9 @@ async function runtimePolicyFixture() {
     budget: {
       reserve: async () => {
         throw new Error("budget reservation not expected");
+      },
+      renew: async () => {
+        throw new Error("budget renew not expected");
       },
       commit: async () => {},
       release: async () => {},

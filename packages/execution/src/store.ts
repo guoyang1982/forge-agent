@@ -1010,6 +1010,28 @@ export class ExecutionStore {
     });
   }
 
+  nextDueAt(now: string): string | undefined {
+    void now;
+    const waits = this.db
+      .prepare(
+        `SELECT payload_json AS payloadJson
+         FROM core_step_waits
+         WHERE state = 'waiting' AND wait_kind = 'retry'`,
+      )
+      .all() as Array<{ payloadJson: string }>;
+    let soonest: string | undefined;
+    for (const wait of waits) {
+      const payload = JSON.parse(wait.payloadJson) as { nextAttemptAt?: string };
+      if (!payload.nextAttemptAt) {
+        continue;
+      }
+      if (!soonest || payload.nextAttemptAt < soonest) {
+        soonest = payload.nextAttemptAt;
+      }
+    }
+    return soonest;
+  }
+
   loadRecoverableRuns(): StoredRun[] {
     const rows = this.db
       .prepare(

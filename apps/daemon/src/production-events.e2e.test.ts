@@ -176,7 +176,7 @@ describe("production v2 events", () => {
         state: "running",
       });
       expect(fx.executionStore.getRun("run-pong")?.state).toBe("running");
-      expect(fx.wakeCount()).toBe(1);
+      expect(fx.wakeCount()).toBe(2);
       await waitFor(() => failures.length === 1);
       expect(failures).toHaveLength(1);
       expect(failures).toMatchObject([{ type: "run.created", runId: "run-pong" }]);

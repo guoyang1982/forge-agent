@@ -202,6 +202,28 @@ describe("GovernedMemoryStore", () => {
     expect(store.recall(recallContext())).toHaveLength(1);
   });
 
+  it("rejects DELETE that targets another tenant's memoryId", () => {
+    const store = governedMemoryFixtureWithApprovedRows();
+    const original = store.recall(recallContext())[0]!;
+    const foreign = store.propose({
+      ...candidate("tenant-b candidate"),
+      scope: {
+        tenantId: "tenant-b",
+        organizationId: "org-a",
+        employeeId: "e1",
+      },
+    });
+
+    expect(() =>
+      store.decide({
+        candidateId: foreign.id,
+        decision: "DELETE",
+        memoryId: original.memoryId,
+      }),
+    ).toThrow(/scope/i);
+    expect(store.recall(recallContext())).toHaveLength(1);
+  });
+
   it("ignores reserved metadata keys supplied by callers", () => {
     const store = governedMemoryFixture();
     const proposed = store.propose({

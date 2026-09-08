@@ -85,6 +85,7 @@ export interface GovernedExecutionPorts {
   };
   workspace: {
     acquire(input: WorkspaceAcquireInput): Promise<WorkspaceLease>;
+    renew(leaseId: string, expiresAt: string): Promise<WorkspaceLease | void>;
     release(leaseId: string, reason: string): Promise<void>;
   };
   policy: {
@@ -97,6 +98,7 @@ export interface GovernedExecutionPorts {
   };
   budget: {
     reserve(input: BudgetReserveInput): Promise<BudgetReservation>;
+    renew(reservationId: string, expiresAt: string): Promise<void>;
     commit(reservationId: string, amountMinor: bigint): Promise<void>;
     release(reservationId: string, reason: string): Promise<void>;
   };
@@ -139,7 +141,7 @@ export class GovernedStepExecutor {
           attemptId: input.attemptId,
           mode: input.workspaceMode ?? "write",
           rootPath: input.workspaceRootPath,
-          expiresAt: input.workspaceLeaseExpiresAt ?? defaultLeaseExpiry(this.clock),
+          expiresAt: input.workspaceLeaseExpiresAt ?? resourceExpiry(this.clock, input.timeoutMs),
         });
         leaseId = lease.id;
       }
@@ -239,7 +241,7 @@ export class GovernedStepExecutor {
           stepId: input.stepId,
           amountMinor: input.budgetAmountMinor,
           currency: input.budgetCurrency ?? "USD",
-          expiresAt: input.budgetReservationExpiresAt ?? defaultLeaseExpiry(this.clock),
+          expiresAt: input.budgetReservationExpiresAt ?? resourceExpiry(this.clock, input.timeoutMs),
         });
         reservationId = reservation.id;
       }
@@ -287,9 +289,25 @@ export class GovernedStepExecutor {
       let validated = false;
       let budgetCommitted = false;
 
+      const renewalController = new AbortController();
+      const stepSignal = AbortSignal.any([signal, renewalController.signal]);
+      let renewalFailed = false;
+      let renewalError: unknown;
+      const stopHeartbeat = this.startResourceHeartbeat(
+        leaseId,
+        reservationId,
+        resourceTtlMs(input.timeoutMs),
+        (error) => {
+          renewalFailed = true;
+          renewalError = error;
+          renewalController.abort(error);
+        },
+      );
       let stepOutcome: StepOutcome;
       try {
-        stepOutcome = await this.ports.step.execute(stepInput, signal);
+        stepOutcome = await this.ports.step.execute(stepInput, stepSignal);
+        await stopHeartbeat();
+        if (renewalFailed) throw renewalError;
       } catch (error) {
         // Once the external port has been entered, a rejected response cannot
         // prove whether its side effect occurred. Keep the claim terminally
@@ -297,6 +315,8 @@ export class GovernedStepExecutor {
         // execute the same idempotency key again.
         this.markIdempotencyUncertain(input);
         throw error;
+      } finally {
+        await stopHeartbeat();
       }
 
       if (stepOutcome.state === "waiting") {
@@ -398,6 +418,49 @@ export class GovernedStepExecutor {
           await this.ports.budget.release(reservationId, "cleanup");
         }
       }
+    }
+  }
+
+  private startResourceHeartbeat(
+    leaseId: string | undefined,
+    reservationId: string | undefined,
+    ttlMs: number,
+    onFailure: (error: unknown) => void,
+  ): () => Promise<void> {
+    if (!leaseId && !reservationId) {
+      return async () => {};
+    }
+    let pending: Promise<void> | undefined;
+    let stopped = false;
+    const heartbeatMs = Math.max(1_000, Math.min(60_000, Math.floor(ttlMs / 3)));
+    const handle = setInterval(() => {
+      if (stopped || pending) return;
+      pending = this.renewResources(leaseId, reservationId, ttlMs)
+        .catch((error) => {
+          stopped = true;
+          clearInterval(handle);
+          onFailure(error);
+        })
+        .finally(() => { pending = undefined; });
+    }, heartbeatMs);
+    return async () => {
+      stopped = true;
+      clearInterval(handle);
+      await pending;
+    };
+  }
+
+  private async renewResources(
+    leaseId: string | undefined,
+    reservationId: string | undefined,
+    ttlMs: number,
+  ): Promise<void> {
+    const expiresAt = new Date(this.clock.nowMs() + resourceTtlMs(ttlMs)).toISOString();
+    if (leaseId) {
+      await this.ports.workspace.renew(leaseId, expiresAt);
+    }
+    if (reservationId) {
+      await this.ports.budget.renew(reservationId, expiresAt);
     }
   }
 
@@ -506,5 +569,13 @@ function abortedOutcome(): GovernedStepOutcome {
 }
 
 function defaultLeaseExpiry(clock: ExecutionClock): string {
-  return new Date(clock.nowMs() + 15 * 60_000).toISOString();
+  return resourceExpiry(clock, 0);
+}
+
+function resourceExpiry(clock: ExecutionClock, timeoutMs: number): string {
+  return new Date(clock.nowMs() + resourceTtlMs(timeoutMs)).toISOString();
+}
+
+function resourceTtlMs(timeoutMs: number): number {
+  return Math.max(15 * 60_000, timeoutMs);
 }

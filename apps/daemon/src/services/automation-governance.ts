@@ -131,6 +131,37 @@ export class AutomationGovernanceService {
     };
   }
 
+  /** User authorization: issue workspace and asset-publish grants for this automation. */
+  authorize(automation: AutomationRecord): string {
+    const policyVersionId = this.ensurePolicyVersion();
+    const profile = this.ensureProfile(automation, policyVersionId);
+    this.ensureSubject(profile.profileId, automation.name);
+    const workspaceId = this.ensureWorkspace(automation);
+    this.ensureBudget(automation);
+    return seedAutomationGrant(
+      this.db,
+      automation.id,
+      profile.profileId,
+      policyVersionId,
+      workspaceId,
+    );
+  }
+
+  /** Upgrade path: grant existing automations that have none. */
+  migrateExisting(automations: AutomationRecord[]): number {
+    let migrated = 0;
+    for (const automation of automations) {
+      const grantId = `grant:automation:${automation.id}`;
+      const existing = this.db
+        .prepare("SELECT id FROM core_grants WHERE id = ?")
+        .get(grantId);
+      if (existing) continue;
+      this.authorize(automation);
+      migrated += 1;
+    }
+    return migrated;
+  }
+
   private ensurePolicyVersion(): string {
     const active = this.db
       .prepare(
@@ -342,6 +373,14 @@ export function seedAutomationGrant(
   ).run(now, now);
   const workflowId = `automation:${automationId}`;
   const assetPublishGrantId = `grant:automation-asset:${automationId}`;
+  const nextVersion =
+    (
+      db
+        .prepare(
+          "SELECT COALESCE(MAX(version), 0) AS max_version FROM core_asset_versions WHERE asset_id = ?",
+        )
+        .get(workflowId) as { max_version: number }
+    ).max_version + 1;
   db.prepare(
     `INSERT OR REPLACE INTO core_grants (
       id, subject_kind, subject_id, policy_version_id, action, resource_kind,
@@ -351,7 +390,7 @@ export function seedAutomationGrant(
     assetPublishGrantId,
     policyVersionId,
     JSON.stringify({
-      resourceIds: [workflowId, assetVersionResourceId(workflowId, 1)],
+      resourceIds: [workflowId, assetVersionResourceId(workflowId, nextVersion)],
       minRisk: "low",
     }),
     now,

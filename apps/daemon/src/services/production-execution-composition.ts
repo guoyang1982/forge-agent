@@ -112,6 +112,8 @@ export function createProductionExecutionComposition(
           profile: { resolve: (input) => Promise.resolve(options.governance!.profiles.resolveSnapshot(input)) },
           workspace: {
             acquire: (input) => Promise.resolve(options.governance!.leases.acquire(input)),
+            renew: (leaseId, expiresAt) =>
+              Promise.resolve(options.governance!.leases.renew(leaseId, expiresAt)),
             release: async (leaseId, reason) => {
               options.governance!.leases.release(leaseId, reason);
             },
@@ -126,6 +128,9 @@ export function createProductionExecutionComposition(
           },
           budget: {
             reserve: async (input) => options.governance!.budgets.reserve(input),
+            renew: async (reservationId, expiresAt) => {
+              options.governance!.budgets.renew(reservationId, expiresAt);
+            },
             commit: async (reservationId, amountMinor) => {
               options.governance!.budgets.commit(reservationId, amountMinor);
             },

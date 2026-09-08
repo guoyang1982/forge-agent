@@ -175,6 +175,18 @@ async function governedDaemonFixture() {
           expiresAt: "2026-01-01T01:00:00.000Z",
         };
       },
+      renew: async () => {
+        calls.push("workspace.renew");
+        return {
+          id: "lease-1",
+          workspaceId: "ws-1",
+          runId: "run-governed",
+          mode: "write" as const,
+          rootPath: root,
+          acquiredAt: clock.now(),
+          expiresAt: "2026-01-01T02:00:00.000Z",
+        };
+      },
       release: async () => {
         calls.push("workspace.release");
       },
@@ -216,6 +228,10 @@ async function governedDaemonFixture() {
       reserve: async (input) => {
         calls.push("budget.reserve");
         return budgetLedger.reserve(input);
+      },
+      renew: async (reservationId, expiresAt) => {
+        calls.push("budget.renew");
+        budgetLedger.renew(reservationId, expiresAt);
       },
       commit: async (reservationId, amountMinor) => {
         calls.push("budget.commit");

@@ -334,6 +334,66 @@ describe("GovernedStepExecutor", () => {
     });
   });
 
+  it("covers the step timeout when leasing the workspace and reserving budget", async () => {
+    const fx = governedFixture();
+    await fx.executor.execute({ ...fx.input, timeoutMs: 60 * 60_000 }, fx.signal);
+    expect(fx.acquiredExpiresAt).toBe("2026-01-01T01:00:00.000Z");
+    expect(fx.reservedExpiresAt).toBe("2026-01-01T01:00:00.000Z");
+  });
+
+  it("renews workspace and budget while a long step executes", async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseStep!: (outcome: StepOutcome) => void;
+      const blocked = new Promise<StepOutcome>((resolve) => {
+        releaseStep = resolve;
+      });
+      const fx = governedFixture({ step: async () => blocked });
+      const executing = fx.executor.execute(
+        { ...fx.input, timeoutMs: 60 * 60_000 },
+        new AbortController().signal,
+      );
+      await fx.stepStarted;
+      await vi.advanceTimersByTimeAsync(60_000);
+      releaseStep(succeeded("slow-output"));
+      await executing;
+      expect(fx.calls).toContain("workspace.renew");
+      expect(fx.calls).toContain("budget.renew");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("aborts the step and surfaces a failed renewal instead of committing success", async () => {
+    vi.useFakeTimers();
+    try {
+      const failure = new Error("renewal exceeded budget");
+      let stepSignal: AbortSignal | undefined;
+      const fx = governedFixture({
+        budgetRenew: async () => { throw failure; },
+        step: (signal) => {
+          stepSignal = signal;
+          return new Promise((resolve) => {
+            signal.addEventListener("abort", () => resolve(succeeded("late-output")), { once: true });
+          });
+        },
+      });
+      const executing = fx.executor.execute(fx.input, new AbortController().signal);
+      const rejected = expect(executing).rejects.toBe(failure);
+      await fx.stepStarted;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(stepSignal?.aborted).toBe(true);
+      await rejected;
+      expect(fx.calls).not.toContain("budget.commit");
+      expect(fx.calls).toContain("budget.release");
+      const renewals = fx.calls.filter((call) => call === "budget.renew").length;
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(fx.calls.filter((call) => call === "budget.renew")).toHaveLength(renewals);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects a reused approval on the second resume", async () => {
     const fx = governedFixture({ decision: "require_approval" });
     const approvalId = fx.approveMatchingRequest();
@@ -357,6 +417,7 @@ function governedFixture(options?: {
   validationResults?: boolean[];
   validateDelivery?: () => Promise<{ accepted: boolean }>;
   budgetCommit?: () => Promise<void>;
+  budgetRenew?: () => Promise<void>;
   step?: (signal: AbortSignal) => Promise<StepOutcome>;
 }) {
   const calls: string[] = [];
@@ -376,6 +437,8 @@ function governedFixture(options?: {
   const store = new ExecutionStore(forgeStore.db);
   const approvals = new ApprovalService(forgeStore.db);
   const clock = new ManualTestClock("2026-01-01T00:00:00.000Z");
+  let acquiredExpiresAt: string | undefined;
+  let reservedExpiresAt: string | undefined;
   forgeStore.db
     .prepare(
       `INSERT INTO core_policy_versions (id, name, version, rules_json, is_active, created_at)
@@ -434,8 +497,9 @@ function governedFixture(options?: {
       },
     },
     workspace: {
-      acquire: async () => {
+      acquire: async (input) => {
         calls.push("workspace.acquire");
+        acquiredExpiresAt = input.expiresAt;
         return {
           id: "lease-1",
           workspaceId: "ws-1",
@@ -443,7 +507,19 @@ function governedFixture(options?: {
           mode: "write",
           rootPath: root,
           acquiredAt: clock.now(),
-          expiresAt: "2026-01-01T01:00:00.000Z",
+          expiresAt: input.expiresAt,
+        };
+      },
+      renew: async () => {
+        calls.push("workspace.renew");
+        return {
+          id: "lease-1",
+          workspaceId: "ws-1",
+          runId: "r1",
+          mode: "write" as const,
+          rootPath: root,
+          acquiredAt: clock.now(),
+          expiresAt: "2026-01-01T02:00:00.000Z",
         };
       },
       release: async () => {
@@ -492,8 +568,9 @@ function governedFixture(options?: {
       },
     },
     budget: {
-      reserve: async () => {
+      reserve: async (input) => {
         calls.push("budget.reserve");
+        reservedExpiresAt = input.expiresAt;
         return {
           id: "reservation-1",
           accountId: "budget-1",
@@ -501,10 +578,14 @@ function governedFixture(options?: {
           stepId: "s1",
           amountMinor: 100n,
           currency: "USD",
-          state: "reserved",
-          expiresAt: "2026-01-01T01:00:00.000Z",
+          state: "reserved" as const,
+          expiresAt: input.expiresAt,
           createdAt: clock.now(),
         };
+      },
+      renew: async () => {
+        calls.push("budget.renew");
+        await options?.budgetRenew?.();
       },
       commit: async () => {
         calls.push("budget.commit");
@@ -574,6 +655,12 @@ function governedFixture(options?: {
     store,
     stepStarted,
     stepRuntimePolicies,
+    get acquiredExpiresAt() {
+      return acquiredExpiresAt;
+    },
+    get reservedExpiresAt() {
+      return reservedExpiresAt;
+    },
     input,
     signal: AbortSignal.timeout(1000),
     approveMatchingRequest: (expiresAt = "2099-01-01T00:00:00.000Z") => {

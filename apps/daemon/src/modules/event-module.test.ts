@@ -181,6 +181,7 @@ function eventRouterFixture(): {
     executionStore,
     eventStore,
     workspaceGroups: {} as ForgeDaemonContext["workspaceGroups"],
+    workspaceLeases: { reclaimExpired: () => [] } as ForgeDaemonContext["workspaceLeases"],
     approvals: {} as ForgeDaemonContext["approvals"],
     budgetLedger: {} as ForgeDaemonContext["budgetLedger"],
     agentProfiles: {} as ForgeDaemonContext["agentProfiles"],

@@ -41,6 +41,7 @@ export function createAutomationModule(): DaemonModule<ForgeDaemonContext> {
         handleListAutomationTemplates());
     },
     start: async (context) => {
+      context.automationGovernance.migrateExisting(context.automationStore.list());
       await reconcileAutomationRuns({
         store: context.automationStore,
         channelStore: context.channelStore,

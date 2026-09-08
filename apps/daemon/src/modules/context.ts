@@ -13,7 +13,7 @@ import type { ApprovalService } from "@forge/policy";
 import type { ReloadRuntimeResult } from "@forge/protocol";
 import type { SessionStore } from "@forge/session";
 import type { BudgetLedgerService } from "@forge/usage-ledger";
-import type { WorkspaceGroupService } from "@forge/workspace";
+import type { WorkspaceGroupService, WorkspaceLeaseService } from "@forge/workspace";
 import type { ForgeRuntime } from "../runtime.js";
 import type { AutomationSchedulerHost } from "../services/automation-scheduler-host.js";
 import type { AutomationGovernanceService } from "../services/automation-governance.js";
@@ -38,6 +38,7 @@ export interface ForgeDaemonContext extends DaemonContext {
   executionRecovery: ExecutionRecovery;
   executionClock: ExecutionClock;
   workspaceGroups: WorkspaceGroupService;
+  workspaceLeases: WorkspaceLeaseService;
   approvals: ApprovalService;
   budgetLedger: BudgetLedgerService;
   agentProfiles: AgentProfileStore;

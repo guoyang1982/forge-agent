@@ -88,6 +88,26 @@ export class BudgetLedgerService {
     })();
   }
 
+  renew(reservationId: string, expiresAt: string): BudgetReservation {
+    return this.db.transaction(() => {
+      const result = this.db
+        .prepare(
+          `UPDATE core_budget_reservations
+           SET expires_at = ?
+           WHERE id = ? AND state = 'reserved'`,
+        )
+        .run(expiresAt, reservationId);
+      if (result.changes !== 1) {
+        throw new Error(`reservation not found or not active: ${reservationId}`);
+      }
+      const reservation = this.getReservation(reservationId);
+      // Count the renewed reservation exactly once, together with any capacity
+      // consumed since it expired. A failed check rolls back the expiry update.
+      this.assertWithinLimits(reservation.accountId, 0n, reservation.currency);
+      return reservation;
+    }).immediate();
+  }
+
   commit(reservationId: string, actualMinor: bigint): BudgetReservation {
     const settledAt = new Date().toISOString();
     return this.db.transaction(() => {
@@ -172,22 +192,24 @@ export class BudgetLedgerService {
   balance(accountId: string): AccountBalance {
     const account = this.getAccount(accountId);
     const now = new Date().toISOString();
+    const descendantIds = this.descendantAccountIds(accountId);
+    const placeholders = descendantIds.map(() => "?").join(", ");
     const committedRow = this.db
       .prepare(
         `SELECT COALESCE(SUM(amount_minor), 0) AS total
          FROM core_usage_entries
-         WHERE account_id = ?`,
+         WHERE account_id IN (${placeholders})`,
       )
-      .get(accountId) as { total: number };
+      .get(...descendantIds) as { total: number };
     const reservedRow = this.db
       .prepare(
         `SELECT COALESCE(SUM(amount_minor), 0) AS total
          FROM core_budget_reservations
-         WHERE account_id = ?
+         WHERE account_id IN (${placeholders})
            AND state = 'reserved'
            AND expires_at > ?`,
       )
-      .get(accountId, now) as { total: number };
+      .get(...descendantIds, now) as { total: number };
 
     const committedMinor = BigInt(committedRow.total);
     const reservedMinor = BigInt(reservedRow.total);
@@ -239,6 +261,24 @@ export class BudgetLedgerService {
       current = row?.parent_account_id ?? null;
     }
     return chain;
+  }
+
+  private descendantAccountIds(accountId: string): string[] {
+    const ids = [accountId];
+    const pending = [accountId];
+    while (pending.length > 0) {
+      const parentId = pending.shift()!;
+      const children = this.db
+        .prepare(
+          `SELECT id FROM core_budget_accounts WHERE parent_account_id = ?`,
+        )
+        .all(parentId) as Array<{ id: string }>;
+      for (const child of children) {
+        ids.push(child.id);
+        pending.push(child.id);
+      }
+    }
+    return ids;
   }
 
   private getAccount(accountId: string): {

@@ -166,6 +166,24 @@ describe("ExecutionStore", () => {
       correlationId: "corr-1",
     });
   });
+
+  it("reports the next due retry wait", () => {
+    const { store } = executionFixture();
+    store.createRun(singleStepRunSpec(), clock.now());
+    const attempt = store.claimNextStep("run-1", "worker-a", clock.now())!;
+    store.scheduleRetry(
+      {
+        attemptId: attempt.id,
+        nextAttemptAt: "2026-01-01T00:00:30.000Z",
+        error: { code: "RETRY" },
+      },
+      clock.now(),
+    );
+    expect(store.nextDueAt(clock.now())).toBe("2026-01-01T00:00:30.000Z");
+    expect(store.nextDueAt("2026-01-01T00:00:30.000Z")).toBe(
+      "2026-01-01T00:00:30.000Z",
+    );
+  });
 });
 
 function executionFixture(options?: { failEventAppend?: boolean }): {

@@ -4,11 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ForgeStore } from "@forge/store";
 import { WorkspaceGroupService } from "./groups.js";
-import {
-  WorkspaceConflictError,
-  WorkspaceLeaseExpiredError,
-  WorkspaceLeaseService,
-} from "./leases.js";
+import { WorkspaceConflictError, WorkspaceLeaseService } from "./leases.js";
 
 const migrationsDir = join(import.meta.dirname, "..", "..", "..", "migrations");
 const fixtureRoots: string[] = [];
@@ -53,15 +49,44 @@ describe("WorkspaceLeaseService", () => {
     ).toThrow(WorkspaceConflictError);
   });
 
-  it("does not steal an expired write lease during acquire", () => {
+  it("reclaims an expired write lease so a later acquire can proceed", () => {
     const { leases, frontend } = leaseFixture();
-    leases.acquire({
+    const expired = leases.acquire({
       ...writeLease(frontend, "run-a"),
       expiresAt: "2020-01-01T00:00:00.000Z",
     });
+    expect(leases.reclaimExpired("2026-01-01T00:00:00.000Z")).toEqual([expired.id]);
+    expect(leases.acquire(writeLease(frontend, "run-b")).runId).toBe("run-b");
+  });
+
+  it("does not steal an expired write lease while the holder attempt is still running", () => {
+    const { store, leases, frontend } = leaseFixture();
+    insertAttempt(store, { id: "attempt-live", state: "running" });
+    leases.acquire({
+      ...writeLease(frontend, "run-a"),
+      attemptId: "attempt-live",
+      stepId: "step-1",
+      expiresAt: "2020-01-01T00:00:00.000Z",
+    });
+
+    expect(leases.reclaimExpired("2026-01-01T00:00:00.000Z")).toEqual([]);
     expect(() => leases.acquire(writeLease(frontend, "run-b"))).toThrow(
-      WorkspaceLeaseExpiredError,
+      WorkspaceConflictError,
     );
+  });
+
+  it("reclaims an expired write lease after the holder attempt has stopped", () => {
+    const { store, leases, frontend } = leaseFixture();
+    insertAttempt(store, { id: "attempt-dead", state: "abandoned" });
+    const expired = leases.acquire({
+      ...writeLease(frontend, "run-a"),
+      attemptId: "attempt-dead",
+      stepId: "step-1",
+      expiresAt: "2020-01-01T00:00:00.000Z",
+    });
+
+    expect(leases.reclaimExpired("2026-01-01T00:00:00.000Z")).toEqual([expired.id]);
+    expect(leases.acquire(writeLease(frontend, "run-b")).runId).toBe("run-b");
   });
 });
 
@@ -101,4 +126,32 @@ function writeLease(
     rootPath: workspace.rootPath,
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
   };
+}
+
+function insertAttempt(
+  store: ForgeStore,
+  input: { id: string; state: "running" | "abandoned" },
+): void {
+  const now = "2026-01-01T00:00:00.000Z";
+  store.db
+    .prepare(
+      `INSERT INTO core_runs (
+         id, state, spec_json, correlation_id, requested_by_json, created_at, updated_at
+       ) VALUES ('run-a', 'running', '{}', 'corr-1', '{}', ?, ?)`,
+    )
+    .run(now, now);
+  store.db
+    .prepare(
+      `INSERT INTO core_steps (
+         id, run_id, kind, state, retry_json, timeout_ms, created_at, updated_at
+       ) VALUES ('step-1', 'run-a', 'test', 'running', '{}', 3600000, ?, ?)`,
+    )
+    .run(now, now);
+  store.db
+    .prepare(
+      `INSERT INTO core_attempts (
+         id, run_id, step_id, attempt_number, state, input_json, created_at, updated_at
+       ) VALUES (?, 'run-a', 'step-1', 1, ?, '{}', ?, ?)`,
+    )
+    .run(input.id, input.state, now, now);
 }

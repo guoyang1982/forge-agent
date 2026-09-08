@@ -156,6 +156,7 @@ export class GovernedMemoryStore {
     const memoryId = String(
       input.memoryId ?? metadata.memoryId ?? input.candidateId,
     );
+    this.assertMemoryScope(memoryId, candidate.scope);
 
     if (input.decision === "UPDATE") {
       this.markSuperseded(memoryId, input.candidateId);

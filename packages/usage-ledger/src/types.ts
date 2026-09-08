@@ -58,6 +58,7 @@ export interface RecordUsageInput {
 
 export interface BudgetLedger {
   reserve(input: ReserveBudgetInput): BudgetReservation;
+  renew(reservationId: string, expiresAt: string): BudgetReservation;
   commit(reservationId: string, actualMinor: bigint): BudgetReservation;
   release(reservationId: string, reason: string): BudgetReservation;
   recordUsage(input: RecordUsageInput): void;

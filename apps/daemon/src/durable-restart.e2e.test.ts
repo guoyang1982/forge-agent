@@ -36,15 +36,16 @@ describe("durable restart e2e", () => {
     expect(fx.sideEffects()).toBe(1);
   });
 
-  it("recovers an interrupted idempotent attempt without duplicate side effects", async () => {
+  it("does not auto-retry an interrupted attempt that cannot be reconciled", async () => {
     const fx = await daemonRestartFixture({ idempotencyKey: "publish-once" });
     const runId = await fx.createInterruptedRun();
     expect(fx.store.listRunningAttempts()).toHaveLength(1);
 
     await fx.restart();
     await fx.executor.tick();
-    expect(await fx.waitForState(runId, "succeeded")).toBe("succeeded");
-    expect(fx.sideEffects()).toBe(1);
+    expect(fx.store.getStep(runId, "approve")?.state).toBe("waiting");
+    expect(fx.store.listRunningAttempts()).toHaveLength(0);
+    expect(fx.sideEffects()).toBe(0);
   });
 });
 

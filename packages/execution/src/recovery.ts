@@ -61,11 +61,6 @@ export class ExecutionRecovery {
         continue;
       }
 
-      if (step.idempotencyKey) {
-        this.store.abandonAttemptAndRetryStep(attempt.id, now);
-        continue;
-      }
-
       this.store.abandonAttemptForManualReview(attempt.id, now);
     }
   }
