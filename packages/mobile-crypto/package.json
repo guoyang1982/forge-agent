@@ -19,6 +19,6 @@
     "tweetnacl": "1.0.3"
   },
   "devDependencies": {
-    "vitest": "^3.0.9"
+    "vitest": "^4.1.10"
   }
 }

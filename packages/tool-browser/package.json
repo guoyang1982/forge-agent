@@ -12,5 +12,5 @@
     "@forge/tools": "workspace:*",
     "@forge/workspace": "workspace:*"
   },
-  "devDependencies": { "@types/node": "^22.13.10", "vitest": "^3.0.9" }
+  "devDependencies": { "@types/node": "^22.13.10", "vitest": "^4.1.10" }
 }

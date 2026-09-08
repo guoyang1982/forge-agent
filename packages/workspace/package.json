@@ -18,7 +18,7 @@
     "@forge/protocol": "workspace:*"
   },
   "devDependencies": {
-    "vitest": "^3.0.9",
+    "vitest": "^4.1.10",
     "@types/node": "^22.13.10"
   }
 }
