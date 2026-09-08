@@ -11,7 +11,7 @@ import type {
   ChannelAdapterHealth,
   ChannelKind,
 } from "@forge/channel-core";
-import { SessionStore } from "@forge/session";
+import { ForgeStore } from "@forge/store";
 import { ChannelGateway } from "./gateway.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -24,11 +24,15 @@ function tempDataDir(): string {
 }
 
 function withStore<T>(dataDir: string, fn: (store: ChannelStore) => T): T {
-  const sessions = new SessionStore(join(dataDir, "data.db"), join(repoRoot, "migrations"));
+  const owner = ForgeStore.open({
+    dbPath: join(dataDir, "data.db"),
+    migrationsDir: join(repoRoot, "migrations"),
+    owner: "test",
+  });
   try {
-    return fn(new ChannelStore(sessions.getDb()));
+    return fn(new ChannelStore(owner.db));
   } finally {
-    sessions.close();
+    owner.close();
   }
 }
 

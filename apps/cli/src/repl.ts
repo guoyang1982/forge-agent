@@ -1,6 +1,5 @@
 import { createInterface } from "node:readline";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { connectDaemon } from "@forge/bus";
@@ -25,8 +24,6 @@ import { askPatchConfirm } from "./patch-confirm.js";
 import { wrapRunEventHandler } from "./network-confirm.js";
 
 const PROMPT = "\x1b[32mforge\x1b[0m \x1b[2m›\x1b[0m ";
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const MONOREPO_ROOT = join(__dirname, "..", "..", "..");
 
 export interface ReplOptions {
   cwd: string;
@@ -317,7 +314,6 @@ async function connectAndRequest(
 function openSessionManager(): SessionManager {
   return new SessionManager({
     dataDir: getDataDir(),
-    migrationsDir: join(MONOREPO_ROOT, "migrations"),
   });
 }
 
@@ -328,4 +324,3 @@ async function ensureWorkspaceDir(abs: string): Promise<string> {
   }
   return abs;
 }
-

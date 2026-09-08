@@ -1,7 +1,5 @@
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 export type { Database } from "better-sqlite3";
-import { readFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AgentEvent, ChatMessage, SessionEventRecord } from "@forge/protocol";
 import { plainTextFromChatContent } from "@forge/protocol";
@@ -53,25 +51,7 @@ export interface SessionDispatchPlanRecord {
 }
 
 export class SessionStore {
-  private db: Database.Database;
-
-  constructor(dbPath: string, migrationsDir: string) {
-    mkdirSync(dirname(dbPath), { recursive: true });
-    this.db = new Database(dbPath);
-    this.db.pragma("journal_mode = WAL");
-    this.runMigrations(migrationsDir);
-  }
-
-  private runMigrations(migrationsDir: string): void {
-    if (!existsSync(migrationsDir)) return;
-    const files = readdirSync(migrationsDir)
-      .filter((f) => f.endsWith(".sql"))
-      .sort();
-    for (const f of files) {
-      const sql = readFileSync(join(migrationsDir, f), "utf-8").trim();
-      if (sql) this.db.exec(sql);
-    }
-  }
+  constructor(private readonly db: Database.Database) {}
 
   createSession(cwd: string): string {
     const id = randomUUID();

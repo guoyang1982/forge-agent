@@ -1,8 +1,10 @@
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { connect as netConnect } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import type { AgentEvent } from "@forge/protocol";
-import { connectDaemon, DaemonServer } from "./index.js";
+import { rpcFault, type AgentEvent } from "@forge/protocol";
+import { DaemonRpcError } from "@forge/daemon-client";
+import { connectDaemon, DaemonServer, type RpcHandler } from "./index.js";
 
 const servers: DaemonServer[] = [];
 
@@ -11,6 +13,30 @@ afterEach(() => {
 });
 
 describe("DaemonServer event isolation", () => {
+  it("passes v2 request correlation to the request handler", async () => {
+    let receivedContext: unknown;
+    const socketPath = await startServerWithHandler(
+      async (_method, _params, _emit, context) => {
+        receivedContext = context;
+        return { ok: true };
+      },
+    );
+
+    await requestRaw(socketPath, {
+      jsonrpc: "2.0",
+      id: "jsonrpc-8",
+      protocolVersion: 2,
+      requestId: "request-8",
+      method: "system.ping",
+      params: {},
+    });
+
+    expect(receivedContext).toEqual({
+      requestId: "request-8",
+      correlationId: "request-8",
+    });
+  });
+
   it("does not expose one socket's events to another socket", async () => {
     const { socketPath } = await startTestServer();
     const clientA = await connectDaemon(socketPath);
@@ -64,6 +90,69 @@ describe("DaemonServer event isolation", () => {
   });
 });
 
+describe("DaemonServer fault serialization", () => {
+  it("preserves a valid fault and correlates it with the v2 request", async () => {
+    const socketPath = await startServerWithHandler(async () => {
+      throw {
+        fault: rpcFault("WORKSPACE_CONFLICT", "workspace is busy", {
+          retryable: true,
+        }),
+      };
+    });
+    const response = await requestRaw(socketPath, {
+      jsonrpc: "2.0",
+      id: "jsonrpc-7",
+      protocolVersion: 2,
+      requestId: "request-7",
+      method: "system.ping",
+      params: {},
+    });
+
+    expect(response).toEqual({
+      jsonrpc: "2.0",
+      id: "jsonrpc-7",
+      error: {
+        code: -32000,
+        message: "workspace is busy",
+        data: {
+          fault: {
+            code: "WORKSPACE_CONFLICT",
+            message: "workspace is busy",
+            retryable: true,
+            correlationId: "request-7",
+          },
+        },
+      },
+    });
+  });
+
+  it("replaces unknown failures with a safe structured fault", async () => {
+    const socketPath = await startServerWithHandler(async () => {
+      const failure = new Error("database failed at /Users/private/data.db");
+      failure.stack = "secret stack";
+      throw failure;
+    });
+    const client = await connectDaemon(socketPath);
+
+    try {
+      const error = await client.request("system.ping", {}).catch((caught) => caught);
+      expect(error).toBeInstanceOf(DaemonRpcError);
+      expect(error).toMatchObject({
+        fault: {
+          code: "INTERNAL_ERROR",
+          message: "Internal RPC error",
+          retryable: false,
+          correlationId: expect.any(String),
+        },
+      });
+      expect(JSON.stringify(error.fault)).not.toContain("/Users/private");
+      expect(error.fault).not.toHaveProperty("stack");
+    } finally {
+      client.close();
+    }
+  });
+});
+
 async function startTestServer(): Promise<{
   server: DaemonServer;
   socketPath: string;
@@ -85,4 +174,37 @@ async function startTestServer(): Promise<{
   await server.start();
   servers.push(server);
   return { server, socketPath, completionOrder };
+}
+
+async function startServerWithHandler(handler: RpcHandler): Promise<string> {
+  const socketPath =
+    process.platform === "win32"
+      ? `\\\\.\\pipe\\forge-bus-${randomUUID()}`
+      : join("/private/tmp", `forge-bus-${randomUUID()}.sock`);
+  const server = new DaemonServer(socketPath, handler);
+  await server.start();
+  servers.push(server);
+  return socketPath;
+}
+
+function requestRaw(
+  socketPath: string,
+  request: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const socket = netConnect(socketPath);
+    let buffer = "";
+    socket.once("error", reject);
+    socket.once("connect", () => {
+      socket.write(`${JSON.stringify(request)}\n`);
+    });
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString();
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) return;
+      const response = JSON.parse(buffer.slice(0, newline)) as Record<string, unknown>;
+      socket.end();
+      resolve(response);
+    });
+  });
 }

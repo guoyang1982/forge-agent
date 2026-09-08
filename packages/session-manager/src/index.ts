@@ -1,16 +1,18 @@
 import { join } from "node:path";
 import { SessionStore, type CompactSessionResult, type SessionSummary } from "@forge/session";
+import { openNonMigratingDatabase } from "@forge/store";
 
 export interface SessionManagerOptions {
   dataDir: string;
-  migrationsDir: string;
 }
 
 export class SessionManager {
   private readonly store: SessionStore;
 
   constructor(options: SessionManagerOptions) {
-    this.store = new SessionStore(join(options.dataDir, "data.db"), options.migrationsDir);
+    this.store = new SessionStore(
+      openNonMigratingDatabase(join(options.dataDir, "data.db")),
+    );
   }
 
   list(limit = 10): SessionSummary[] {
