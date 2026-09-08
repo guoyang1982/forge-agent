@@ -33,6 +33,57 @@ afterEach(() => {
 });
 
 describe("ConnectorGateway", () => {
+  it("denies a high-risk proposal using the adapter's risk", async () => {
+    const fx = connectorFixture();
+    denyHighRisk(fx.db);
+    fx.adapter.propose = async (input) => ({ action: input.action, summary: "publish", risk: "high" });
+    await expect(fx.reopen().propose(publishInput("high-denied"))).rejects.toThrow(/denied/);
+    expect(fx.db.prepare("SELECT COUNT(*) AS n FROM core_connector_actions").get()).toEqual({ n: 0 });
+  });
+
+  it("uses persisted risk when reauthorizing after a gateway restart", async () => {
+    const fx = connectorFixture();
+    fx.adapter.propose = async (input) => ({ action: input.action, summary: "publish", risk: "high" });
+    const input = publishInput("high-restart");
+    const proposal = await fx.gateway.propose(input);
+    seedApproval(fx.db, "approval-high", proposal, input);
+    denyHighRisk(fx.db);
+    await expect(fx.reopen().execute(proposal.id, "approval-high")).rejects.toThrow(/denied/);
+    expect(fx.adapter.executeCalls).toBe(0);
+  });
+
+  it("rejects approval with a lower risk than the persisted proposal", async () => {
+    const fx = connectorFixture();
+    fx.adapter.propose = async (input) => ({ action: input.action, summary: "publish", risk: "high" });
+    const input = publishInput("risk-mismatch");
+    const proposal = await fx.gateway.propose(input);
+    seedApproval(fx.db, "approval-low", proposal, input);
+    fx.db.prepare("UPDATE core_approvals SET risk='low' WHERE id=?").run("approval-low");
+    await expect(fx.gateway.execute(proposal.id, "approval-low")).rejects.toThrow(/risk mismatch/);
+    expect(fx.adapter.executeCalls).toBe(0);
+  });
+
+  it("requires a new proposal for legacy rows without persisted risk", async () => {
+    const fx = connectorFixture();
+    const input = publishInput("legacy-risk");
+    const proposal = await fx.gateway.propose(input);
+    seedApproval(fx.db, "approval-legacy", proposal, input);
+    fx.db.prepare("UPDATE core_connector_actions SET preview_json=NULL WHERE id=?").run(proposal.id);
+    await expect(fx.reopen().execute(proposal.id, "approval-legacy")).rejects.toThrow(/risk missing/);
+    expect(fx.adapter.executeCalls).toBe(0);
+  });
+
+  it("keeps the original risk when an idempotency key is proposed again", async () => {
+    const fx = connectorFixture();
+    const input = publishInput("same-key");
+    fx.adapter.propose = async () => ({ action: "publish", summary: "high", risk: "high" });
+    const first = await fx.gateway.propose(input);
+    fx.adapter.propose = async () => ({ action: "publish", summary: "low", risk: "low" });
+    const second = await fx.reopen().propose(input);
+    expect(second.id).toBe(first.id);
+    expect(second.preview).toEqual(first.preview);
+  });
+
   it("returns one result for repeated execution with the same idempotency key", async () => {
     const fx = connectorFixture();
     const proposal = await fx.gateway.propose(publishInput("post-1"));
@@ -313,7 +364,7 @@ function connectorFixture(options: {
       hardLimitMinor: options.budgetLimitMinor ?? 1000n,
     });
   }
-  const gateway = new ConnectorGateway({
+  const reopen = () => new ConnectorGateway({
     db: forgeStore.db,
     policy: PolicyEngine.fromDatabase(forgeStore.db),
     approvals: new ApprovalService(forgeStore.db),
@@ -329,8 +380,10 @@ function connectorFixture(options: {
     adapters: new Map([["mock", adapter]]),
     emit: (event) => events.push(event),
   });
+  const gateway = reopen();
   return {
     gateway,
+    reopen,
     adapter,
     db: forgeStore.db,
     ledger,
@@ -466,7 +519,7 @@ function seedApproval(
       parameters_hash, parameters_summary, risk, policy_version_id, state,
       run_id, step_id, expires_at, created_at, decided_at
     ) VALUES (?, 'human', 'local', ?, 'connector_proposal', ?,
-      ?, 'summary', 'low', 'policy-v1', 'approved', ?, ?, ?, ?, ?)`,
+      ?, 'summary', ?, 'policy-v1', 'approved', ?, ?, ?, ?, ?)`,
   ).run(
     approvalId,
     overrides.action ?? "connector.publish",
@@ -481,10 +534,16 @@ function seedApproval(
       stepId: input.stepId ?? null,
       payload: input.payload,
     }),
+    proposal.preview.risk,
     input.runId ?? null,
     input.stepId ?? null,
     new Date(Date.now() + 3_600_000).toISOString(),
     now,
     now,
   );
+}
+
+function denyHighRisk(db: ForgeStore["db"]): void {
+  db.prepare("UPDATE core_policy_versions SET rules_json=? WHERE id='policy-v1'")
+    .run(JSON.stringify({ rules: [{ action: "connector.publish", resourceKind: "connector", effect: "deny", minRisk: "high" }] }));
 }

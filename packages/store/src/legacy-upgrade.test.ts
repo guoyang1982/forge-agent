@@ -71,6 +71,7 @@ describe("Core v1 database upgrade", () => {
         "025_connector_approval_binding.sql",
         "026_connector_outcome_reconciliation.sql",
         "027_tenant_organization_scope.sql",
+        "028_connector_proposal_preview.sql",
       ]);
     } finally {
       store?.close();

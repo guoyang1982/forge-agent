@@ -76,21 +76,6 @@ export class ConnectorGateway {
     input: ConnectorActionInput,
   ): Promise<ConnectorProposalRecord & { preview: ConnectorProposalPreview }> {
     const adapter = this.requireAdapter(input.connectorId);
-    const decision = this.deps.policy.authorize({
-      subject: input.subject,
-      action: `connector.${input.action}`,
-      resource: {
-        kind: "connector",
-        id: input.connectorId,
-      },
-      scope: {},
-      risk: "low",
-      context: input.payload,
-    });
-    if (decision.outcome === "deny") {
-      throw new Error(decision.reason ?? "connector action denied");
-    }
-
     const account = this.getAccount(input.connectorAccountId);
     const credential = await this.deps.credentials.resolve(account.credential_ref);
     const secrets = credentialSecretStrings(credential);
@@ -98,6 +83,22 @@ export class ConnectorGateway {
     let persistedPayload: Record<string, unknown>;
     try {
       const proposedPreview = await adapter.propose(input);
+      assertProposalPreview(proposedPreview);
+      const decision = this.deps.policy.authorize({
+        subject: input.subject,
+        action: `connector.${input.action}`,
+        resource: {
+          kind: "connector",
+          id: input.connectorId,
+        },
+        scope: {},
+        risk: proposedPreview.risk,
+        context: input.payload,
+      });
+      if (decision.outcome === "deny") {
+        throw new Error(decision.reason ?? "connector action denied");
+      }
+
       const redactedPreview = redactObject(
         {
           action: proposedPreview.action,
@@ -121,7 +122,7 @@ export class ConnectorGateway {
       input.idempotencyKey,
     );
     if (existing) {
-      return { ...existing, preview };
+      return { ...existing, preview: this.readProposalPreview(existing.id) };
     }
 
     const id = randomUUID();
@@ -129,9 +130,9 @@ export class ConnectorGateway {
       .prepare(
         `INSERT INTO core_connector_actions (
           id, connector_id, connector_account_id, action, state, idempotency_key,
-          proposal_json, result_json, approval_id, run_id, step_id,
+          proposal_json, preview_json, result_json, approval_id, run_id, step_id,
           subject_kind, subject_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 'proposed', ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, 'proposed', ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -140,6 +141,7 @@ export class ConnectorGateway {
         input.action,
         input.idempotencyKey,
         JSON.stringify(persistedPayload),
+        JSON.stringify(preview),
         input.runId ?? null,
         input.stepId ?? null,
         input.subject.kind,
@@ -170,7 +172,11 @@ export class ConnectorGateway {
 
     this.assertAccountMatchesProposal(proposal);
     const payload = this.readProposalPayload(proposal.id);
+    const preview = this.readProposalPreview(proposal.id);
     const approval = this.validateApproval(proposal, approvalId, payload);
+    if (approval.risk !== preview.risk) {
+      throw new ConnectorApprovalError("approval risk mismatch");
+    }
 
     const policyDecision = this.deps.policy.authorize({
       subject: approval.subject,
@@ -180,7 +186,7 @@ export class ConnectorGateway {
         id: proposal.connectorId,
       },
       scope: {},
-      risk: "low",
+      risk: preview.risk,
       context: payload,
     });
     if (policyDecision.outcome === "deny") {
@@ -575,6 +581,18 @@ export class ConnectorGateway {
       : null;
   }
 
+  private readProposalPreview(actionId: string): ConnectorProposalPreview {
+    const row = this.deps.db
+      .prepare("SELECT preview_json FROM core_connector_actions WHERE id = ?")
+      .get(actionId) as { preview_json: string | null };
+    if (!row?.preview_json) {
+      throw new ConnectorApprovalError("proposal risk missing; create a new proposal");
+    }
+    const preview: unknown = JSON.parse(row.preview_json);
+    assertProposalPreview(preview);
+    return preview;
+  }
+
   private readProposalPayload(actionId: string): Record<string, unknown> {
     const row = this.deps.db
       .prepare(`SELECT proposal_json FROM core_connector_actions WHERE id = ?`)
@@ -639,4 +657,15 @@ function connectorApprovalParameters(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function assertProposalPreview(value: unknown): asserts value is ConnectorProposalPreview {
+  if (!value || typeof value !== "object") {
+    throw new ConnectorApprovalError("invalid proposal preview");
+  }
+  const preview = value as Partial<ConnectorProposalPreview>;
+  if (typeof preview.action !== "string" || typeof preview.summary !== "string" ||
+      !["low", "medium", "high"].includes(preview.risk ?? "")) {
+    throw new ConnectorApprovalError("invalid proposal preview risk");
+  }
 }

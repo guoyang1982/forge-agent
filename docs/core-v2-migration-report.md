@@ -3,6 +3,22 @@
 > Validation status: **implementation verified; ready for commit and human acceptance**
 > Last verified: 2026-09-07 (`codex/core-v2-f0c-execution`, `116c86c` plus reviewed uncommitted closeout changes)
 
+## 2026-09-08 review closeout
+
+The review fixes are implemented and locally validated:
+
+- Run cancellation is scoped to its session; the executor pump drains batches and wakes overdue retries.
+- Interrupted steps without reconciliation wait for manual review. Workspace leases check holder state before reclamation and renew while execution is active.
+- Budget balances include descendants. Renewal validates the account and ancestor limits transactionally; failed renewal aborts the step and is surfaced rather than silently ignored.
+- Memory decisions enforce the candidate's tenant/organization scope.
+- Connector previews persist the adapter's risk (migration 028). Proposal and execution authorization use it; approval risk must match. Historical pending proposals without risk must be recreated and reapproved.
+- Automation create/update now issues local grants, and startup migrates existing automations without grants. This replaces the earlier external-grant-only product flow described below; execution itself still requires a matching grant.
+- Desktop adds a subagent list/detail pane. Background replay cannot redraw the visible context pane; agent details use session-owned records, and read-only file lookups are excluded from modifications.
+
+Local validation: root build and root tests, latest Desktop tests (193), Core v2 tests (8), legacy gate and `pnpm smoke` pass. Smoke uses the synthetic runtime. A Core v1 fixture was upgraded through migration 028, backed up, restored, and reopened with matching database SHA-256 and `PRAGMA integrity_check = ok`; legacy messages and memories survived. This was a synthetic fixture, not a production-data rehearsal.
+
+Remaining acceptance: real-model/product UI acceptance and cross-platform CI on the pushed final commit. PR #39 remains stacked on #38; merge #38 first before retargeting #39 to main.
+
 ## Scope
 
 Assets/Connectors sub-plan Tasks 1–12 and review remediation Tasks 1–8 on branch `codex/core-v2-f0c-execution`. “Delivered” below means the package/API exists; release readiness is controlled by the verification matrix and open blockers in this document.
@@ -84,8 +100,8 @@ Use an isolated copy of `data.db` only. Record:
 Commands:
 
 ```bash
-pnpm core:v2:backup -- --data-dir ~/.forge-agent/data backup.tar.gz
-pnpm core:v2:restore -- --data-dir ~/.forge-agent/data-restore backup.tar.gz
+pnpm core:v2:backup -- --data-dir "$HOME/.forge-agent/data" --output-dir "$HOME/forge-backups"
+pnpm core:v2:restore -- --restore-manifest /absolute/path/to/backup/manifest.json --restore-dir "$HOME/forge-restored"
 ```
 
 Rehearsal checklist:
@@ -93,7 +109,7 @@ Rehearsal checklist:
 1. Copy v1/v2 fixture database to a temp data dir; record SHA-256 of `data.db`
 2. Start daemon; confirm `system.capabilities` reports v2
 3. Run `node scripts/core-v2/smoke-v2-run.mjs`; record `runId`, event cursor, `sessionId`
-4. `pnpm core:v2:backup` to an archive; record manifest checksum
+4. `pnpm core:v2:backup` to a backup directory; record manifest checksum
 5. Restore into a fresh directory; verify schema version and row counts match post-upgrade expectations
 6. Repeat smoke run; record new `runId` (need not match pre-backup run)
 

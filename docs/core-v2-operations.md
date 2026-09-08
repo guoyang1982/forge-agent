@@ -9,8 +9,8 @@ Typed kernel callers (`run.create`, automation, smoke) should call `system.capab
 ## Backup and restore
 
 ```bash
-pnpm core:v2:backup -- --data-dir ~/.forge-agent/data backup.tar.gz
-pnpm core:v2:restore -- --data-dir ~/.forge-agent/data backup.tar.gz
+pnpm core:v2:backup -- --data-dir "$HOME/.forge-agent/data" --output-dir "$HOME/forge-backups"
+pnpm core:v2:restore -- --restore-manifest /absolute/path/to/backup/manifest.json --restore-dir "$HOME/forge-restored"
 ```
 
 ## Legacy gate
@@ -56,3 +56,7 @@ Windows:
 ```bash
 pnpm smoke:win
 ```
+
+Migration 028 persists Connector proposal previews, including their adapter-classified risk. Execution checks the stored risk against both current policy and the approval's risk. Historical pending proposals without a preview cannot execute: create a new proposal with a new idempotency key and approve it again. Completed actions remain readable and idempotent.
+
+The backup command requires a stopped Daemon (no live database writer) and prints the generated `manifestPath`. Use that exact path with `--restore-manifest`; `--restore-dir` must be a new directory. Backups are directories with checksummed files, not tar archives.
