@@ -42,7 +42,7 @@
     "node": ">=22"
   },
   "devDependencies": {
-    "@types/node": "^22.13.10",
+    "@types/node": "^26.1.2",
     "qrcode": "^1.5.4",
     "tsx": "^4.22.3",
     "typescript": "^5.8.3"
