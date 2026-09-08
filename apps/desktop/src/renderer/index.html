@@ -416,12 +416,19 @@
 
         <aside id="contextPanel" class="context-panel collapsed" aria-label="会话上下文">
           <div class="context-card">
+            <div id="contextOverview">
             <section class="context-card-section" aria-labelledby="contextEnvHeading">
               <div class="context-card-head">
                 <h4 id="contextEnvHeading">环境信息</h4>
                 <button type="button" class="context-card-plus" data-context-action="env-more" title="更多" aria-label="更多">+</button>
               </div>
               <div id="contextEnvList" class="context-env-list"></div>
+            </section>
+            <section id="contextSubagentSection" class="context-card-section hidden" aria-labelledby="contextSubagentHeading">
+              <div class="context-card-head">
+                <h4 id="contextSubagentHeading">子智能体</h4>
+              </div>
+              <div id="contextSubagentSummary" class="context-subagent-summary"></div>
             </section>
             <section class="context-card-section" aria-labelledby="contextSourcesHeading">
               <div class="context-card-head">
@@ -430,6 +437,7 @@
               </div>
               <div id="contextSourcesList" class="context-sources-list"></div>
             </section>
+            </div>
           </div>
         </aside>
         </div>
@@ -528,6 +536,24 @@
           </button>
         </header>
         <div id="toolsBodies" class="tools-bodies"></div>
+      </section>
+      <section id="subagentPanel" class="subagent-panel collapsed" aria-hidden="true" aria-label="子智能体">
+        <header class="subagent-panel-head">
+          <span class="subagent-panel-title">子智能体</span>
+          <button
+            id="subagentCloseBtn"
+            class="icon-btn subtle"
+            type="button"
+            title="收起右侧栏"
+            aria-label="收起右侧栏"
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+              <rect x="2" y="2.5" width="12" height="11" rx="1.5" />
+              <path d="M9.5 2.5v11" />
+            </svg>
+          </button>
+        </header>
+        <div id="subagentPanelBody" class="subagent-panel-body"></div>
       </section>
     </div>
 

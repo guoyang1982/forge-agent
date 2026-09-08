@@ -373,6 +373,47 @@ body.is-resizing .resize-handle {
   overflow: hidden;
 }
 
+.subagent-panel {
+  grid-column: 5;
+  grid-row: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: #1b1b1f;
+  overflow: hidden;
+}
+
+.subagent-panel.collapsed {
+  padding: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+.subagent-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: #202024;
+  flex-shrink: 0;
+}
+
+.subagent-panel-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.subagent-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 8px 12px;
+}
+
 .talents-section {
   display: flex;
   flex-direction: column;
@@ -2182,6 +2223,7 @@ body.is-resizing .resize-handle {
 
 .chat-empty-mode .top-actions #terminalToggleBtn,
 .chat-empty-mode .top-actions #browserToggleBtn,
+.chat-empty-mode .top-actions #traceToggleBtn,
 .chat-empty-mode .top-actions #runState {
   opacity: 0;
   pointer-events: none;
@@ -2246,6 +2288,7 @@ body.is-resizing .resize-handle {
 }
 
 .center-body {
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -4839,20 +4882,23 @@ body.is-resizing .resize-handle {
   visibility: hidden;
 }
 
-/* ── Session context card (independent of code/tools right dock) ── */
+/* ── Session context card: Codex-style overlay (does not steal the timeline scrollbar) ── */
 .context-panel {
-  flex: 0 0 var(--context-panel-width);
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  bottom: auto;
   width: var(--context-panel-width);
-  max-width: 42vw;
-  min-width: 0;
+  max-width: min(42vw, calc(100% - 28px));
+  max-height: calc(100% - 20px);
   display: flex;
   flex-direction: column;
   gap: 0;
-  padding: 8px 14px 16px 4px;
+  padding: 0;
   overflow: auto;
   background: transparent;
-  align-self: stretch;
-  z-index: 2;
+  z-index: 6;
+  pointer-events: none;
 }
 
 .context-panel.collapsed {
@@ -4860,6 +4906,7 @@ body.is-resizing .resize-handle {
 }
 
 .context-card {
+  pointer-events: auto;
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -4868,6 +4915,10 @@ body.is-resizing .resize-handle {
   background: #1c1c1e;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
   overflow: hidden;
+}
+
+#contextOverview {
+  display: contents;
 }
 
 .context-card-section {
@@ -5022,6 +5073,321 @@ body.is-resizing .resize-handle {
   font-size: 12px;
   color: var(--sub-dim);
   line-height: 1.45;
+}
+
+.context-subagent-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  padding: 2px 4px;
+  border-radius: 10px;
+}
+
+.context-subagent-summary-hit {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  min-height: 32px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-subagent-summary-hit:hover,
+.context-subagent-avatar-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.context-subagent-avatar-btn {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.context-subagent-avatars {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.context-subagent-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  font-size: 11px;
+  line-height: 1;
+  color: #fff;
+  background: hsl(var(--avatar-hue, 210) 52% 42%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+  object-fit: cover;
+}
+
+.context-subagent-avatars .context-subagent-avatar-btn {
+  margin-left: -7px;
+  border-radius: 50%;
+}
+
+.context-subagent-avatars .context-subagent-avatar-btn:first-child {
+  margin-left: 0;
+}
+
+.context-subagent-avatars .context-subagent-avatar {
+  border: 2px solid #1c1c1e;
+}
+
+.context-subagent-summary-label {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.context-drill {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 10px 12px;
+}
+
+.context-drill.hidden {
+  display: none;
+}
+
+.context-drill-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 2px 4px 8px;
+}
+
+.context-drill-head h4 {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.context-drill-back {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--sub);
+  cursor: pointer;
+}
+
+.context-drill-back:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.context-subagent-avatar.is-lg {
+  width: 26px;
+  height: 26px;
+  font-size: 13px;
+}
+
+.context-subagent-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0 8px;
+}
+
+.context-subagent-group-head {
+  padding: 8px 8px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sub);
+}
+
+.context-subagent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-subagent-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.context-subagent-row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-subagent-row-time {
+  flex: 0 0 auto;
+  color: var(--sub-dim);
+  font-size: 12px;
+}
+
+.context-subagent-more {
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--sub);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.context-subagent-more:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+
+.context-subagent-status {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 8px 8px;
+}
+
+.context-subagent-status-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.context-subagent-status-time {
+  font-size: 12px;
+  color: var(--sub);
+}
+
+.context-subagent-block {
+  padding: 4px 8px 10px;
+}
+
+.context-subagent-block h5 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sub);
+}
+
+.context-subagent-block p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.context-subagent-activity {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.context-subagent-activity li {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.context-subagent-activity li.is-thinking,
+.context-subagent-activity li.is-status {
+  color: var(--sub);
+  list-style: none;
+  margin-left: -16px;
+}
+
+.context-subagent-thinking {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.context-subagent-thinking > summary {
+  cursor: pointer;
+  color: var(--sub);
+  font-size: 12px;
+  line-height: 1.5;
+  list-style: none;
+}
+
+.context-subagent-thinking > summary::-webkit-details-marker {
+  display: none;
+}
+
+.context-subagent-thinking[open] > summary {
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.context-subagent-thinking .event-pre {
+  max-height: min(48vh, 420px);
+  overflow: auto;
+  padding: 8px 2px 2px;
+  color: var(--text);
+}
+
+.context-subagent-files-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.context-subagent-files-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text);
+  border-bottom: 1px solid var(--line);
+}
+
+.context-subagent-file-stats {
+  flex: 0 0 auto;
+  font-size: 12px;
 }
 
 .right-panel-head {

@@ -1373,6 +1373,9 @@ describe("collapsible left sidebar and compact window", () => {
     expect(css).toContain(".app-shell.left-overlay");
     expect(css).toContain(".context-panel");
     expect(css).toContain(".center-body");
+    expect(css).toMatch(/\.center-body\s*\{[^}]*position:\s*relative/s);
+    expect(css).toMatch(/\.context-panel\s*\{[^}]*position:\s*absolute/s);
+    expect(css).not.toMatch(/\.context-panel\s*\{[^}]*flex:\s*0 0 var\(--context-panel-width\)/s);
     expect(css).toContain("minmax(0, 1fr)");
     expect(css).toContain("--chat-column-max");
     expect(css).toContain("--sidebar-width: 320px");
@@ -1399,10 +1402,57 @@ describe("collapsible left sidebar and compact window", () => {
     expect(source).toContain('launcher.classList.toggle("hidden", !isChat)');
     expect(source).toContain("terminalToggleBtn");
     expect(source).toContain("browserToggleBtn");
+    expect(source).toContain("traceToggleBtn");
+    expect(source).toContain("New/empty sessions stay a clean landing page");
+    expect(css).toContain(".chat-empty-mode .top-actions #traceToggleBtn");
     expect(source).toContain("syncContextPanelButton()");
     expect(source).toContain("never reopen it on resource pages");
     expect(css).toContain(".composer-footer-left");
     expect(css).toMatch(/flex-wrap:\s*wrap/);
+  });
+});
+
+describe("context card sub-agent drill-down", () => {
+  it("shows a Codex-style 子智能体 strip that opens the list and a session detail in the right sidebar", () => {
+    const source = appSource();
+    const html = readFileSync(join(here, "index.html"), "utf-8");
+    const css = readFileSync(join(here, "styles.css"), "utf-8");
+
+    expect(html).toContain('id="contextSubagentSection"');
+    expect(html).toContain("子智能体");
+    expect(html).toContain('id="contextSubagentSummary"');
+    expect(html).toContain('id="subagentPanel"');
+    expect(html).toContain('id="subagentPanelBody"');
+    expect(html).not.toContain('id="leftSubagentPane"');
+    expect(html).not.toContain('id="contextSubagentListView"');
+
+    expect(source).toContain('contextView: "overview"');
+    expect(source).toContain("function collectSessionSubagents");
+    expect(source).toContain("function renderContextSubagentSummary");
+    expect(source).toContain("function renderRightSubagentPane");
+    expect(source).toContain("function openContextSubagentList");
+    expect(source).toContain("function openContextSubagentDetail");
+    expect(source).toContain('openRight(true, "subagents")');
+    expect(source).toContain('data-context-action="open-subagents"');
+    expect(source).toContain('data-context-action="open-subagent"');
+    expect(source).toContain("已开启 ·");
+    expect(source).toContain("完成 ·");
+    expect(source).toContain("再显示");
+    expect(source).toContain("没有已开启的子代理");
+    expect(source).toContain("revealSubagentInTimeline");
+    expect(source).toContain("resetContextSubagentView()");
+    expect(source).toContain("bindRightSubagentPane");
+    expect(source).toContain('mode === "subagents"');
+
+    expect(css).toContain(".context-subagent-summary");
+    expect(css).toContain(".context-subagent-avatar");
+    expect(css).toContain(".context-subagent-row");
+    expect(css).toContain(".subagent-panel");
+    expect(css).toContain(".subagent-panel-body");
+    expect(source).toContain("context-subagent-thinking");
+    expect(source).toContain("pushThinking");
+    expect(css).toContain(".context-subagent-activity");
+    expect(css).toContain(".context-subagent-thinking");
   });
 });
 
@@ -1461,4 +1511,103 @@ describe("compact modified-files list", () => {
     expect(btn).not.toMatch(/(?<!max-)width:\s*100%/);
     expect(status).toMatch(/border-radius:\s*999px/);
   });
+});
+
+describe("context panel session isolation", () => {
+  const extract = (name) => appSource().match(new RegExp(`function ${name}[\\s\\S]*?\\n}\\n`))?.[0] ?? "";
+
+  it("keeps background artifacts out of the visible context and subagent panels", () => {
+    const state = {
+      contextOpen: true,
+      offscreenTimelineEl: {},
+      runPatches: new Map([["viewer.ts", {}]]),
+      runPatchesBySession: new Map([["background", new Map([["background.ts", {}]])]]),
+      runConclusionBySession: new Map(),
+      runFinalTextBySession: new Map(),
+    };
+    const rendered = [];
+    const api = new Function("state", "renderContextPanel", "isRightSubagentPanelOpen", "renderRightSubagentPane",
+      `${extract("refreshContextPanelIfOpen")}\n${extract("loadSessionRunArtifacts")}\nreturn {loadSessionRunArtifacts, refreshContextPanelIfOpen};`,
+    )(state, () => rendered.push([...state.runPatches.keys()]), () => true,
+      () => rendered.push([...state.runPatches.keys()]));
+    const viewerPatches = state.runPatches;
+    api.loadSessionRunArtifacts("background");
+    expect(state.runPatches.has("background.ts")).toBe(true);
+    expect(rendered).toEqual([]);
+    state.contextOpen = false;
+    api.refreshContextPanelIfOpen();
+    expect(rendered).toEqual([]);
+    state.runPatches = viewerPatches;
+    state.offscreenTimelineEl = null;
+    api.refreshContextPanelIfOpen();
+    expect(rendered).toEqual([["viewer.ts"]]);
+  });
+
+  it("does not merge background agents or status into the requested session", () => {
+    const state = { subagentActivityByMention: new Map([
+      ["background-only", { talent: {mention: "background-only"}, finalized: false }],
+      ["shared-role", { talent: {mention: "shared-role"}, finalized: false }],
+    ]) };
+    const timelines = new Map([["viewer", {entries: [{type: "run_activity", children: [
+      {type: "subagent", id: "viewer-agent", talent: {mention: "shared-role"}, finalized: true, children: []},
+    ]}]}], ["empty", {entries: []}]]);
+    const collect = new Function("state", "normalizeTalentMention", "getNormalTimelineState", "ensureTimelineEntries",
+      `${extract("collectSessionSubagents")}\nreturn collectSessionSubagents;`,
+    )(state, (s) => String(s || ""), (sid) => timelines.get(sid), (timeline) => timeline.entries);
+    expect(collect("empty")).toEqual([]);
+    expect(collect("viewer")).toMatchObject([{mention: "shared-role", finalized: true, entryId: "viewer-agent"}]);
+    expect(collect("viewer")).toHaveLength(1);
+  });
+});
+
+
+describe("subagent modified files", () => {
+  it("excludes reads even when another agent modified the file, and excludes unapplied patches", () => {
+    const source = appSource().match(/function collectSubagentFileChanges[\s\S]*?\n}\n/)?.[0] ?? "";
+    const state = {runPatches: new Map([["read.ts", {adds: 9, dels: 2}]])};
+    const collect = new Function("state", "normalizeWorkspaceRelPath", "getActiveProject", "parseSubagentEventDetail", "getSubagentBodyForTalent", "diffStatsFromUnifiedDiff",
+      `${source}\nreturn collectSubagentFileChanges;`,
+    )(state, (_, path) => path, () => ({cwd: "/project"}), (child) => child.detail,
+      () => null, () => ({adds: 1, dels: 0}));
+    const files = collect({mention: "worker", children: [
+      {detail: {toolFile: "read.ts"}},
+      {detail: {filePath: "another-read.ts"}},
+      {detail: {patch: {path: "pending.ts", unifiedDiff: "diff", applied: false}}},
+      {detail: {patch: {path: "edited.ts", unifiedDiff: "diff", applied: true}}},
+    ]}, "viewer");
+    expect(files).toEqual([{path: "edited.ts", adds: 1, dels: 0}]);
+  });
+});
+
+
+it("keeps same-mention background DOM files out of the viewer agent", () => {
+  const source = appSource().match(/function collectSubagentFileChanges[\s\S]*?\n}\n/)?.[0] ?? "";
+  const backgroundDetail = {patch: {path: "background.ts", unifiedDiff: "diff", applied: true}};
+  let domLookups = 0;
+  const collect = new Function("state", "normalizeWorkspaceRelPath", "getActiveProject", "parseSubagentEventDetail", "getSubagentBodyForTalent", "diffStatsFromUnifiedDiff",
+    `${source}\nreturn collectSubagentFileChanges;`,
+  )({runPatches: new Map()}, (_, path) => path, () => ({cwd: "/project"}),
+    (child, sid) => child.detailsBySession[sid],
+    () => { domLookups += 1; return {querySelectorAll: () => [{getAttribute: () => JSON.stringify(backgroundDetail)}]}; },
+    () => ({adds: 1, dels: 0}));
+  const agent = {mention: "same-role", children: [{detailsBySession: {
+    viewer: {patch: {path: "viewer.ts", unifiedDiff: "diff", applied: true}},
+    background: backgroundDetail,
+  }}]};
+  expect(collect(agent, "viewer")).toEqual([{path: "viewer.ts", adds: 1, dels: 0}]);
+  expect(collect(agent, "background")).toEqual([{path: "background.ts", adds: 1, dels: 0}]);
+  expect(domLookups).toBe(0);
+});
+
+
+it("does not fill an empty viewer agent with same-mention background activity", () => {
+  const source = appSource().match(/function collectSubagentActivityLines[\s\S]*?\n}\n/)?.[0] ?? "";
+  let domLookups = 0;
+  const collect = new Function("getSubagentBodyForTalent", "thinkingEntryFromFlattenedEvent",
+    `${source}\nreturn collectSubagentActivityLines;`,
+  )(() => { domLookups += 1; return null; }, () => null);
+  expect(collect({mention: "same-role", children: []})).toEqual([]);
+  expect(collect({mention: "same-role", children: [{type: "event", text: "viewer activity"}]}))
+    .toEqual([{kind: "event", text: "viewer activity"}]);
+  expect(domLookups).toBe(0);
 });
