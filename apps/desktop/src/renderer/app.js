@@ -75,11 +75,30 @@ function formatNetworkPermissionMeta(ev) {
   return parts.join(" · ");
 }
 
+function pendingPermissionVisibleForView(ev, viewingSessionId) {
+  const sid = ev?.sessionId || "";
+  const viewing = viewingSessionId || "";
+  if (viewing) return sid === viewing;
+  return !sid;
+}
+
+function currentViewingSessionId() {
+  return (
+    sessionRuns?.getViewingSessionId?.() ||
+    state.viewingTimelineSessionId ||
+    ""
+  );
+}
+
 function renderNetworkPermissionBanner() {
   const host = $("networkPermissionHost");
   if (!host) return;
   const composerCard = $("composerCard");
-  if (!state.pendingNetworkPermissions.size) {
+  const viewing = currentViewingSessionId();
+  const visible = [...state.pendingNetworkPermissions.values()].filter((ev) =>
+    pendingPermissionVisibleForView(ev, viewing),
+  );
+  if (!visible.length) {
     host.classList.add("hidden");
     host.innerHTML = "";
     composerCard?.classList.remove("permission-active");
@@ -87,7 +106,7 @@ function renderNetworkPermissionBanner() {
   }
   host.classList.remove("hidden");
   composerCard?.classList.add("permission-active");
-  host.innerHTML = [...state.pendingNetworkPermissions.values()]
+  host.innerHTML = visible
     .map((ev) => {
       if (ev.kind === "mcp") {
         const detail = ev.detail || {};
@@ -178,7 +197,15 @@ function renderNetworkPermissionBanner() {
 
 function showNetworkPermissionRequest(ev) {
   if (!ev?.id || state.pendingNetworkPermissions.has(ev.id)) return;
-  state.pendingNetworkPermissions.set(ev.id, ev);
+  const sessionId =
+    ev.sessionId ||
+    state.eventRouteSessionId ||
+    state.liveRunSessionId ||
+    "";
+  state.pendingNetworkPermissions.set(
+    ev.id,
+    sessionId ? { ...ev, sessionId } : ev,
+  );
   renderNetworkPermissionBanner();
 }
 
@@ -432,6 +459,8 @@ const state = {
   /** sessionId -> reflection-gate state (round/status/issues) for the run. */
   reflectionBySession: new Map(),
   sessionCwdById: new Map(),
+  /** sessionId -> latest durable runId from session_start / done. */
+  runIdBySession: new Map(),
   /** Bumped on each session switch; stale async restores are ignored. */
   viewSwitchGeneration: 0,
   /** Skip structured timeline writes while rebuilding DOM from JSON. */
@@ -478,6 +507,10 @@ const state = {
   rightContextPinned: true,
   /** Whether the floating 环境信息/来源 card is visible. */
   contextOpen: false,
+  /** overview | subagents | detail */
+  contextView: "overview",
+  contextSubagentMention: "",
+  contextSubagentListLimit: 10,
   leftOpen: true,
   leftPinned: true,
   projects: [],
@@ -731,6 +764,18 @@ function snapshotDomTimelineChild(node, sessionId) {
       createdAt: Date.now(),
     };
   }
+  if (node.tagName === "DETAILS" && node.classList.contains("thinking")) {
+    const pre = node.querySelector(".event-pre");
+    return {
+      type: "thinking",
+      id: node.dataset.thinkingId || timelineEntryId(),
+      talentMention: node.dataset.talentMention || "",
+      summary: node.querySelector("summary")?.textContent || "",
+      content: pre?.textContent || "",
+      open: Boolean(node.open && node.dataset.userPinned === "1"),
+      createdAt: Date.now(),
+    };
+  }
   if (node.classList?.contains("event")) {
     const cls = [...node.classList].filter((c) => c !== "event").join(" ");
     const entry = {
@@ -745,19 +790,7 @@ function snapshotDomTimelineChild(node, sessionId) {
       hasDetail: node.classList.contains("clickable") || Boolean(node.dataset.forgeDetail),
       createdAt: Date.now(),
     };
-    return entry;
-  }
-  if (node.tagName === "DETAILS" && node.classList.contains("thinking")) {
-    const pre = node.querySelector(".event-pre");
-    return {
-      type: "thinking",
-      id: node.dataset.thinkingId || timelineEntryId(),
-      talentMention: node.dataset.talentMention || "",
-      summary: node.querySelector("summary")?.textContent || "",
-      content: pre?.textContent || "",
-      open: node.open,
-      createdAt: Date.now(),
-    };
+    return thinkingEntryFromFlattenedEvent(entry) || entry;
   }
   if (node.matches?.("details.subagent-talent-activity")) {
     const mention = normalizeTalentMention(node.dataset.talentMention || "");
@@ -1373,13 +1406,18 @@ function findTimelineRunActivityEntry(timelineState) {
 
 function findTimelineSubagentChild(runEntry, body) {
   if (!runEntry?.children?.length || !body) return null;
-  const mention = body
-    .closest?.("details.subagent-talent-activity")
-    ?.dataset?.talentMention;
+  const mention = normalizeTalentMention(
+    body.closest?.("details.subagent-talent-activity")?.dataset?.talentMention,
+  );
   if (!mention) return null;
   for (let i = runEntry.children.length - 1; i >= 0; i--) {
     const child = runEntry.children[i];
-    if (child.type === "subagent" && child.talent?.mention === mention) return child;
+    if (
+      child.type === "subagent" &&
+      normalizeTalentMention(child.talent?.mention) === mention
+    ) {
+      return child;
+    }
   }
   return null;
 }
@@ -1677,6 +1715,9 @@ function recordThinkingEntry(sessionId, thinkingId, talent, summary, content, ho
   }
   if (summary) entry.summary = summary;
   if (content != null) entry.content = content;
+  if (holder) {
+    entry.open = Boolean(holder.open && holder.dataset?.userPinned === "1");
+  }
   touchTimelineState(sessionId);
 }
 
@@ -1797,6 +1838,59 @@ function structuredTimelineRunActivityHasChildren(sessionId) {
   return ensureTimelineEntries(timelineState).some(
     (entry) => entry.type === "run_activity" && (entry.children?.length ?? 0) > 0,
   );
+}
+
+function isFlattenedThinkingEvent(entry) {
+  if (!entry || entry.type !== "event") return false;
+  const className = String(entry.className || "");
+  if (className.split(/\s+/).includes("thinking")) return true;
+  const text = String(entry.text || "");
+  return /思考中（可展开）|思考完成\s*·/.test(text) && text.length > 24;
+}
+
+function thinkingEntryFromFlattenedEvent(entry) {
+  if (!isFlattenedThinkingEvent(entry)) return null;
+  const text = String(entry.text || "").trim();
+  const match = text.match(
+    /^(.*?(?:思考中（可展开）|思考完成[^\n]*?))([\s\S]*)$/,
+  );
+  const summaryRaw = String(match?.[1] || "思考完成").trim();
+  const content = String(match?.[2] || "").trim();
+  const chars = content.length;
+  const summary = /思考中/.test(summaryRaw)
+    ? summaryRaw.replace(/思考中（可展开）|思考中/, `思考完成 · ${chars} 字`)
+    : summaryRaw;
+  return {
+    type: "thinking",
+    id: entry.id,
+    talentMention: "",
+    summary,
+    content,
+    open: false,
+    createdAt: entry.createdAt || Date.now(),
+  };
+}
+
+function healFlattenedThinkingChildren(children) {
+  if (!Array.isArray(children) || !children.length) return children;
+  let changed = false;
+  const next = children.map((child) => {
+    if (child?.type === "subagent" && Array.isArray(child.children)) {
+      const nested = healFlattenedThinkingChildren(child.children);
+      if (nested !== child.children) {
+        changed = true;
+        return { ...child, children: nested };
+      }
+      return child;
+    }
+    const healed = thinkingEntryFromFlattenedEvent(child);
+    if (healed) {
+      changed = true;
+      return healed;
+    }
+    return child;
+  });
+  return changed ? next : children;
 }
 
 function isSubstantiveRunActivityChild(child) {
@@ -1922,7 +2016,13 @@ function renderStructuredThinkingEntry(entry, container) {
   wrap.dataset.thinkingId = entry.id;
   if (entry.talentMention) wrap.dataset.talentMention = entry.talentMention;
   wrap.open = Boolean(entry.open);
-  const summary = entry.summary || "思考中（可展开）";
+  const chars = String(entry.content || "").trim().length;
+  let summary = entry.summary || "思考中（可展开）";
+  const sid = getActiveEventSessionId();
+  const running = Boolean(sid && state.runningSessions.has(sid));
+  if (!running && /思考中/.test(summary) && chars > 0) {
+    summary = summary.replace(/思考中（可展开）|思考中/, `思考完成 · ${chars} 字`);
+  }
   wrap.innerHTML = `<summary>${escapeHtml(summary)}</summary><pre class="event-pre"></pre>`;
   const pre = wrap.querySelector(".event-pre");
   if (pre && entry.content) pre.textContent = entry.content;
@@ -1939,15 +2039,11 @@ function renderStructuredSubagentEntry(entry, container, sessionId) {
   details.open = entry.open !== false;
   details.dataset.talentMention = talent.mention || "";
   const emoji = talent.emoji || "🧑";
-  const label =
-    entry.label ||
-    `${emoji} ${talent.displayName || talent.mention || "人才"} · ${entry.taskLabel || ""}`;
   details.innerHTML = `
-    <summary class="run-activity-summary">
-      <span class="run-activity-chevron" aria-hidden="true">›</span>
-      <span class="run-activity-label">${escapeHtml(label)}</span>
-      <span class="run-activity-meta">${escapeHtml(entry.meta || "")}</span>
-    </summary>
+    ${buildSubagentSummaryHtml(talent, entry.taskLabel, entry.dispatchWave, {
+      finalized: entry.finalized,
+      meta: entry.meta || "",
+    })}
     <div class="run-activity-body subagent-talent-body"></div>`;
   bindRunActivityPin(details);
   const body = details.querySelector(".subagent-talent-body");
@@ -2375,7 +2471,11 @@ function renderStructuredTimelineChild(entry, container, sessionId) {
   if (entry.type === "step_narrative") {
     return renderStructuredStepNarrativeEntry(entry, container);
   }
-  if (entry.type === "event") return renderStructuredEventLine(entry, container, sessionId);
+  if (entry.type === "event") {
+    const healed = thinkingEntryFromFlattenedEvent(entry);
+    if (healed) return renderStructuredThinkingEntry(healed, container);
+    return renderStructuredEventLine(entry, container, sessionId);
+  }
   if (entry.type === "thinking") return renderStructuredThinkingEntry(entry, container);
   if (entry.type === "subagent") return renderStructuredSubagentEntry(entry, container, sessionId);
   return null;
@@ -2407,6 +2507,7 @@ function renderStructuredTimelineEntry(entry, mount, sessionId) {
 function renderTimelineFromState(sessionId, mount = getTimelineMount()) {
   const timelineState = getNormalTimelineState(sessionId, false);
   if (!mount || !timelineState) return false;
+  sanitizeStructuredTimelineCache(sessionId);
   const entries = ensureTimelineEntries(timelineState);
   if (!entries.length) return false;
   setTimelineRuntimeForSession(sessionId);
@@ -2459,6 +2560,7 @@ function loadSessionRunArtifacts(sessionId) {
   const patches = state.runPatchesBySession.get(sessionId);
   state.runPatches = patches ? new Map(patches) : new Map();
   state.runFinalText = state.runFinalTextBySession.get(sessionId) || "";
+  refreshContextPanelIfOpen();
 }
 
 function timelineHasConclusion(root) {
@@ -2615,6 +2717,7 @@ function initSessionRuns() {
     refreshLiveTimelineIfViewing,
     isViewSwitchCurrent,
     captureOutgoingTimeline,
+    renderNetworkPermissionBanner,
     sessionBelongsToActiveProject,
     rememberSessionCwd,
     sessionCwdMatches,
@@ -3294,9 +3397,8 @@ function renderCodexActivityChip(payload) {
   }
   const previousStats = line?.dataset.codexStats || "";
   if (!line) {
-    // Same rule as beginToolLine: talent-routed chips skip the root tool group.
-    const grouped = !state.pushEventMountOverride;
-    if (grouped && !state.stepToolGroupBody?.isConnected) beginStepToolGroup();
+    // Same rule as beginToolLine: group chips on the current mount (talent fold or stream).
+    beginStepToolGroup();
     const mount = getToolEventMount();
     line = document.createElement("div");
     line.className = "codex-activity-chip";
@@ -3304,7 +3406,7 @@ function renderCodexActivityChip(payload) {
     line.dataset.timelineNodeId = timelineEntryId();
     line.dataset.iconKey = String(payload.icon || "command");
     mount.appendChild(line);
-    if (grouped) bumpStepToolGroupCount();
+    bumpStepToolGroupCount();
   }
   const running = payload.status === "running";
   line.classList.toggle("is-running", running);
@@ -4421,17 +4523,32 @@ function runActivityHasExpandedContent(details) {
 function closeOrphanThinkingBlocks(mount = $("timeline")) {
   if (!mount?.querySelectorAll) return;
   mount.querySelectorAll("details.event.thinking").forEach((block) => {
-    if (block.dataset.userPinned === "1") return;
     const summary = block.querySelector("summary");
-    if (!summary?.textContent?.includes("思考中")) return;
     const pre = block.querySelector(".event-pre");
-    const chars = pre?.textContent?.length ?? 0;
-    // Keep talent prefixes (e.g. "🧑 老周 · "); only flip the in-progress label.
-    // Do not force-collapse — user may have expanded the block.
-    summary.textContent = String(summary.textContent || "").replace(
-      /思考中（可展开）|思考中/,
-      `思考完成 · ${chars} 字`,
-    );
+    const chars = String(pre?.textContent || "").trim().length;
+    if (summary?.textContent?.includes("思考中")) {
+      // Keep talent prefixes (e.g. "🧑 老周 · "); only flip the in-progress label.
+      summary.textContent = String(summary.textContent || "").replace(
+        /思考中（可展开）|思考中/,
+        `思考完成 · ${chars} 字`,
+      );
+    }
+    if (block.dataset.userPinned !== "1") {
+      block.open = false;
+    }
+    const sid = getActiveEventSessionId();
+    if (sid && block.dataset.thinkingId) {
+      recordThinkingEntry(
+        sid,
+        block.dataset.thinkingId,
+        block.dataset.talentMention
+          ? { mention: block.dataset.talentMention }
+          : null,
+        summary?.textContent || "",
+        pre?.textContent || "",
+        block,
+      );
+    }
   });
   if (state.thinkingPre && !state.thinkingPre.isConnected) state.thinkingPre = null;
 }
@@ -4656,6 +4773,8 @@ const SUBAGENT_ROUTED_EVENT_TYPES = new Set([
   "tool_end",
   "text_delta",
   "warning",
+  "runtime_activity",
+  "codex_activity",
 ]);
 
 /** Rebind subagent card bodies after timeline innerHTML restore (stale map → detached nodes). */
@@ -4753,6 +4872,47 @@ function appendSubagentStreamText(talent, delta) {
   if (runActivityBodyShouldAutoScroll()) scheduleRunViewScroll();
 }
 
+function formatSubagentTaskBrief(taskLabel, max = 42) {
+  let text = String(taskLabel || "").trim();
+  if (!text) return "";
+  text = text.replace(/^@[\w.-]+\s+/u, "");
+  text = text.split(/[。.]?\s*团队目标[:：]/)[0] || "";
+  text = text.replace(/。请基于[^。]+继续/g, "");
+  text = text.replace(/^(?:承接上游)[，,]\s*/u, "");
+  text = text.replace(/[。.\s]+$/u, "");
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}…`;
+}
+
+function buildSubagentSummaryHtml(talent, taskLabel, dispatchWave, options = {}) {
+  const emoji = talent?.emoji || "🧑";
+  const name = talent?.displayName || talent?.mention || "人才";
+  const finalized = Boolean(options.finalized);
+  const meta = options.meta || (finalized ? "" : "进行中…");
+  const wave =
+    !finalized && dispatchWave && Number(dispatchWave.total) > 1
+      ? `<span class="subagent-talent-chip">波次 ${escapeHtml(String(dispatchWave.index))}/${escapeHtml(String(dispatchWave.total))}</span>`
+      : "";
+  const handoff =
+    !finalized && dispatchWave?.hasPriorResults
+      ? `<span class="subagent-talent-chip">承接上游</span>`
+      : "";
+  const role = finalized ? "" : formatSubagentTaskBrief(taskLabel);
+  const title = finalized ? `${emoji} ${name} · 完成` : `${emoji} ${name}`;
+  return `
+    <summary class="run-activity-summary subagent-talent-summary">
+      <span class="run-activity-chevron" aria-hidden="true">›</span>
+      <span class="subagent-talent-heading">
+        <span class="subagent-talent-title">
+          <span class="run-activity-label subagent-talent-name">${escapeHtml(title)}</span>
+          ${wave}${handoff}
+        </span>
+        ${role ? `<span class="subagent-talent-role">${escapeHtml(role)}</span>` : ""}
+      </span>
+      <span class="run-activity-meta">${escapeHtml(meta)}</span>
+    </summary>`;
+}
+
 function createSubagentActivityGroup(talent, taskLabel, dispatchWave) {
   if (!talent?.mention) return null;
   const mentionKey = normalizeTalentMention(talent.mention);
@@ -4762,23 +4922,12 @@ function createSubagentActivityGroup(talent, taskLabel, dispatchWave) {
   ensureRunActivity();
   if (!state.runActivityBody) return null;
 
-  const waveHint =
-    dispatchWave && dispatchWave.total > 1
-      ? `波次 ${dispatchWave.index}/${dispatchWave.total}${
-          dispatchWave.hasPriorResults ? " · 承接上游" : ""
-        } · `
-      : "";
   const details = document.createElement("details");
   details.className = "run-activity subagent-talent-activity subagent-talent-active";
   details.open = true;
   details.dataset.talentMention = mentionKey;
-  const emoji = talent.emoji || "🧑";
   details.innerHTML = `
-    <summary class="run-activity-summary">
-      <span class="run-activity-chevron" aria-hidden="true">›</span>
-      <span class="run-activity-label">${escapeHtml(`${emoji} ${talent.displayName} · ${waveHint}${taskLabel}`)}</span>
-      <span class="run-activity-meta">进行中…</span>
-    </summary>
+    ${buildSubagentSummaryHtml(talent, taskLabel, dispatchWave)}
     <div class="run-activity-body subagent-talent-body"></div>
   `;
   bindRunActivityPin(details);
@@ -4794,6 +4943,7 @@ function createSubagentActivityGroup(talent, taskLabel, dispatchWave) {
     recordSubagentShellEntry(sid, talent, taskLabel, dispatchWave);
     syncTimelineCacheForSession(sid);
   }
+  refreshContextPanelIfOpen();
   return entry;
 }
 
@@ -4806,10 +4956,15 @@ function finalizeSubagentActivityGroup(talent, resultText) {
   const { details } = entry;
   const body = getSubagentBodyForTalent(talent.mention) || entry.body;
   details.classList.remove("subagent-talent-active");
+  const emoji = talent.emoji || "🧑";
+  const heading = details.querySelector(".subagent-talent-heading");
   const labelEl = details.querySelector(".run-activity-label");
   const metaEl = details.querySelector(".run-activity-meta");
-  const emoji = talent.emoji || "🧑";
-  if (labelEl) labelEl.textContent = `${emoji} ${talent.displayName} · 完成`;
+  if (heading) {
+    heading.innerHTML = `<span class="subagent-talent-title"><span class="run-activity-label subagent-talent-name">${escapeHtml(`${emoji} ${talent.displayName} · 完成`)}</span></span>`;
+  } else if (labelEl) {
+    labelEl.textContent = `${emoji} ${talent.displayName} · 完成`;
+  }
   if (metaEl) {
     const startedAt = Number(entry.startedAt) || Date.now();
     metaEl.textContent = formatDurationMs(
@@ -4843,6 +4998,7 @@ function finalizeSubagentActivityGroup(talent, resultText) {
     });
     syncTimelineCacheForSession(sid);
   }
+  refreshContextPanelIfOpen();
   if (runActivityBodyShouldAutoScroll()) scheduleRunViewScroll();
 }
 
@@ -4902,6 +5058,7 @@ function finalizeOrphanSubagentFolds(mount = getTimelineMount()) {
         });
       }
     });
+  refreshContextPanelIfOpen();
 }
 
 function trackRunActivityStats(text, cls = "") {
@@ -7362,6 +7519,8 @@ function preferContextRightPanel(options = {}) {
   // Environment-info card is chat-only; never reopen it on resource pages
   // (e.g. closing the terminal dock on 渠道 must not resurrect 环境信息).
   if (state.activeNav !== "chat") return;
+  // New/empty sessions stay a clean landing page — no 环境信息 overlay.
+  if (state.chatEmpty) return;
   const force = Boolean(options.force);
   if (!force && !state.rightContextPinned) return;
   // Don't crowd the chat column while the code/tools dock is open.
@@ -7413,7 +7572,7 @@ function syncContextPanelButton() {
       btn.setAttribute("aria-label", open ? "收起环境信息" : "展开环境信息");
     }
   }
-  for (const id of ["terminalToggleBtn", "browserToggleBtn"]) {
+  for (const id of ["terminalToggleBtn", "browserToggleBtn", "traceToggleBtn"]) {
     const launcher = $(id);
     if (!launcher) continue;
     launcher.classList.toggle("hidden", !isChat);
@@ -7590,26 +7749,36 @@ function bindLeftPanelToggle() {
   });
 }
 
-/** Show the docked right region as code or tools (never the context card). */
+/** Show the docked right region as code, tools, or sub-agents (never the context card). */
 function applyRightMode() {
   const showTools = state.rightOpen && state.rightMode === "tools";
-  const showCode = state.rightOpen && !showTools;
+  const showSubagents = state.rightOpen && state.rightMode === "subagents";
+  const showCode = state.rightOpen && !showTools && !showSubagents;
   $("rightPanel")?.classList.toggle("collapsed", !showCode);
   $("toolsPanel")?.classList.toggle("collapsed", !showTools);
   $("toolsPanel")?.setAttribute("aria-hidden", showTools ? "false" : "true");
+  $("subagentPanel")?.classList.toggle("collapsed", !showSubagents);
+  $("subagentPanel")?.setAttribute("aria-hidden", showSubagents ? "false" : "true");
   // Top-bar launchers highlight when their tab kind is the active tools tab.
   const activeKind = showTools
     ? (window.forgeToolsPanel?.activeKind?.() ?? null)
     : null;
   $("terminalToggleBtn")?.classList.toggle("active", activeKind === "terminal");
   $("browserToggleBtn")?.classList.toggle("active", activeKind === "browser");
+  $("traceToggleBtn")?.classList.toggle("active", activeKind === "trace");
 }
+
+window.openRight = openRight;
+window.getActiveSessionId = () => sessionRuns?.getViewingSessionId?.() ?? null;
+window.forgeTraceRunId = (sessionId) =>
+  sessionId ? state.runIdBySession.get(sessionId) : undefined;
 
 function openRight(open, mode = "code") {
   const wasOpen = state.rightOpen;
   state.rightOpen = open;
   if (open) {
-    state.rightMode = mode === "tools" ? "tools" : "code";
+    state.rightMode =
+      mode === "tools" ? "tools" : mode === "subagents" ? "subagents" : "code";
     // Hide the 环境信息 card while the docked right sidebar is showing.
     if (state.contextOpen) {
       state.contextOpen = false;
@@ -7693,8 +7862,423 @@ function contextIcon(name) {
       '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="4" cy="8" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="12" cy="8" r="1.4"/></svg>',
     chevron:
       '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m5 6 3 3 3-3"/></svg>',
+    back:
+      '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M10 3.5 5.5 8 10 12.5"/></svg>',
   };
   return icons[name] || "";
+}
+
+const SUBAGENT_AVATAR_HUES = [148, 28, 38, 210, 265, 332, 188, 200];
+
+function getContextSessionId() {
+  return (
+    state.viewingTimelineSessionId ||
+    sessionRuns?.getViewingSessionId?.() ||
+    getActiveEventSessionId() ||
+    ""
+  );
+}
+
+function resetContextSubagentView() {
+  state.contextView = "overview";
+  state.contextSubagentMention = "";
+  state.contextSubagentListLimit = 10;
+}
+
+function isRightSubagentPanelOpen() {
+  return state.rightOpen && state.rightMode === "subagents";
+}
+
+function subagentAvatarHue(mention) {
+  const key = normalizeTalentMention(mention);
+  let hash = 0;
+  for (let i = 0; i < key.length; i += 1) {
+    hash = (hash * 33 + key.charCodeAt(i)) >>> 0;
+  }
+  return SUBAGENT_AVATAR_HUES[hash % SUBAGENT_AVATAR_HUES.length];
+}
+
+function subagentAvatarHtml(agent, extraClass = "") {
+  const talent = agent?.talent || {};
+  const mention = agent?.mention || talent.mention || "";
+  const hue = subagentAvatarHue(mention);
+  const cls = `context-subagent-avatar${extraClass ? ` ${extraClass}` : ""}`;
+  const avatar = talent.avatar || "";
+  if (/^data:image\/svg\+xml[;,]/i.test(avatar)) {
+    return `<img class="${escapeHtml(cls)}" src="${escapeHtml(avatar)}" alt="" style="--avatar-hue:${hue}" />`;
+  }
+  const emoji = talent.emoji || "⚙";
+  return `<span class="${escapeHtml(cls)}" style="--avatar-hue:${hue}" aria-hidden="true">${escapeHtml(emoji)}</span>`;
+}
+
+function formatRelativeTimeZh(ts) {
+  const at = Number(ts) || 0;
+  if (!at) return "";
+  const delta = Math.max(0, Date.now() - at);
+  const minutes = Math.floor(delta / 60000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} 天前`;
+  const months = Math.floor(days / 30);
+  return `${months} 个月前`;
+}
+
+function subagentTitle(agent) {
+  return (
+    formatSubagentTaskBrief(agent?.taskLabel, 48) ||
+    agent?.talent?.displayName ||
+    agent?.mention ||
+    "子智能体"
+  );
+}
+
+function subagentDurationLabel(agent) {
+  const meta = String(agent?.meta || "").trim();
+  if (meta && /(?:^|\s)\d/.test(meta) && /[sm时分秒]/.test(meta) && !/进行中/.test(meta)) {
+    return meta.replace(/^用时\s*/, "");
+  }
+  const start = Number(agent?.startedAt || agent?.createdAt) || 0;
+  if (!start) return "";
+  const end = agent?.finalized ? Number(agent?.endedAt) || Date.now() : Date.now();
+  return formatDurationMs(Math.min(Math.max(0, end - start), 3 * 60 * 60 * 1000));
+}
+
+function collectSessionSubagents(sessionId = getContextSessionId()) {
+  const byMention = new Map();
+  const upsert = (partial) => {
+    const mention = normalizeTalentMention(partial.mention || partial.talent?.mention);
+    if (!mention) return;
+    const prev = byMention.get(mention) || {};
+    byMention.set(mention, {
+      ...prev,
+      ...partial,
+      mention,
+      talent: { ...(prev.talent || {}), ...(partial.talent || {}) },
+      children: partial.children || prev.children || [],
+    });
+  };
+
+  const timelineState = sessionId ? getNormalTimelineState(sessionId, false) : null;
+  for (const entry of timelineState ? ensureTimelineEntries(timelineState) : []) {
+    if (entry?.type !== "run_activity") continue;
+    for (const child of entry.children || []) {
+      if (child?.type !== "subagent") continue;
+      const mention = normalizeTalentMention(child.talent?.mention);
+      upsert({
+        mention,
+        talent: child.talent,
+        taskLabel: child.taskLabel,
+        createdAt: child.createdAt,
+        finalized: Boolean(child.finalized),
+        meta: child.meta,
+        children: child.children || [],
+        entryId: child.id,
+      });
+    }
+  }
+
+  // The live DOM map is shared with offscreen event replay. Only the
+  // requested session's structured timeline owns its subagent records.
+
+  return [...byMention.values()].sort((a, b) => {
+    if (Boolean(a.finalized) !== Boolean(b.finalized)) return a.finalized ? 1 : -1;
+    return (Number(b.createdAt || b.startedAt) || 0) - (Number(a.createdAt || a.startedAt) || 0);
+  });
+}
+
+function parseSubagentEventDetail(child, sessionId) {
+  if (child?.forgeDetail) {
+    try {
+      return JSON.parse(child.forgeDetail);
+    } catch {
+      /* ignore malformed detail */
+    }
+  }
+  if (child?.eventDetailId) {
+    return (
+      getEventDetailStore(child.eventDetailSession || sessionId).get(Number(child.eventDetailId)) ||
+      null
+    );
+  }
+  return null;
+}
+
+function collectSubagentFileChanges(agent, sessionId = getContextSessionId()) {
+  const files = new Map();
+  const considerPath = (rawPath, detail) => {
+    // A toolFile can be a read-only lookup. Require this agent's edit evidence.
+    if (!detail?.patch || detail.patch.applied === false) return;
+    const path = normalizeWorkspaceRelPath(getActiveProject()?.cwd, rawPath) || rawPath;
+    if (!path) return;
+    const patch = state.runPatches.get(path);
+    let stats = null;
+    if (Number.isFinite(patch?.adds) && Number.isFinite(patch?.dels)) {
+      stats = { adds: Number(patch.adds) || 0, dels: Number(patch.dels) || 0 };
+    } else if (patch?.patch?.unifiedDiff) {
+      stats = diffStatsFromUnifiedDiff(patch.patch.unifiedDiff);
+    } else if (detail?.patch?.unifiedDiff) {
+      stats = diffStatsFromUnifiedDiff(detail.patch.unifiedDiff);
+    }
+    const prev = files.get(path);
+    files.set(path, {
+      path,
+      adds: stats?.adds ?? prev?.adds ?? 0,
+      dels: stats?.dels ?? prev?.dels ?? 0,
+    });
+  };
+
+  const walk = (list) => {
+    for (const child of list || []) {
+      const detail = parseSubagentEventDetail(child, sessionId);
+      const path = detail?.filePath || detail?.patch?.path || detail?.toolFile;
+      if (path) considerPath(path, detail);
+      if (child.children) walk(child.children);
+    }
+  };
+  walk(agent?.children);
+
+  // Session-owned structured children are authoritative; the shared DOM map
+  // may currently belong to a background session using the same talent.
+  return [...files.values()];
+}
+
+function collectSubagentActivityLines(agent, limit = 80) {
+  const lines = [];
+  const push = (kind, text) => {
+    const cleaned = String(text || "").replace(/\s+/g, " ").trim();
+    if (!cleaned) return;
+    lines.push({
+      kind: String(kind || "event"),
+      text: cleaned.length > 180 ? `${cleaned.slice(0, 180)}…` : cleaned,
+    });
+  };
+  const pushThinking = (summary, content) => {
+    const text = String(summary || "思考").replace(/\s+/g, " ").trim() || "思考";
+    lines.push({
+      kind: "thinking",
+      text,
+      content: String(content || "").trim(),
+    });
+  };
+  const walk = (list) => {
+    for (const child of list || []) {
+      if (child?.type === "thinking") {
+        pushThinking(child.summary || "思考", child.content);
+        continue;
+      }
+      if (child?.type === "event") {
+        const healed = thinkingEntryFromFlattenedEvent(child);
+        if (healed) {
+          pushThinking(healed.summary, healed.content);
+        } else {
+          push(child.className || "event", child.text);
+        }
+        continue;
+      }
+      if (child?.text || child?.content || child?.summary) {
+        push(child.type || "event", child.text || child.content || child.summary);
+      }
+      if (child?.children) walk(child.children);
+    }
+  };
+  walk(agent?.children);
+  return lines.length > limit ? lines.slice(-limit) : lines;
+}
+
+function revealSubagentInTimeline(mention) {
+  const key = normalizeTalentMention(mention);
+  if (!key) return;
+  rebuildSubagentActivityMapFromDom();
+  const live = getSubagentEntry(key);
+  const details =
+    live?.details ||
+    document.querySelector(
+      `details.subagent-talent-activity[data-talent-mention="${cssEscape(key)}"]`,
+    );
+  if (!details) return;
+  details.open = true;
+  details.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+function renderContextSubagentSummary() {
+  const section = $("contextSubagentSection");
+  const summary = $("contextSubagentSummary");
+  if (!section || !summary) return;
+  const agents = collectSessionSubagents();
+  section.classList.toggle("hidden", agents.length === 0);
+  if (!agents.length) {
+    summary.innerHTML = "";
+    return;
+  }
+  const openCount = agents.filter((agent) => !agent.finalized).length;
+  const doneCount = agents.length - openCount;
+  const stack = agents.slice(0, 4);
+  const parts = [];
+  if (openCount) parts.push(`${openCount} 进行中`);
+  if (doneCount) parts.push(`${doneCount} 完成`);
+  summary.innerHTML = `
+    <span class="context-subagent-avatars">${stack
+      .map(
+        (agent) =>
+          `<button type="button" class="context-subagent-avatar-btn" data-context-action="open-subagent" data-subagent-mention="${escapeHtml(agent.mention)}" aria-label="${escapeHtml(subagentTitle(agent))}">${subagentAvatarHtml(agent)}</button>`,
+      )
+      .join("")}</span>
+    <button type="button" class="context-subagent-summary-hit" data-context-action="open-subagents" aria-label="在左侧栏查看全部子智能体">
+      <span class="context-subagent-summary-label">${escapeHtml(parts.join(" · ") || `${agents.length} 个`)}</span>
+    </button>
+  `;
+}
+
+function renderContextSubagentRows(agents) {
+  return agents
+    .map((agent) => {
+      const mention = escapeHtml(agent.mention);
+      return `<button type="button" class="context-subagent-row" data-context-action="open-subagent" data-subagent-mention="${mention}">
+        ${subagentAvatarHtml(agent)}
+        <span class="context-subagent-row-title">${escapeHtml(subagentTitle(agent))}</span>
+        <span class="context-subagent-row-time">${escapeHtml(formatRelativeTimeZh(agent.createdAt || agent.startedAt))}</span>
+      </button>`;
+    })
+    .join("");
+}
+
+function renderContextSubagentList() {
+  const host = $("subagentPanelBody");
+  if (!host) return;
+  const agents = collectSessionSubagents();
+  const open = agents.filter((agent) => !agent.finalized);
+  const done = agents.filter((agent) => agent.finalized);
+  const limit = Math.max(10, Number(state.contextSubagentListLimit) || 10);
+  const shown = done.slice(0, limit);
+  const hidden = Math.max(0, done.length - shown.length);
+  host.innerHTML = `
+    <div class="context-subagent-group">
+      <div class="context-subagent-group-head">已开启 · ${open.length}</div>
+      ${
+        open.length
+          ? renderContextSubagentRows(open)
+          : `<p class="context-empty">没有已开启的子代理</p>`
+      }
+    </div>
+    <div class="context-subagent-group">
+      <div class="context-subagent-group-head">完成 · ${done.length}</div>
+      ${done.length ? renderContextSubagentRows(shown) : `<p class="context-empty">还没有已完成的子智能体</p>`}
+      ${
+        hidden
+          ? `<button type="button" class="context-subagent-more" data-context-action="subagents-more">再显示 ${hidden} 个</button>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+function renderContextSubagentDetail() {
+  const host = $("subagentPanelBody");
+  if (!host) return;
+  const agents = collectSessionSubagents();
+  const mention = normalizeTalentMention(state.contextSubagentMention);
+  const agent = agents.find((item) => item.mention === mention);
+  if (!agent) {
+    state.contextView = "subagents";
+    renderContextSubagentList();
+    return;
+  }
+  const files = collectSubagentFileChanges(agent);
+  const activity = collectSubagentActivityLines(agent);
+  const duration = subagentDurationLabel(agent);
+  const fileAdds = files.reduce((sum, file) => sum + (Number(file.adds) || 0), 0);
+  const fileDels = files.reduce((sum, file) => sum + (Number(file.dels) || 0), 0);
+  const task = String(agent.taskLabel || "").trim();
+  host.innerHTML = `
+    <div class="context-drill-head">
+      <button type="button" class="context-drill-back" data-context-action="subagent-detail-back" aria-label="返回子智能体列表">${contextIcon("back")}</button>
+      ${subagentAvatarHtml(agent, "is-lg")}
+      <h4 title="${escapeHtml(subagentTitle(agent))}">${escapeHtml(subagentTitle(agent))}</h4>
+    </div>
+    <div class="context-subagent-status">
+      <span class="context-subagent-status-label">${agent.finalized ? "完成" : "进行中"}</span>
+      ${duration ? `<span class="context-subagent-status-time">用时 ${escapeHtml(duration)}</span>` : ""}
+    </div>
+    ${
+      task
+        ? `<section class="context-subagent-block">
+            <h5>任务详情</h5>
+            <p>${escapeHtml(task)}</p>
+          </section>`
+        : ""
+    }
+    <section class="context-subagent-block">
+      <h5>会话</h5>
+      ${
+        activity.length
+          ? `<ul class="context-subagent-activity">${activity
+              .map((line) => {
+                if (line.kind === "thinking") {
+                  const body = line.content
+                    ? `<pre class="event-pre">${escapeHtml(line.content)}</pre>`
+                    : `<p class="context-empty">暂无思考内容</p>`;
+                  return `<li class="is-thinking"><details class="event thinking context-subagent-thinking"><summary>${escapeHtml(line.text)}</summary>${body}</details></li>`;
+                }
+                return `<li class="is-${escapeHtml(String(line.kind).split(/\s+/)[0] || "event")}">${escapeHtml(line.text)}</li>`;
+              })
+              .join("")}</ul>`
+          : `<p class="context-empty">这个子智能体还没有可展示的会话。</p>`
+      }
+    </section>
+    ${
+      files.length
+        ? `<section class="context-subagent-block">
+            <h5>修改的文件</h5>
+            <div class="context-subagent-files-card">
+              <div class="context-subagent-files-summary">
+                <span>已编辑 ${files.length} 个文件</span>
+                <span><span class="context-stat-add">+${fileAdds}</span><span class="context-stat-del">-${fileDels}</span></span>
+              </div>
+              ${files
+                .map((file) => {
+                  const name = basename(file.path);
+                  return `<button type="button" class="context-source-btn" data-context-source="${escapeHtml(file.path)}" data-context-kind="file" title="${escapeHtml(file.path)}">
+                    <span class="context-source-icon">${contextIcon("file")}</span>
+                    <span class="context-source-name">${escapeHtml(name)}</span>
+                    <span class="context-subagent-file-stats"><span class="context-stat-add">+${file.adds}</span><span class="context-stat-del">-${file.dels}</span></span>
+                  </button>`;
+                })
+                .join("")}
+            </div>
+          </section>`
+        : ""
+    }
+  `;
+}
+
+function renderRightSubagentPane() {
+  if (state.contextView === "detail") {
+    renderContextSubagentDetail();
+  } else {
+    state.contextView = "subagents";
+    renderContextSubagentList();
+  }
+}
+
+function openContextSubagentList() {
+  state.contextView = "subagents";
+  state.contextSubagentMention = "";
+  state.contextSubagentListLimit = 10;
+  openRight(true, "subagents");
+  renderRightSubagentPane();
+}
+
+function openContextSubagentDetail(mention) {
+  const key = normalizeTalentMention(mention);
+  if (!key) return;
+  state.contextView = "detail";
+  state.contextSubagentMention = key;
+  openRight(true, "subagents");
+  renderRightSubagentPane();
+  revealSubagentInTimeline(key);
 }
 
 function renderContextPanel() {
@@ -7761,14 +8345,20 @@ function renderContextPanel() {
       : "";
     sources.innerHTML = rows + viewAll;
   }
+
+  renderContextSubagentSummary();
+  if (isRightSubagentPanelOpen()) renderRightSubagentPane();
 }
 
 function refreshContextPanelIfOpen() {
+  // Offscreen replay temporarily loads another session's patches and DOM refs.
+  if (state.offscreenTimelineEl) return;
   if (state.contextOpen) renderContextPanel();
+  else if (isRightSubagentPanelOpen()) renderRightSubagentPane();
 }
 
 function bindContextPanel() {
-  const onEnvAction = (action) => {
+  const onEnvAction = (action, actionBtn) => {
     const active = getActiveProject();
     if (action === "reveal-project" && active?.cwd) {
       void requireBridge().revealPath?.(active.cwd);
@@ -7791,13 +8381,21 @@ function bindContextPanel() {
     }
     if (action === "env-more" || action === "sources-more") {
       $("composerAddBtn")?.click();
+      return;
+    }
+    if (action === "open-subagents") {
+      openContextSubagentList();
+      return;
+    }
+    if (action === "open-subagent") {
+      openContextSubagentDetail(actionBtn?.getAttribute("data-subagent-mention"));
     }
   };
   $("contextPanel")?.addEventListener("click", (e) => {
     const actionBtn = e.target.closest("[data-context-action]");
     if (actionBtn && $("contextPanel").contains(actionBtn)) {
       e.preventDefault();
-      onEnvAction(actionBtn.getAttribute("data-context-action"));
+      onEnvAction(actionBtn.getAttribute("data-context-action"), actionBtn);
       return;
     }
     const src = e.target.closest("[data-context-source]");
@@ -7813,12 +8411,42 @@ function bindContextPanel() {
   });
 }
 
+function bindRightSubagentPane() {
+  $("subagentCloseBtn")?.addEventListener("click", () => dismissRightPanel());
+  $("subagentPanel")?.addEventListener("click", (e) => {
+    const actionBtn = e.target.closest("[data-context-action]");
+    if (actionBtn && $("subagentPanel").contains(actionBtn)) {
+      e.preventDefault();
+      const action = actionBtn.getAttribute("data-context-action");
+      if (action === "subagent-detail-back") {
+        state.contextView = "subagents";
+        state.contextSubagentMention = "";
+        renderRightSubagentPane();
+        return;
+      }
+      if (action === "subagents-more") {
+        state.contextSubagentListLimit = (Number(state.contextSubagentListLimit) || 10) + 10;
+        renderRightSubagentPane();
+        return;
+      }
+      if (action === "open-subagent") {
+        openContextSubagentDetail(actionBtn.getAttribute("data-subagent-mention"));
+        return;
+      }
+    }
+    const src = e.target.closest("[data-context-source]");
+    if (!src || !$("subagentPanel").contains(src)) return;
+    const path = src.getAttribute("data-context-source");
+    if (path) void openModifiedFile(path);
+  });
+}
+
 /** True when the event target is inside the right code panel or its chrome. */
 function isRightCodePanelChrome(target) {
   if (!(target instanceof Element)) return false;
   return Boolean(
     target.closest(
-      "#rightPanel, #contextPanel, #resizeHandleRight, #toggleRightBtn, #toggleWorkspaceExplorerBtn",
+      "#rightPanel, #subagentPanel, #contextPanel, #resizeHandleRight, #toggleRightBtn, #toggleWorkspaceExplorerBtn",
     ),
   );
 }
@@ -8664,6 +9292,19 @@ function showChatEmpty(show) {
   if (state.activeNav !== "chat") return;
   $("chatEmpty").classList.toggle("hidden", !show);
   $("timeline").classList.toggle("hidden", show);
+  if (show) {
+    resetContextSubagentView();
+    if (isRightSubagentPanelOpen()) {
+      openRight(false);
+    }
+    if (state.contextOpen) {
+      state.contextOpen = false;
+      applyContextPanel();
+      applyPanelWidths();
+    }
+  } else {
+    preferContextRightPanel();
+  }
 }
 
 function renderComposerProjectSelect() {
@@ -8994,7 +9635,6 @@ function startNewChat(opts = {}) {
   fileMentionApi?.close?.();
   sessionRuns?.syncComposerRunChrome();
   setNav("chat");
-  preferContextRightPanel({ force: true });
   scheduleAcpPrewarm();
 }
 
@@ -10004,7 +10644,16 @@ function sanitizeStructuredTimelineCache(sessionId) {
   if (!timelineState) return;
   const entries = ensureTimelineEntries(timelineState);
   const deduped = dedupeConsecutiveStructuredPrompts(entries);
-  if (deduped.length !== entries.length) {
+  let changed = deduped.length !== entries.length;
+  for (const entry of deduped) {
+    if (entry?.type !== "run_activity" || !Array.isArray(entry.children)) continue;
+    const healed = healFlattenedThinkingChildren(entry.children);
+    if (healed !== entry.children) {
+      entry.children = healed;
+      changed = true;
+    }
+  }
+  if (changed) {
     timelineState.entries = deduped;
     touchTimelineState(sessionId);
   }
@@ -10473,12 +11122,11 @@ function beginToolLine(name, args, callId, talentOverride) {
   // Talent-routed events mount straight into the talent fold; creating or
   // counting the root "工具操作" group there would leave an empty group with a
   // phantom count at the top level.
-  const grouped = !state.pushEventMountOverride;
-  if (grouped && !state.stepToolGroupBody?.isConnected) beginStepToolGroup();
+  beginStepToolGroup();
   const mount = getToolEventMount();
   trackRunActivityStats(toolLineText(name, args, false, talentOverride), "tool-event is-running");
   const line = pushEventIn(mount, toolLineText(name, args, false, talentOverride), "tool-event is-running", detail);
-  if (grouped) bumpStepToolGroupCount();
+  bumpStepToolGroupCount();
   const liveLabel = toolLineText(name, args, false, talentOverride).replace(/^⏺\s*/, "");
   const key = toolLineKey(name, callId);
   if (isFileEditRuntimeTool(name)) {
@@ -10582,15 +11230,14 @@ function completeToolLine(name, result, callId) {
     }
   }
   // Start line lost (view switch mid-tool) — emit a single completed line.
-  const grouped = !state.pushEventMountOverride;
-  if (grouped && !state.stepToolGroupBody?.isConnected) beginStepToolGroup();
+  beginStepToolGroup();
   pushEventIn(
     getToolEventMount(),
     toolLineText(name, {}, true),
     "tool-event is-done",
     buildToolEventDetail(name, {}, result),
   );
-  if (grouped) bumpStepToolGroupCount();
+  bumpStepToolGroupCount();
   maybeCollapseStepToolGroup();
 }
 
@@ -10920,12 +11567,12 @@ function updateStepToolGroupSummary(details = state.stepToolGroupEl, count = sta
 }
 
 function beginStepToolGroup() {
-  if (state.stepToolGroupBody?.isConnected) return;
-  ensureRunActivity();
-  const body = state.runActivityBody;
-  if (!body) return;
+  const mount = state.pushEventMountOverride || (ensureRunActivity(), state.runActivityBody);
+  if (!mount) return;
+  if (state.stepToolGroupEl?.isConnected && mount.contains(state.stepToolGroupEl)) return;
+  if (state.stepToolGroupEl?.isConnected) endStepToolGroup();
   const details = createStepToolGroupElement(false);
-  body.appendChild(details);
+  mount.appendChild(details);
   state.stepToolGroupEl = details;
   state.stepToolGroupBody = details.querySelector(".step-tool-group-body");
   state.stepToolGroupCount = 0;
@@ -10946,7 +11593,16 @@ function maybeCollapseStepToolGroup() {
 }
 
 function getToolEventMount() {
-  if (state.pushEventMountOverride) return state.pushEventMountOverride;
+  const override = state.pushEventMountOverride;
+  if (override) {
+    if (
+      state.stepToolGroupBody?.isConnected &&
+      override.contains(state.stepToolGroupBody)
+    ) {
+      return state.stepToolGroupBody;
+    }
+    return override;
+  }
   if (state.stepToolGroupBody?.isConnected) return state.stepToolGroupBody;
   ensureRunActivity();
   if (state.runActivityBody) {
@@ -18018,6 +18674,7 @@ function bindActions() {
   });
   $("collapseCodePanelBtn")?.addEventListener("click", () => dismissRightPanel());
   bindContextPanel();
+  bindRightSubagentPane();
   $("terminalToggleBtn")?.addEventListener("click", () => {
     if (state.activeNav !== "chat") return;
     const isActive =
@@ -18043,6 +18700,22 @@ function bindActions() {
     }
     openRight(true, "tools");
     window.forgeBrowserPanel?.ensureStarted?.();
+  });
+  $("traceToggleBtn")?.addEventListener("click", () => {
+    if (state.activeNav !== "chat") return;
+    const isActive =
+      state.rightOpen &&
+      state.rightMode === "tools" &&
+      window.forgeToolsPanel?.activeKind?.() === "trace";
+    if (isActive) {
+      dismissRightPanel();
+      return;
+    }
+    const sessionId = sessionRuns.getViewingSessionId();
+    window.forgeTracePanel?.open?.({
+      runId: sessionId ? state.runIdBySession.get(sessionId) : undefined,
+      sessionId,
+    });
   });
   $("toolsCloseBtn")?.addEventListener("click", () => dismissRightPanel());
   // Keep launcher highlights in sync with tab switches, and close the right
@@ -18808,6 +19481,7 @@ function handleForgeAgentEvent(ev) {
     }
 
     if (ev.type === "done" && ev.sessionId) {
+      if (ev.runId) state.runIdBySession.set(ev.sessionId, ev.runId);
       sessionRuns.markSessionRunning(ev.sessionId, false);
       if (!sessionRuns.isViewingSession(ev.sessionId)) {
         state.unreadDoneSessions.add(ev.sessionId);
@@ -18840,6 +19514,7 @@ function handleForgeAgentEvent(ev) {
 
     if (ev.type === "session_start") {
       rememberSessionCwd(ev.sessionId, ev.cwd);
+      if (ev.runId) state.runIdBySession.set(ev.sessionId, ev.runId);
       state.planCardTitle = "任务清单";
       state.dispatchPlanLocked = false;
       state.runConclusionBySession.delete(ev.sessionId);
@@ -18954,6 +19629,7 @@ function handleLiveAgentEvent(ev, opts = {}) {
 
 function handleLiveAgentEventBody(ev, opts = {}) {
     if (ev.type === "session_start") return;
+    if (ev.type === "llm_start" || ev.type === "llm_end") return;
     if (ev.type === "hooks_applied") {
       finishStreamTextSegment();
       pushEvent(
@@ -19134,14 +19810,11 @@ function handleLiveAgentEventBody(ev, opts = {}) {
         const taskBody = taskText.includes(": ")
           ? taskText.slice(taskText.indexOf(": ") + 2)
           : taskText;
-        const group = createSubagentActivityGroup(
+        createSubagentActivityGroup(
           t,
-          truncateToolSummary(taskBody, 80),
+          taskBody,
           ev.dispatchWave,
         );
-        if (group?.body) {
-          pushEventIn(group.body, `▶ ${t.displayName} 开始任务`, "status");
-        }
       } else {
         pushEvent(`🤖 子代理 · ${truncateToolSummary(ev.task || "", 80)}`, "skill-hit");
       }
@@ -19381,7 +20054,6 @@ async function bootstrap() {
   scheduleAcpPrewarm();
 
   startNewChat();
-  preferContextRightPanel({ force: true });
 
   void reloadConfigAndSessions().catch((e) => {
     showBootstrapBanner(`后台加载配置/会话失败: ${String(e)}`);

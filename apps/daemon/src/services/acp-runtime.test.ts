@@ -27,4 +27,26 @@ describe("ACP runtime updates", () => {
       args: { file_path: "src/app.ts" },
     });
   });
+
+  it("maps ACP usage_update onto context_usage", () => {
+    const events: AgentEvent[] = [];
+    mapAcpUpdate(
+      {
+        sessionUpdate: "usage_update",
+        used: 53000,
+        size: 200000,
+        cost: { amount: 0.045, currency: "USD" },
+      },
+      events.push.bind(events),
+      "session-1",
+      { value: "" },
+    );
+    expect(events[0]).toEqual({
+      type: "context_usage",
+      sessionId: "session-1",
+      estimatedTokens: 53000,
+      maxContextTokens: 200000,
+      costMinor: 45_000,
+    });
+  });
 });

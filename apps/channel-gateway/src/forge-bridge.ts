@@ -1,14 +1,27 @@
-import { connectDaemon } from "@forge/daemon-client";
-import type { AgentEvent, RunRequest, RunResult } from "@forge/protocol";
+import { connectDaemon, type DaemonClient } from "@forge/daemon-client";
+import type { AdapterDaemonBridge, AdapterDaemonMethod } from "@forge/channel-core";
+import type {
+  AgentEvent,
+  RpcMethod,
+  RpcParams,
+  RpcResult,
+  RunRequest,
+  RunResult,
+} from "@forge/protocol";
 import { DAEMON_METHODS } from "@forge/protocol";
 
-export class ForgeBridge {
-  private client: Awaited<ReturnType<typeof connectDaemon>> | null = null;
+export class ForgeBridge implements AdapterDaemonBridge {
+  private client: DaemonClient | null = null;
 
   constructor(private readonly socketPath: string) {}
 
   isConnected(): boolean {
     return this.client != null;
+  }
+
+  get daemon(): DaemonClient {
+    if (!this.client) throw new Error("forge daemon not connected");
+    return this.client;
   }
 
   async connect(): Promise<void> {
@@ -27,14 +40,28 @@ export class ForgeBridge {
     )) as RunResult;
   }
 
+  async request<M extends RpcMethod>(
+    method: M,
+    params?: RpcParams<M>,
+    onEvent?: (event: unknown) => void,
+  ): Promise<RpcResult<M>>;
   async request(
-    method: string,
+    method: AdapterDaemonMethod,
+    params?: unknown,
+    onEvent?: (event: unknown) => void,
+  ): Promise<unknown>;
+  async request(
+    method: AdapterDaemonMethod,
     params?: unknown,
     onEvent?: (event: unknown) => void,
   ): Promise<unknown> {
     await this.connect();
-    if (!this.client) throw new Error("forge daemon not connected");
-    return this.client.request(method, params, onEvent);
+    const client = this.client!;
+    const eventHandler = onEvent as ((event: AgentEvent) => void) | undefined;
+    if (eventHandler) {
+      return client.request(method as RpcMethod, params as RpcParams<RpcMethod>, eventHandler);
+    }
+    return client.request(method as RpcMethod, params as RpcParams<RpcMethod>);
   }
 
   close(): void {

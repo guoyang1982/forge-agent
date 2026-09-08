@@ -30,6 +30,8 @@ export function openNonMigratingDatabase(
   try {
     db.pragma("journal_mode = WAL");
     db.pragma(`busy_timeout = ${busyTimeoutMs}`);
+    db.pragma("foreign_keys = ON");
+    assertForeignKeysEnabled(db);
     return db;
   } catch (error) {
     db.close();
@@ -80,5 +82,12 @@ function resolveRequiredPath(input: string, label: string): string {
 function assertBusyTimeout(value: number): void {
   if (!Number.isInteger(value) || value < 0) {
     throw new Error("busyTimeoutMs must be a non-negative integer");
+  }
+}
+
+export function assertForeignKeysEnabled(db: Database.Database): void {
+  const enabled = db.pragma("foreign_keys", { simple: true });
+  if (enabled !== 1) {
+    throw new Error("foreign_keys must be enabled on every database connection");
   }
 }

@@ -6,6 +6,7 @@ import {
   rpcFault,
   V2_RPC_METHODS,
   type CapabilityManifest,
+  type RpcParams,
   type RpcResult,
   type SystemStatusResult,
 } from "./rpc.js";
@@ -62,6 +63,49 @@ describe("v2 RPC request envelopes", () => {
       }),
     ).toBe(true);
     expectTypeOf<RpcResult<"system.status">>().toEqualTypeOf<SystemStatusResult>();
+  });
+
+  it("accepts run.create as a typed v2 request", () => {
+    expect(V2_RPC_METHODS).toContain("run.create");
+    expect(
+      isRpcRequestEnvelope({
+        jsonrpc: "2.0",
+        id: "run-1",
+        protocolVersion: 2,
+        requestId: "request-run-1",
+        method: "run.create",
+        params: {
+          id: "run-1",
+          requestedBy: { kind: "human", id: "user-1" },
+          actingSubject: { kind: "agent_profile", id: "forge-default" },
+          objective: "fix it",
+          correlationId: "corr-1",
+          policyContext: {},
+          steps: [],
+        },
+      }),
+    ).toBe(true);
+    expectTypeOf<RpcResult<"run.create">>().toEqualTypeOf<{
+      runId: string;
+      state: "queued" | "running" | "waiting" | "succeeded" | "failed" | "cancelled";
+    }>();
+  });
+
+  it("types published AgentProfile runtime status and compression policy", () => {
+    const params: RpcParams<"agentProfiles.publish"> = {
+      name: "runtime-policy",
+      modelPolicy: {
+        model: "profile-model",
+        dynamicStatus: { modelHeartbeatIntervalMs: 25 },
+        contextCompression: {
+          triggerTokenEstimate: 1_000,
+          tokenBudget: 500,
+        },
+      },
+    };
+
+    expect(params.modelPolicy?.dynamicStatus?.modelHeartbeatIntervalMs).toBe(25);
+    expect(params.modelPolicy?.contextCompression?.tokenBudget).toBe(500);
   });
 });
 

@@ -129,6 +129,7 @@ export function buildSystemPrompt(parts: {
   /** User turn includes image_url parts — model can see attached images. */
   visionImagesInTurn?: boolean;
   documentFilesInTurn?: boolean;
+  dynamicStatusBlock?: string;
 }): string {
   const writeRules =
     parts.fileWriteTools === "mcp"
@@ -184,5 +185,5 @@ ${parts.hookContextBlock ? `## Hook context\n${parts.hookContextBlock}\n` : ""}
 ${parts.skillCatalogBlock ? `## Available skills\n${parts.skillCatalogBlock}\n` : ""}
 ${parts.skillBlock ? `## Active skill playbook\n${parts.skillBlock}\n` : ""}
 ${parts.agentsMd ? `## Project rules\n${parts.agentsMd}\n` : ""}
-${parts.extraFiles ? `## Context\n${parts.extraFiles}\n` : ""}`;
+${parts.extraFiles ? `## Context\n${parts.extraFiles}\n` : ""}${parts.dynamicStatusBlock ? `\n${parts.dynamicStatusBlock}\n` : ""}`;
 }

@@ -121,7 +121,7 @@ describe("DaemonHost system module", () => {
     try {
       const capabilities = await client.request("system.capabilities", {});
       expect(new Set(capabilities.methods)).toEqual(
-        new Set(["system.ping", "system.capabilities", "system.status"]),
+        new Set(["ping", "system.ping", "system.capabilities", "system.status"]),
       );
       expect(capabilities).toMatchObject({
         protocolVersion: 2,

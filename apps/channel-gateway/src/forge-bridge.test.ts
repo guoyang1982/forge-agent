@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { DAEMON_METHODS } from "@forge/protocol";
 import { DaemonServer } from "@forge/bus";
 import { ForgeBridge } from "./forge-bridge.js";
 
@@ -12,25 +13,8 @@ afterEach(() => {
 
 describe("ForgeBridge", () => {
   it("keeps concurrent run events attached to the originating run", async () => {
-    const socketPath =
-      process.platform === "win32"
-        ? `\\\\.\\pipe\\forge-gateway-${randomUUID()}`
-        : join("/private/tmp", `forge-gateway-${randomUUID()}.sock`);
     const completionOrder: string[] = [];
-    const server = new DaemonServer(socketPath, async (_method, params, emit) => {
-      const request = params as { message: string };
-      const delay = request.message === "first" ? 20 : 1;
-      emit({ type: "warning", message: `${request.message}:start` });
-      await new Promise((resolve) => setTimeout(resolve, delay));
-      emit({ type: "warning", message: `${request.message}:done` });
-      completionOrder.push(request.message);
-      return {
-        sessionId: `session-${request.message}`,
-        finalText: request.message,
-      };
-    });
-    servers.push(server);
-    await server.start();
+    const { socketPath } = await startV2WorkbenchServer(completionOrder);
     const bridge = new ForgeBridge(socketPath);
     const firstEvents: string[] = [];
     const secondEvents: string[] = [];
@@ -60,3 +44,31 @@ describe("ForgeBridge", () => {
     }
   });
 });
+
+async function startV2WorkbenchServer(completionOrder: string[]): Promise<{
+  socketPath: string;
+}> {
+  const socketPath =
+    process.platform === "win32"
+      ? `\\\\.\\pipe\\forge-gateway-${randomUUID()}`
+      : join("/private/tmp", `forge-gateway-${randomUUID()}.sock`);
+  const server = new DaemonServer(socketPath, async (method, params, emit) => {
+    if (method !== DAEMON_METHODS.RUN) {
+      throw new Error(`unsupported mock method: ${method}`);
+    }
+    const request = params as { message: string };
+    const delay = request.message === "first" ? 20 : 1;
+    emit({ type: "warning", message: `${request.message}:start` });
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    emit({ type: "warning", message: `${request.message}:done` });
+    completionOrder.push(request.message);
+    return {
+      sessionId: `session-${request.message}`,
+      finalText: request.message,
+    };
+  });
+
+  await server.start();
+  servers.push(server);
+  return { socketPath };
+}

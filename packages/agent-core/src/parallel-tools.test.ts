@@ -2,12 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 
 // Mock the LLM so we can script tool-call batches deterministically.
 const chatMock = vi.fn();
-vi.mock("@forge/llm", () => ({
-  LlmClient: class {
-    chat = chatMock;
-  },
-  LlmError: class extends Error {},
-}));
+vi.mock("@forge/llm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@forge/llm")>();
+  return {
+    ...actual,
+    LlmClient: class {
+      chat = chatMock;
+    },
+  };
+});
 
 const { runReActLoop } = await import("./loop.js");
 

@@ -7,7 +7,10 @@
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
   "scripts": { "build": "tsc", "test": "vitest run" },
   "dependencies": {
-    "@forge/protocol": "workspace:*"
+    "@forge/asset-registry": "workspace:*",
+    "@forge/execution": "workspace:*",
+    "@forge/protocol": "workspace:*",
+    "@forge/store": "workspace:*"
   },
   "devDependencies": {
     "vitest": "^3.0.9"

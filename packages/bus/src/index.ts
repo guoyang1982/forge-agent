@@ -3,19 +3,37 @@ import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import type {
   AgentEvent,
   AgentEventNotificationParams,
+  EventEnvelope,
   JsonRpcId,
   JsonRpcNotification,
   JsonRpcRequest,
   JsonRpcResponse,
   RpcFault,
 } from "@forge/protocol";
-import { AGENT_EVENT_METHOD, isRpcFault, rpcFault } from "@forge/protocol";
+import {
+  AGENT_EVENT_METHOD,
+  CORE_EVENT_METHOD,
+  isRpcFault,
+  rpcFault,
+} from "@forge/protocol";
 
 export { connectDaemon, type DaemonClient } from "@forge/daemon-client";
+export { CORE_EVENT_METHOD } from "@forge/protocol";
 
 export interface RpcRequestContext {
   requestId: string;
   correlationId: string;
+}
+
+export interface CoreEventBroadcastFailure {
+  event: EventEnvelope;
+  error: Error;
+}
+
+export interface CoreEventBroadcastResult {
+  attempted: number;
+  delivered: number;
+  failed: number;
 }
 
 export type RpcHandler = (
@@ -39,9 +57,21 @@ function serializeAgentEvent(requestId: JsonRpcId, event: AgentEvent): string {
   return JSON.stringify(note) + "\n";
 }
 
+export function serializeCoreEvent(event: EventEnvelope): string {
+  const note: JsonRpcNotification = {
+    jsonrpc: "2.0",
+    method: CORE_EVENT_METHOD,
+    params: event,
+  };
+  return JSON.stringify(note) + "\n";
+}
+
 export class DaemonServer {
   private server: Server | null = null;
   private readonly sockets = new Set<Socket>();
+  private readonly broadcastFailureListeners = new Set<
+    (failure: CoreEventBroadcastFailure) => void
+  >();
 
   constructor(
     private socketPath: string,
@@ -68,6 +98,43 @@ export class DaemonServer {
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
     unlinkSyncSafe(this.socketPath);
+  }
+
+  onCoreEventBroadcastFailure(
+    listener: (failure: CoreEventBroadcastFailure) => void,
+  ): () => void {
+    this.broadcastFailureListeners.add(listener);
+    return () => this.broadcastFailureListeners.delete(listener);
+  }
+
+  broadcastCoreEvent(event: EventEnvelope): CoreEventBroadcastResult {
+    const payload = serializeCoreEvent(event);
+    const result: CoreEventBroadcastResult = { attempted: 0, delivered: 0, failed: 0 };
+    for (const socket of this.sockets) {
+      result.attempted += 1;
+      if (socket.destroyed) {
+        result.failed += 1;
+        this.reportBroadcastFailure(event, new Error("CoreEvent socket is destroyed"));
+        continue;
+      }
+      try {
+        socket.write(payload, (error) => {
+          if (!error) return;
+          this.reportBroadcastFailure(event, toError(error));
+        });
+        result.delivered += 1;
+      } catch (error) {
+        result.failed += 1;
+        this.reportBroadcastFailure(event, toError(error));
+      }
+    }
+    return result;
+  }
+
+  private reportBroadcastFailure(event: EventEnvelope, error: Error): void {
+    for (const listener of this.broadcastFailureListeners) {
+      listener({ event, error });
+    }
   }
 
   private handleConnection(socket: Socket): void {
@@ -126,6 +193,10 @@ export class DaemonServer {
       });
     }
   }
+}
+
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
 }
 
 function faultForResponse(error: unknown, correlationId: string): RpcFault {

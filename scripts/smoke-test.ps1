@@ -1,4 +1,4 @@
-# 本地冒烟测试（不需要 API Key）：build → daemon → ping
+# 本地冒烟测试（不需要 API Key）：build → daemon → ping → v2 run
 # Usage: pwsh -NoProfile -File scripts/smoke-test.ps1
 $ErrorActionPreference = "Stop"
 
@@ -18,16 +18,21 @@ if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
 Write-Host "==> install & build"
 Invoke-Expression "$Pnpm install"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-Invoke-Expression "$Pnpm --filter @forge/cli... --filter @forge/daemon... run build"
+Invoke-Expression "$Pnpm --filter @forge/cli... --filter @forge/daemon... --filter @forge/bus... --filter @forge/daemon-client... run build"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "==> init config"
+$SmokeData = Join-Path ([System.IO.Path]::GetTempPath()) ("forge-smoke-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $SmokeData | Out-Null
+$env:FORGE_DATA_DIR = $SmokeData
+$env:FORGE_CONFIG_PATH = Join-Path $SmokeData "config.json"
 & node apps/cli/dist/cli.js init
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $Daemon = $null
 try {
-  Write-Host "==> start daemon"
+  Write-Host "==> start daemon (FORGE_SMOKE=1)"
+  $env:FORGE_SMOKE = "1"
   $Daemon = Start-Process `
     -FilePath "node" `
     -ArgumentList @("apps/daemon/dist/main.js") `
@@ -49,6 +54,10 @@ try {
     throw "Daemon did not become ready within 20s"
   }
 
+  Write-Host "==> core v2 smoke run"
+  & node scripts/core-v2/smoke-v2-run.mjs
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   Write-Host ""
   Write-Host "冒烟测试通过。接下来可配置 API Key 后执行："
   Write-Host '  node apps/cli/dist/cli.js config set model.apiKey <KEY>'
@@ -57,5 +66,8 @@ try {
 finally {
   if ($null -ne $Daemon -and -not $Daemon.HasExited) {
     Stop-Process -Id $Daemon.Id -Force -ErrorAction SilentlyContinue
+  }
+  if ($SmokeData -and (Test-Path $SmokeData)) {
+    Remove-Item -Recurse -Force $SmokeData -ErrorAction SilentlyContinue
   }
 }

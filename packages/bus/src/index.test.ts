@@ -2,9 +2,14 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { connect as netConnect } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { rpcFault, type AgentEvent } from "@forge/protocol";
+import { CORE_EVENT_METHOD, rpcFault, type AgentEvent } from "@forge/protocol";
 import { DaemonRpcError } from "@forge/daemon-client";
-import { connectDaemon, DaemonServer, type RpcHandler } from "./index.js";
+import {
+  connectDaemon,
+  DaemonServer,
+  serializeCoreEvent,
+  type RpcHandler,
+} from "./index.js";
 
 const servers: DaemonServer[] = [];
 
@@ -86,6 +91,65 @@ describe("DaemonServer event isolation", () => {
       expect(completionOrder).toEqual(["B", "A"]);
     } finally {
       client.close();
+    }
+  });
+});
+
+describe("DaemonServer core event notifications", () => {
+  it("serializes live core events for subscription clients", () => {
+    const event = {
+      eventId: "event-1",
+      sequence: 1,
+      type: "run.created",
+      subject: { kind: "agent_profile", id: "forge-default" },
+      correlationId: "corr-1",
+      runId: "run-1",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      schemaVersion: 1,
+      data: {},
+    };
+    expect(JSON.parse(serializeCoreEvent(event).trim())).toEqual({
+      jsonrpc: "2.0",
+      method: CORE_EVENT_METHOD,
+      params: event,
+    });
+  });
+
+  it("fans out a stored CoreEvent to a connected daemon client", async () => {
+    const { server, socketPath } = await startTestServer();
+    const client = await connectDaemon(socketPath);
+    const received: unknown[] = [];
+    const removeListener = client.onNotification((event) => received.push(event));
+    const event = coreEvent();
+    try {
+      server.broadcastCoreEvent(event);
+      await waitFor(() => received.length === 1);
+      expect(received).toEqual([event]);
+    } finally {
+      removeListener();
+      client.close();
+    }
+  });
+
+  it("reports an actual socket write failure to broadcast failure listeners", async () => {
+    const { server, socketPath } = await startTestServer();
+    const peer = netConnect(socketPath);
+    await new Promise<void>((resolve, reject) => {
+      peer.once("connect", resolve);
+      peer.once("error", reject);
+    });
+    const failures: Error[] = [];
+    const removeFailureListener = server.onCoreEventBroadcastFailure((failure) => {
+      failures.push(failure.error);
+    });
+    try {
+      peer.destroy();
+      server.broadcastCoreEvent(coreEvent());
+      await waitFor(() => failures.length === 1);
+      expect(failures[0]).toBeInstanceOf(Error);
+    } finally {
+      removeFailureListener();
+      peer.destroy();
     }
   });
 });
@@ -185,6 +249,30 @@ async function startServerWithHandler(handler: RpcHandler): Promise<string> {
   await server.start();
   servers.push(server);
   return socketPath;
+}
+
+function coreEvent() {
+  return {
+    eventId: "event-1",
+    sequence: 1,
+    type: "run.created",
+    subject: { kind: "agent_profile", id: "forge-default" },
+    correlationId: "corr-1",
+    runId: "run-1",
+    occurredAt: "2026-01-01T00:00:00.000Z",
+    schemaVersion: 1,
+    data: {},
+  };
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error("condition not met before timeout");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 function requestRaw(

@@ -19,7 +19,6 @@
     "@forge/config": "workspace:*",
     "@forge/daemon-client": "workspace:*",
     "@forge/protocol": "workspace:*",
-    "@forge/session": "workspace:*",
     "@forge/store": "workspace:*"
   },
   "devDependencies": {

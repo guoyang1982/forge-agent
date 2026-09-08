@@ -23,6 +23,7 @@ export class MemoryStore {
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
+    this.db.pragma("foreign_keys = ON");
     this.ensureSchema();
   }
 
@@ -261,3 +262,6 @@ export function registerMemoryTools(
     return JSON.stringify({ ok: true, id: row.id, message: "Memory saved" });
   });
 }
+
+export * from "./knowledge.js";
+export * from "./governed-memory.js";

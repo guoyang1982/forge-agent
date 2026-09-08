@@ -7,6 +7,6 @@ const DEFAULT_RPC_TIMEOUT_MS = 30_000;
  * Their lifetime is controlled by cancellation and connection closure, not by
  * the short request/response timeout used for status and list operations.
  */
-export function rpcTimeoutMs(method: MobileRpcMethod): number | null {
+export function rpcTimeoutMs(method: MobileRpcMethod | "run.resume"): number | null {
   return method === "run.start" ? null : DEFAULT_RPC_TIMEOUT_MS;
 }

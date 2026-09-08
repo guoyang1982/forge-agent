@@ -30,3 +30,26 @@ export {
   type VisionPrepareResult,
   type VisionStrategy,
 } from "./vision.js";
+export {
+  ModelRouter,
+  ModelRoutingError,
+  buildModelRouteTrace,
+  type ModelCandidate,
+  type ModelRouteInput,
+  type ModelRoutingDecision,
+} from "./model-routing.js";
+export {
+  buildDynamicStatus,
+  formatDynamicStatusTail,
+  type DynamicRunStatus,
+  type DynamicRunStatusInput,
+} from "./dynamic-status.js";
+export {
+  ContextCompressor,
+  longContextFixture,
+  type CompressionContext,
+  type CompressionPolicy,
+  type CompressionResult,
+  type CompressionSection,
+  type CompressionCircuitState,
+} from "./context-compression.js";

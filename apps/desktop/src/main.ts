@@ -15,12 +15,12 @@ import {
 } from "./daemon-lifecycle.js";
 import { connectDaemon } from "@forge/bus";
 import {
-  AGENT_EVENT_METHOD,
   DAEMON_METHODS,
   FORGE_DAEMON_BUILD,
   type AgentEvent,
   type ForgeConfig,
   type RunAttachment,
+  type TraceGetResult,
 } from "@forge/protocol";
 import { loadConfig, saveConfig, saveModelSelection } from "@forge/config";
 import { WorkspaceGuard, gitBranchInfo, gitSwitchBranch } from "@forge/workspace";
@@ -1389,6 +1389,17 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(
+    "forge:trace-get",
+    async (
+      _event,
+      payload?: { runId?: string; sessionId?: string },
+    ): Promise<TraceGetResult> => {
+      const cfg = loadConfig();
+      return requestDaemonMethod(cfg, "trace.get", payload ?? {});
+    },
+  );
+
+  ipcMain.handle(
     "forge:cancel-run",
     async (_event, payload?: { sessionId?: string }) => {
       const cfg = loadConfig();
@@ -1700,7 +1711,7 @@ async function requestDaemonMethodWithEvents<T>(
   params: unknown,
 ): Promise<T> {
   await ensureDaemon(cfg);
-  await ensureDaemonEventSubscriber(cfg);
+  void ensureDaemonEventSubscriber(cfg);
   const client = await connectDaemon(cfg.daemon.socketPath);
   try {
     return await requestWithClient<T>(client, method, params, sendAgentEvent);
@@ -1765,8 +1776,4 @@ app.on("before-quit", () => {
   disposeAllTerminals();
   void browserHost?.dispose();
   browserHost = null;
-});
-
-ipcMain.on(AGENT_EVENT_METHOD, (_e, _payload) => {
-  // Reserved for future direct daemon bus wiring.
 });

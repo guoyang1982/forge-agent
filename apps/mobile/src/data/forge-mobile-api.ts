@@ -195,6 +195,17 @@ export function createForgeMobileApi(client: MobileRelayClient) {
     },
     unsubscribe: (subscriptionId: string) => client.unsubscribe(subscriptionId),
     cancelRun: async (sessionId: string) => client.call("run.cancel", { sessionId }),
+    resumeRun: async (
+      runId: string,
+      cursor = 0,
+      onEvent?: Parameters<MobileRelayClient["startRun"]>[1],
+    ) => {
+      const result = await client.resumeRun(
+        { runId, cursor },
+        onEvent,
+      );
+      return result.sequences;
+    },
     pendingPermissions: async (sessionId?: string): Promise<PendingPermission[]> =>
       parsePendingPermissions(await client.call("permission.pending", sessionId ? { sessionId } : {})),
     respondPermission: async (params: {

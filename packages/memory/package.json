@@ -11,14 +11,19 @@
     }
   },
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "test": "vitest run"
   },
   "dependencies": {
+    "@forge/asset-registry": "workspace:*",
+    "@forge/document-extract": "workspace:*",
     "@forge/protocol": "workspace:*",
+    "@forge/store": "workspace:*",
     "@forge/tools": "workspace:*",
     "better-sqlite3": "^13.0.2"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13"
+    "@types/better-sqlite3": "^7.6.13",
+    "vitest": "^3.0.9"
   }
 }

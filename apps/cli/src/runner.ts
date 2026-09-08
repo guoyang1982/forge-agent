@@ -30,11 +30,13 @@ export interface RunTaskOptions {
   runtime?: RunRequest["runtime"];
   json?: boolean;
   onEvent?: (event: AgentEvent) => void;
+  onRunStarted?: (runId: string) => void;
 }
 
 export interface RunTaskResult {
   sessionId: string;
   finalText: string;
+  runId: string;
 }
 
 export async function executeRun(
@@ -49,12 +51,17 @@ export async function executeRun(
       sessionId: opts.sessionId ?? null,
       hookSource: opts.hookSource,
       runtime: opts.runtime,
-      autoApply: Boolean(opts.autoApply),
+      autoApply: opts.autoApply,
       files: opts.files,
     },
     opts.onEvent,
-  )) as RunTaskResult;
-  return result;
+  )) as { sessionId: string; finalText: string };
+  opts.onRunStarted?.(result.sessionId);
+  return {
+    sessionId: result.sessionId,
+    finalText: result.finalText,
+    runId: result.sessionId,
+  };
 }
 
 async function applyOnePatch(

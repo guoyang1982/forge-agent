@@ -22,6 +22,7 @@
     "@forge/browser-core": "workspace:*",
     "@forge/bus": "workspace:*",
     "@forge/config": "workspace:*",
+    "@forge/daemon-client": "workspace:*",
     "@forge/document-extract": "workspace:*",
     "@forge/hooks": "workspace:*",
     "@forge/platform": "workspace:*",

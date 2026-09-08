@@ -86,6 +86,29 @@ export interface HiredTalent {
   };
 }
 
+/** Normalized talent metadata for immutable AgentProfile publishing. */
+export interface TalentAgentProfileSource {
+  templateId: string;
+  name: string;
+  suggestedSkills: string[];
+  suggestedTools: string[];
+  knowledgeRefs?: string[];
+  connectors?: string[];
+}
+
+export function talentTemplateToProfileSource(
+  template: TalentTemplate,
+): TalentAgentProfileSource {
+  return {
+    templateId: template.id,
+    name: template.role,
+    suggestedSkills: [...template.suggestedSkills],
+    suggestedTools: [...template.suggestedTools],
+    knowledgeRefs: template.knowledgeRefs ? [...template.knowledgeRefs] : undefined,
+    connectors: template.connectors ? [...template.connectors] : undefined,
+  };
+}
+
 export interface TalentRoster {
   hired: HiredTalent[];
 }

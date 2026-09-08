@@ -158,6 +158,7 @@
       renderComposerGitBranchSelect?.();
       renderComposerQueue?.();
       renderContextMeter?.();
+      helpers.renderNetworkPermissionBanner?.();
     }
 
     function finishRestoreSessionView(sessionId, switchGen) {

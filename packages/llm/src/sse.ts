@@ -1,4 +1,5 @@
 import type { ToolCall } from "@forge/protocol";
+import { parseLlmUsage, type LlmUsage } from "./usage.js";
 
 export interface SseStreamCallbacks {
   onTextDelta?: (delta: string) => void;
@@ -15,12 +16,14 @@ export interface SseParseState {
   toolCalls: Map<number, { id: string; name: string; arguments: string }>;
   lastToolStatusAt: number;
   lastToolStatusKb: number;
+  usage?: LlmUsage;
 }
 
 export interface SseParseResult {
   text: string | null;
   toolCalls: ToolCall[];
   reasoningContent: string | null;
+  usage?: LlmUsage;
 }
 
 /** Strip the standard SSE prefix (`data: ` or `data:`). */
@@ -48,6 +51,7 @@ export function createSseParseState(): SseParseState {
     toolCalls: new Map(),
     lastToolStatusAt: 0,
     lastToolStatusKb: -1,
+    usage: undefined,
   };
 }
 
@@ -94,6 +98,7 @@ function emitToolStatus(
 }
 
 type SseChunk = {
+  usage?: unknown;
   choices?: Array<{
     delta?: {
       content?: string;
@@ -127,6 +132,9 @@ export function applySseChunk(
   } catch {
     return;
   }
+
+  const usage = parseLlmUsage(chunk.usage);
+  if (usage) state.usage = usage;
 
   const choice = chunk.choices?.[0];
   const delta = choice?.delta;
@@ -200,6 +208,7 @@ export function finalizeSseParseState(
     text: state.text || null,
     toolCalls: calls,
     reasoningContent: state.reasoning || null,
+    usage: state.usage,
   };
 }
 
@@ -217,12 +226,9 @@ export function parseLlmResponseBody(
 
   if (trimmed.startsWith("{") && !trimmed.includes("\ndata:")) {
     try {
-      const json = JSON.parse(trimmed) as SseChunk;
-      const msg = json.choices?.[0]?.message;
-      if (msg) {
-        applySseChunk(state, JSON.stringify({ choices: [{ message: msg }] }), callbacks);
-        return finalizeSseParseState(state, callbacks);
-      }
+      JSON.parse(trimmed);
+      applySseChunk(state, trimmed, callbacks);
+      return finalizeSseParseState(state, callbacks);
     } catch {
       /* fall through to SSE */
     }

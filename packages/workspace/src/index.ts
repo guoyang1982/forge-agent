@@ -20,6 +20,29 @@ export {
   safeRealpath,
 } from "./permissions.js";
 
+export {
+  WorkspaceGroupService,
+  type WorkspaceBinding,
+  type WorkspaceGroup,
+  type WorkspaceRecord,
+} from "./groups.js";
+export {
+  WorkspaceConflictError,
+  WorkspaceLeaseExpiredError,
+  WorkspaceLeaseService,
+  type AcquireLeaseInput,
+  type WorkspaceLease,
+} from "./leases.js";
+export {
+  captureCompositeCheckpoint,
+  verifyCompositeCheckpoint,
+  type CaptureCompositeCheckpointInput,
+  type CompositeCheckpoint,
+  type CompositeCheckpointEntry,
+  type CompositeCheckpointMismatch,
+  type VerifyCompositeCheckpointResult,
+} from "./composite-checkpoint.js";
+
 const IGNORE_DIRS = new Set([
   "node_modules",
   ".git",

@@ -1,0 +1,34 @@
+{
+  "name": "@forge/execution",
+  "version": "0.2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.3",
+    "vitest": "^3.0.9"
+  },
+  "dependencies": {
+    "@forge/agent-profile": "workspace:*",
+    "@forge/evidence": "workspace:*",
+    "@forge/event-store": "workspace:*",
+    "@forge/policy": "workspace:*",
+    "@forge/protocol": "workspace:*",
+    "@forge/store": "workspace:*",
+    "@forge/usage-ledger": "workspace:*",
+    "@forge/workspace": "workspace:*",
+    "better-sqlite3": "^13.0.2"
+  }
+}

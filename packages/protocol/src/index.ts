@@ -992,6 +992,27 @@ export type AgentEvent =
       /** First user message preview for sidebar title */
       preview?: string;
       clientRunId?: string;
+      /** Durable kernel run id for this chat turn, when the daemon opened one. */
+      runId?: string;
+    }
+  | { type: "llm_start"; sessionId?: string; model?: string; talent?: TalentEventInfo }
+  | {
+      type: "llm_end";
+      sessionId?: string;
+      model?: string;
+      durationMs?: number;
+      promptTokens?: number;
+      completionTokens?: number;
+      cachedTokens?: number;
+      reasoningTokens?: number;
+      totalTokens?: number;
+      /** Approximate USD cost in microdollars (1 USD = 1_000_000). */
+      costMinor?: number;
+      usageSource?: "api" | "estimate";
+      /** Cursor/ACP session context occupancy (not prompt/completion). */
+      contextTokens?: number;
+      contextSize?: number;
+      talent?: TalentEventInfo;
     }
   | { type: "text_delta"; sessionId?: string; delta: string; talent?: TalentEventInfo }
   | { type: "thinking_start"; sessionId?: string; talent?: TalentEventInfo }
@@ -1181,8 +1202,10 @@ export type AgentEvent =
       estimatedTokens: number;
       maxContextTokens: number;
       truncated?: boolean;
+      /** Optional USD microdollars from ACP usage_update. */
+      costMinor?: number;
     }
-  | { type: "done"; sessionId: string; finalText?: string }
+  | { type: "done"; sessionId: string; finalText?: string; runId?: string }
   | {
       type: "hooks_applied";
       sessionId?: string;

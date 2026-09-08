@@ -15,6 +15,7 @@ import { ForgeStore } from "@forge/store";
 import { ChannelGateway } from "./gateway.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const GATEWAY_DB_NAME = "data.db";
 const tempDirs: string[] = [];
 
 function tempDataDir(): string {
@@ -25,7 +26,7 @@ function tempDataDir(): string {
 
 function withStore<T>(dataDir: string, fn: (store: ChannelStore) => T): T {
   const owner = ForgeStore.open({
-    dbPath: join(dataDir, "data.db"),
+    dbPath: join(dataDir, GATEWAY_DB_NAME),
     migrationsDir: join(repoRoot, "migrations"),
     owner: "test",
   });

@@ -1,7 +1,7 @@
 # Forge 产品与工程路线图
 
 > 状态：长期维护中的方向性路线图
-> 最近更新：2026-08-27
+> 最近更新：2026-09-07
 > 说明：本文定义“值得陆续建设什么、为什么值得做、完成后如何判断有效”。它不承诺具体发布日期；进入开发前，每项功能仍需独立规格、实施计划和验收。
 
 ## 1. 路线图目标
@@ -51,6 +51,7 @@ Forge 的长期方向不是继续堆叠模型、工具和人才数量，而是�
 - Cron/手动自动化、独立 Session、运行历史与通知配置。
 - PDF、Office 文档和文本附件提取能力，可作为知识库摄取基础。
 - Desktop、CLI、Mobile、Channel Gateway 和远程主机访问能力。
+- Core v2 执行/治理内核的冻结实现与验收范围已经完成：包括授权证据精确绑定、异常副作用幂等、生产 Outbox、通用租户/组织作用域、Artifact 文件系统加固，以及最终全量回归和备份恢复演练。当前可进入提交、人工验收和 Forge Company 上层功能开发。
 
 相关现状文档：
 
@@ -110,6 +111,27 @@ Forge 的长期方向不是继续堆叠模型、工具和人才数量，而是�
 | R22 | 离线受控进化 | P2 | 远期 | 从失败聚类生成候选改进，经评测、灰度和回滚后发布。 |
 | R23 | 外部 Agent / A2A 接入 | P2 | 远期 | 外部 Agent 以统一人才身份加入团队和治理体系。 |
 | R24 | 多模态实时工作台 | 条件型 | 远期 | 在明确场景下支持实时语音、视觉验证和桌面操作。 |
+
+### Core v2 当前收尾（开发中）
+
+以下事项优先于继续扩展 Forge Company 的自治能力：
+
+- [x] Durable Run/Step、Event Store、Outbox 数据模型、Cursor、审批参数/风险绑定、基础 Workflow/Automation、Trace/Span/Token/Cost。
+- [x] Root build、完整 Root tests、Core v2 tests 与 Core v2 legacy gate。
+- [x] 修复 `@forge/channel-gateway` 过期测试夹具，确认共享 `data.db` 与第一方 `run` 并发事件隔离。
+- [x] 对“外部副作用已发生但响应抛错/未知”的执行进入 `uncertain`，不得重新领取幂等键。
+- [x] 禁止依据客户端传入的 `manual`、`cli`、`schedule` 或 `skipConfirm` 信号签发/绕过生产自动化授权。
+- [x] Asset 发布/回滚授权与验证证据绑定活动策略、精确主体、动作、Asset 和目标版本；空作用域失败关闭。
+- [x] Connector 审批绑定精确主体、动作、活动策略、Proposal、账号、幂等键、Run/Step 和 payload，并与执行权抢占在同一事务内一次性消费。
+- [x] 将 Dead-letter 重放授权绑定活动策略、精确主体、动作、Workflow 与死信实例，授权检查与重放状态变更位于同一事务。
+- [x] 完成 Connector Secret 生命周期和未知外部结果加固：凭据按次解析/清零，外部调用后异常进入 `unknown` 并禁止重试，预算保留到对账结算。
+- [x] 完成 Trigger 过期租约 fencing、版本稳定的并发限制，以及自动化定义变化后的 Workflow 新版本发布。
+- [x] 实现生产 Outbox dispatcher、启动恢复和失败重试：租约领取、成功 ACK、指数退避、重试上限、终态失败与 Daemon 生命周期接线。
+- [x] 引入通用 `tenant/organization` Scope：`tenantId` 强制隔离、`organizationId` 支持租户内组织边界；历史 `companyId` 安全迁移，Forge Company 只做上层映射。
+- [x] 完成 Artifact symlink/TOCTOU 加固：拒绝根目录和路径内符号链接，安全逐级建目录，独占临时写入、同步与原子替换，读取使用 `O_NOFOLLOW` 文件描述符。
+- [x] Root build/tests、Core v2 tests、Legacy Gate、Smoke、备份恢复演练、迁移升级测试和最终代码审查全部通过。
+
+详细验收矩阵见 [Core v2 Migration Report](core-v2-migration-report.md)。
 
 ## 6. 近期：先建立质量闭环
 

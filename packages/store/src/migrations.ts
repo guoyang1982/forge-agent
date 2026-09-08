@@ -62,6 +62,9 @@ export class MigrationRunner {
       if (migration.version === "001_init.sql") {
         adoptLegacyMemoryProjectId(this.db);
       }
+      if (migration.version === "019_automation_durable_links.sql") {
+        remediateDuplicateWorkflowOccurrences(this.db);
+      }
       if (migration.sql.trim()) this.db.exec(migration.sql);
       const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
       this.db
@@ -78,6 +81,49 @@ export class MigrationRunner {
         );
     });
     apply.immediate();
+  }
+}
+
+function remediateDuplicateWorkflowOccurrences(db: Database.Database): void {
+  const table = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'core_workflow_instances'",
+    )
+    .get() as { name: string } | undefined;
+  if (!table) return;
+
+  const duplicateGroups = db
+    .prepare(
+      `SELECT workflow_id AS workflowId, trigger_ref AS triggerRef
+       FROM core_workflow_instances
+       WHERE trigger_ref IS NOT NULL
+       GROUP BY workflow_id, trigger_ref
+       HAVING COUNT(*) > 1`,
+    )
+    .all() as Array<{ workflowId: string; triggerRef: string }>;
+
+  const listGroup = db.prepare(
+    `SELECT id, run_id AS runId, created_at AS createdAt
+     FROM core_workflow_instances
+     WHERE workflow_id = ? AND trigger_ref = ?
+     ORDER BY CASE WHEN run_id IS NULL THEN 1 ELSE 0 END, created_at ASC, id ASC`,
+  );
+  const renameDuplicate = db.prepare(
+    `UPDATE core_workflow_instances
+     SET trigger_ref = ?, updated_at = ?
+     WHERE id = ?`,
+  );
+
+  const now = new Date().toISOString();
+  for (const group of duplicateGroups) {
+    const rows = listGroup.all(group.workflowId, group.triggerRef) as Array<{
+      id: string;
+      runId: string | null;
+      createdAt: string;
+    }>;
+    for (const row of rows.slice(1)) {
+      renameDuplicate.run(`${group.triggerRef}:remediated:${row.id}`, now, row.id);
+    }
   }
 }
 
