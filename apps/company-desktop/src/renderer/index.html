@@ -10,63 +10,139 @@
     <div class="shell">
       <aside class="rail">
         <div class="brand">
-          <span class="mark">C</span>
+          <span class="mark">F</span>
           <div>
-            <strong>Company</strong>
-            <small>经营台</small>
+            <strong>Forge Company</strong>
+            <small>数字公司经营台</small>
           </div>
         </div>
-        <nav>
-          <button class="nav on" type="button">总览</button>
-          <button class="nav" type="button" disabled>目标</button>
-          <button class="nav" type="button" disabled>组织</button>
-          <button class="nav" type="button" disabled>工作</button>
-          <button class="nav" type="button" disabled>审批</button>
-          <button class="nav" type="button" disabled>资产</button>
+        <nav aria-label="公司经营导航">
+          <button class="nav on" data-nav="overview" type="button">总览</button>
+          <button class="nav" data-nav="organization" type="button">组织</button>
+          <button class="nav" data-nav="work" type="button">工作中心</button>
+          <button class="nav" data-nav="approvals" type="button">审批</button>
         </nav>
+        <button id="ceoDrawerBtn" class="ceo-entry" type="button">+ CEO 登记需求</button>
       </aside>
       <main class="main">
         <header class="top">
-          <div class="switch" aria-label="产品入口">
-            <button id="openWorkbenchBtn" type="button">工作台</button>
-            <button class="on" type="button">公司</button>
+          <div>
+            <p class="eyebrow">COMPANY OS</p>
+            <strong id="companyLabel">尚未创建公司</strong>
           </div>
-          <p class="org">曜石智能科技 · L2 · 同一 Daemon</p>
+          <div class="top-actions">
+            <span id="globalStatus" class="status">正在连接 Daemon…</span>
+            <button id="openWorkbenchBtn" class="ghost" type="button">打开工作台</button>
+          </div>
         </header>
-        <section class="head">
+
+        <section id="setupPanel" class="setup card hidden">
           <div>
-            <h1>早上好，创始人</h1>
-            <p>3 个目标进行中，2 项决策待处理。这是独立经营壳；领域功能后续在本包内演进，不改工作台。</p>
+            <p class="eyebrow">FIRST STEP</p>
+            <h1>创建你的数字公司</h1>
+            <p class="muted">创建后即可组织员工，并让需求依次通过规格、计划、执行与验收门。</p>
+          </div>
+          <form id="createCompanyForm" class="inline-form">
+            <label>公司名称<input name="name" required placeholder="例如：曜石智能科技" /></label>
+            <button type="submit">创建公司</button>
+          </form>
+        </section>
+
+        <section class="page" data-page="overview">
+          <div class="page-head">
+            <div><p class="eyebrow">OVERVIEW</p><h1>经营总览</h1><p class="muted">从需求到验收，每一步都有迹可循。</p></div>
+            <button class="ghost refresh" type="button">刷新</button>
+          </div>
+          <div class="metrics">
+            <article><small>进行中 WorkItem</small><b id="metricWork">—</b><span>活跃工作链</span></article>
+            <article><small>数字员工</small><b id="metricEmployees">—</b><span>组织内员工</span></article>
+            <article><small>待审批</small><b id="metricApprovals">—</b><span class="warn">等待独立决策</span></article>
+          </div>
+          <article class="card"><div class="card-title"><h2>交付流水线</h2><span>当前门</span></div><div id="pipelineList" class="list empty">暂无工作项</div></article>
+        </section>
+
+        <section class="page hidden" data-page="organization">
+          <div class="page-head"><div><p class="eyebrow">ORGANIZATION</p><h1>组织与员工</h1></div><button class="ghost refresh" type="button">刷新</button></div>
+          <div class="two-col">
+            <article class="card"><h2>组织树</h2><div id="organizationTree" class="list empty">暂无员工</div></article>
+            <article class="card"><h2>雇佣数字员工</h2>
+              <form id="hireForm" class="form-stack">
+                <label>姓名<input name="displayName" required placeholder="例如：研发负责人" /></label>
+                <label>岗位<input name="positionId" required placeholder="岗位 ID" /></label>
+                <label>自主等级<select name="autonomyLevel"><option value="0">L0</option><option value="1">L1</option><option value="2" selected>L2</option><option value="3">L3</option><option value="4">L4</option></select></label>
+                <button type="submit">确认雇佣</button>
+              </form>
+            </article>
           </div>
         </section>
-        <section class="metrics">
-          <article><small>目标健康度</small><b>82%</b><span>↑ 6% 本周</span></article>
-          <article><small>数字员工</small><b>12</b><span>8 人工作中</span></article>
-          <article><small>待审批</small><b>2</b><span class="warn">1 项高风险</span></article>
-          <article><small>本月节省</small><b>126h</b><span>可追溯到任务</span></article>
-        </section>
-        <section class="cols">
-          <article class="card">
-            <h2>本季度目标</h2>
-            <div class="goal"><div class="goal-line"><b>发布 Company MVP</b><span>68%</span></div><div class="bar"><i style="width:68%"></i></div></div>
-            <div class="goal"><div class="goal-line"><b>跑通 5 个真实需求</b><span>45%</span></div><div class="bar"><i style="width:45%"></i></div></div>
-            <div class="goal"><div class="goal-line"><b>建立内容增长闭环</b><span>31%</span></div><div class="bar"><i style="width:31%"></i></div></div>
-          </article>
-          <article class="card">
-            <h2>需要你的决策</h2>
-            <p class="row">批准首批客户邀约</p>
-            <p class="row">确认 MVP 发布范围</p>
-          </article>
-        </section>
-        <section class="workitem">
-          <div>
-            <b>WI-118 跨仓写入租约</b>
-            <p>老周 · Run r_8f21 · 等待独立验证</p>
+
+        <section class="page hidden" data-page="work">
+          <div class="page-head"><div><p class="eyebrow">WORK CENTER</p><h1>工作中心</h1></div><button class="ghost refresh" type="button">刷新</button></div>
+          <div class="work-grid">
+            <article class="card">
+              <h2>1. 登记需求原话</h2>
+              <form id="demandForm" class="form-stack">
+                <label>标题<input name="title" required /></label>
+                <label>需求原话<textarea name="problem" required rows="4"></textarea></label>
+                <label>预期结果<input name="expectedOutcome" required /></label>
+                <label>负责人 ID<input name="ownerId" required /></label>
+                <button type="submit">创建 WorkItem</button>
+              </form>
+            </article>
+            <article class="card">
+              <h2>2. 规格与计划门</h2>
+              <form id="gateForm" class="form-stack">
+                <label>WorkItem ID<input name="workItemId" required /></label>
+                <label>操作者 ID<input name="actorId" required /></label>
+                <label>规格草稿<textarea name="spec" required rows="3"></textarea></label>
+                <label>计划草稿<textarea name="plan" required rows="3"></textarea></label>
+                <button type="submit">保存并接受 spec / plan</button>
+              </form>
+            </article>
+            <article class="card">
+              <h2>3. 派活与执行</h2>
+              <form id="dispatchForm" class="form-stack">
+                <label>WorkItem ID<input name="workItemId" required /></label>
+                <label>执行人 ID<input name="assigneeId" required /></label>
+                <label>操作者 ID<input name="actorId" required /></label>
+                <button type="submit">派活并请求 Run</button>
+              </form>
+            </article>
+            <article class="card danger-card">
+              <h2>红灯处理</h2>
+              <form id="fixForm" class="form-stack">
+                <label>WorkItem ID<input name="workItemId" required /></label>
+                <label>修复负责人 ID<input name="ownerId" required /></label>
+                <label>暂停原因<textarea name="reason" required rows="2"></textarea></label>
+                <button class="danger" type="submit">暂停并派修复</button>
+              </form>
+            </article>
           </div>
-          <button id="openRunBtn" type="button">在工作台打开</button>
+          <article class="card trace-card"><div class="card-title"><h2>追溯链</h2><span>IDs / versions / runs</span></div><div id="traceList" class="list empty">执行操作后显示追溯信息</div></article>
+        </section>
+
+        <section class="page hidden" data-page="approvals">
+          <div class="page-head"><div><p class="eyebrow">APPROVALS</p><h1>审批中心</h1></div><button class="ghost refresh" type="button">刷新</button></div>
+          <div class="actor-row"><label>当前审批人 ID <input id="approvalActorId" placeholder="输入后可识别自己的提交" /></label></div>
+          <div id="approvalList" class="list empty">暂无待审批事项</div>
         </section>
       </main>
     </div>
+
+    <div id="ceoDrawer" class="drawer-backdrop hidden">
+      <aside class="drawer" aria-label="CEO 登记需求">
+        <div class="card-title"><div><p class="eyebrow">CEO INBOX</p><h2>登记需求草稿</h2></div><button id="closeDrawerBtn" class="icon-btn" type="button">×</button></div>
+        <p class="notice">CEO 只能创建工作项草稿，不能跳过规格、计划和验收门。</p>
+        <form id="ceoForm" class="form-stack">
+          <label>需求标题<input name="title" required /></label>
+          <label>需求原话<textarea name="problem" required rows="6"></textarea></label>
+          <label>预期结果<input name="expectedOutcome" required /></label>
+          <label>负责人 ID<input name="ownerId" required /></label>
+          <button type="submit">登记为草稿</button>
+        </form>
+      </aside>
+    </div>
+    <div id="toast" class="toast hidden" role="status"></div>
     <script src="./app.js"></script>
   </body>
 </html>

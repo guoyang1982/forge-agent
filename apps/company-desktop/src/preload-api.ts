@@ -1,4 +1,6 @@
-export const COMPANY_INVOKE_METHODS = new Set<string>();
+import { DAEMON_COMPANY_METHODS } from "@forge/protocol";
+
+export const COMPANY_INVOKE_METHODS = new Set<string>(Object.values(DAEMON_COMPANY_METHODS));
 
 export type CompanyIpc = {
   invoke: (channel: string, ...args: unknown[]) => Promise<unknown>;

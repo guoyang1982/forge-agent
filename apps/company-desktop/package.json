@@ -17,7 +17,8 @@
     "start": "pnpm run build && pnpm --filter @forge/desktop exec electron ../company-desktop/dist/main.js"
   },
   "dependencies": {
-    "@forge/forge-links": "workspace:*"
+    "@forge/forge-links": "workspace:*",
+    "@forge/protocol": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
