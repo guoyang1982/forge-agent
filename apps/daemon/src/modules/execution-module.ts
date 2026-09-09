@@ -65,10 +65,14 @@ async function handleRunCreate(
     let plan;
     try {
       plan = context.company.gates.assertImplementationRunAllowed(workItemId);
-    } catch {
-      throw new RpcFaultError(
-        rpcFault("POLICY_DENIED", "plan not accepted", { correlationId }),
-      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/plan not accepted/.test(message)) {
+        throw new RpcFaultError(
+          rpcFault("POLICY_DENIED", "plan not accepted", { correlationId }),
+        );
+      }
+      throw error;
     }
     const created = context.executionStore.createRun(
       spec,

@@ -156,22 +156,43 @@ export class WorkGates {
     runId: string;
     planArtifactId: string;
   }): void {
-    const item = this.getWorkItem(input.workItemId);
-    this.db
-      .prepare(
-        `INSERT INTO company_run_links
-          (id, company_id, work_item_id, run_id, plan_artifact_id, created_at)
-        VALUES
-          (@id, @companyId, @workItemId, @runId, @planArtifactId, @createdAt)`,
-      )
-      .run({
-        id: newCompanyId("run_link"),
-        companyId: item.companyId,
-        workItemId: input.workItemId,
-        runId: input.runId,
-        planArtifactId: input.planArtifactId,
-        createdAt: this.clock.now(),
-      });
+    this.db.transaction(() => {
+      const item = this.getWorkItem(input.workItemId);
+      const placeholder = this.db
+        .prepare(
+          `SELECT id
+          FROM company_run_links
+          WHERE work_item_id = ? AND plan_artifact_id = ? AND run_id = ''
+          ORDER BY created_at, id
+          LIMIT 1`,
+        )
+        .get(input.workItemId, input.planArtifactId) as
+        | { id: string }
+        | undefined;
+
+      if (placeholder) {
+        this.db
+          .prepare("UPDATE company_run_links SET run_id = ? WHERE id = ?")
+          .run(input.runId, placeholder.id);
+        return;
+      }
+
+      this.db
+        .prepare(
+          `INSERT INTO company_run_links
+            (id, company_id, work_item_id, run_id, plan_artifact_id, created_at)
+          VALUES
+            (@id, @companyId, @workItemId, @runId, @planArtifactId, @createdAt)`,
+        )
+        .run({
+          id: newCompanyId("run_link"),
+          companyId: item.companyId,
+          workItemId: input.workItemId,
+          runId: input.runId,
+          planArtifactId: input.planArtifactId,
+          createdAt: this.clock.now(),
+        });
+    })();
   }
 
   pauseForFix(input: {

@@ -85,6 +85,19 @@ describe("execution module", () => {
       artifactId: plan.id,
       actorId: employee.id,
     });
+    context.store.db
+      .prepare(
+        `INSERT INTO company_run_links
+          (id, company_id, work_item_id, run_id, plan_artifact_id, created_at)
+        VALUES (?, ?, ?, '', ?, ?)`,
+      )
+      .run(
+        "run-link-placeholder",
+        plan.companyId,
+        item.id,
+        plan.id,
+        context.executionClock.now(),
+      );
 
     const result = await router.handle(
       "run.create",
@@ -94,20 +107,46 @@ describe("execution module", () => {
       },
       rpcContext(),
     );
-    const link = context.store.db
+    const links = context.store.db
       .prepare(
         `SELECT work_item_id AS workItemId, run_id AS runId,
           plan_artifact_id AS planArtifactId
         FROM company_run_links
         WHERE work_item_id = ?`,
       )
-      .get(item.id);
+      .all(item.id);
 
     expect(result).toEqual({ runId: "run-1", state: "running" });
-    expect(link).toEqual({
-      workItemId: item.id,
-      runId: "run-1",
-      planArtifactId: plan.id,
+    expect(links).toEqual([
+      {
+        workItemId: item.id,
+        runId: "run-1",
+        planArtifactId: plan.id,
+      },
+    ]);
+  });
+
+  it("maps unexpected company gate failures to INTERNAL_ERROR", async () => {
+    const { router, context } = executionRouterFixture();
+    const { item } = createCompanyWorkItem(context);
+    context.company.gates.assertImplementationRunAllowed = () => {
+      throw new Error("database is locked");
+    };
+
+    await expect(
+      router.handle(
+        "run.create",
+        {
+          ...singleStepRunSpec(),
+          policyContext: { companyWorkItemId: item.id },
+        },
+        rpcContext(),
+      ),
+    ).rejects.toMatchObject({
+      fault: {
+        code: "INTERNAL_ERROR",
+        message: "Internal RPC error",
+      },
     });
   });
 
