@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,6 +50,37 @@ describe("company module", () => {
     );
 
     expect(result).toMatchObject({ name: "曜石" });
+  });
+
+  it("writes intent.md under the company artifact root on workItems.create", async () => {
+    const { router, company, artifactRoot } = companyRouterFixture({
+      artifactRoot: true,
+    });
+    const created = await router.handleUntyped(
+      "company.create",
+      { name: "曜石" },
+      rpcContext(),
+    ) as { id: string };
+    const emp = hireEmployee(company, created.id);
+    const item = await router.handleUntyped(
+      "company.workItems.create",
+      {
+        companyId: created.id,
+        type: "implementation",
+        title: "团队版窗格最大化",
+        problem: "给 SSH 客户端出团队版：窗格一键最大化",
+        expectedOutcome: "可一键最大化窗格",
+        ownerId: emp.id,
+      },
+      rpcContext(),
+    ) as { id: string };
+
+    expect(
+      readFileSync(
+        join(artifactRoot, created.id, "work", item.id, "intent.md"),
+        "utf8",
+      ),
+    ).toContain("一键最大化");
   });
 
   it("rejects an approval decision made by the work item's assignee", async () => {
@@ -452,9 +483,10 @@ function hireEmployee(
   });
 }
 
-function companyRouterFixture() {
+function companyRouterFixture(options: { artifactRoot?: true } = {}) {
   const root = mkdtempSync(join(tmpdir(), "forge-company-module-"));
   fixtureRoots.push(root);
+  const artifactRoot = join(root, "company");
   const store = ForgeStore.open({
     dbPath: join(root, "data.db"),
     migrationsDir,
@@ -464,8 +496,16 @@ function companyRouterFixture() {
   const company = {
     companies: new CompanyService(store.db, clock),
     org: new OrganizationService(store.db, clock),
-    work: new WorkService(store.db, clock),
-    gates: new WorkGates(store.db, clock),
+    work: new WorkService(
+      store.db,
+      clock,
+      options.artifactRoot ? { artifactRoot } : undefined,
+    ),
+    gates: new WorkGates(
+      store.db,
+      clock,
+      options.artifactRoot ? { artifactRoot } : undefined,
+    ),
   };
   const context = {
     socketPath: join(root, "daemon.sock"),
@@ -479,7 +519,12 @@ function companyRouterFixture() {
   >;
   const router = new TypedRouter();
   createCompanyModule().register(router, context);
-  return { router, company, store };
+  return {
+    router,
+    company,
+    store,
+    artifactRoot: options.artifactRoot ? artifactRoot : undefined,
+  };
 }
 
 function rpcContext() {

@@ -132,11 +132,12 @@ const executionClock = {
   nowMs: () => Date.now(),
 };
 const companyClock = { now: () => executionClock.now() };
+const artifactRoot = join(bootConfig.daemon.dataDir, "company");
 const company = {
   companies: new CompanyService(forgeStore.db, companyClock),
   org: new OrganizationService(forgeStore.db, companyClock),
-  work: new WorkService(forgeStore.db, companyClock),
-  gates: new WorkGates(forgeStore.db, companyClock),
+  work: new WorkService(forgeStore.db, companyClock, { artifactRoot }),
+  gates: new WorkGates(forgeStore.db, companyClock, { artifactRoot }),
 };
 let host!: DaemonHost<ForgeDaemonContext>;
 const workspaceGroups = new WorkspaceGroupService(forgeStore.db);
