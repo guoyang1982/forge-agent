@@ -169,12 +169,14 @@ function dashboard(context: ForgeDaemonContext, companyId: string) {
     (context.store.db.prepare(
       `SELECT COUNT(*) AS count FROM ${table} WHERE company_id = ?`,
     ).get(companyId) as { count: number }).count;
+  const pipelines = listWorkItems(context, companyId);
   return {
     companyId,
     employees: count("company_employees"),
     goals: count("company_goals"),
     projects: count("company_projects"),
     workItems: count("company_work_items"),
+    pipelines,
   };
 }
 
@@ -212,22 +214,18 @@ function listProjects(context: ForgeDaemonContext, companyId: string) {
 
 function listWorkItems(context: ForgeDaemonContext, companyId: string) {
   context.company.companies.get(companyId);
-  return context.store.db.prepare(
+  const items = context.store.db.prepare(
     `${workItemSelect()} WHERE company_id = ? ORDER BY created_at, id`,
-  ).all(companyId);
+  ).all(companyId) as WorkItemRow[];
+  return items.map((item) => enrichWorkItem(context, item));
 }
 
 function getWorkItem(context: ForgeDaemonContext, workItemId: string) {
   const item = context.store.db.prepare(
     `${workItemSelect()} WHERE id = ?`,
-  ).get(workItemId);
+  ).get(workItemId) as WorkItemRow | undefined;
   if (!item) throw new Error("work item not found");
-  return item as {
-    id: string;
-    companyId: string;
-    assigneeId: string | null;
-    state: string;
-  } & Record<string, unknown>;
+  return enrichWorkItem(context, item);
 }
 
 function workItemSelect(): string {
@@ -237,6 +235,60 @@ function workItemSelect(): string {
     assignee_id AS assigneeId, state, risk,
     autonomy_level AS autonomyLevel, version
   FROM company_work_items`;
+}
+
+type WorkItemRow = {
+  id: string;
+  companyId: string;
+  assigneeId: string | null;
+  state: string;
+} & Record<string, unknown>;
+
+type CurrentGate = "缺 spec" | "缺 plan" | "执行中" | "待验收" | "已完成";
+
+function enrichWorkItem(context: ForgeDaemonContext, item: WorkItemRow) {
+  const versions = context.store.db.prepare(
+    `SELECT
+      MAX(CASE WHEN kind = 'spec' AND status = 'accepted' THEN version END)
+        AS specVersion,
+      MAX(CASE WHEN kind = 'plan' AND status = 'accepted' THEN version END)
+        AS planVersion
+    FROM company_work_artifacts
+    WHERE work_item_id = ?`,
+  ).get(item.id) as {
+    specVersion: number | null;
+    planVersion: number | null;
+  };
+  const runIds = context.store.db.prepare(
+    `SELECT run_id AS runId
+    FROM company_run_links
+    WHERE work_item_id = ? AND TRIM(run_id) <> ''
+    ORDER BY created_at, id`,
+  ).all(item.id) as Array<{ runId: string }>;
+  const specVersion = versions.specVersion ?? undefined;
+  const planVersion = versions.planVersion ?? undefined;
+
+  return {
+    ...item,
+    ...(specVersion === undefined ? {} : { specVersion }),
+    ...(planVersion === undefined ? {} : { planVersion }),
+    currentGate: currentGate(item.state, specVersion, planVersion),
+    runIds: runIds.map(({ runId }) => runId),
+  };
+}
+
+function currentGate(
+  state: string,
+  specVersion: number | undefined,
+  planVersion: number | undefined,
+): CurrentGate {
+  if (state === "accepted" || state === "completed") return "已完成";
+  if (specVersion === undefined) return "缺 spec";
+  if (planVersion === undefined) return "缺 plan";
+  if (["submitted", "waiting_approval", "verifying"].includes(state)) {
+    return "待验收";
+  }
+  return "执行中";
 }
 
 function recordParams(params: unknown): Params {

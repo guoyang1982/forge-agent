@@ -193,6 +193,58 @@ describe("company module", () => {
     expect(error).toBeInstanceOf(Error);
     expect(error.message).toMatch(/plan not accepted/);
   });
+
+  it("surfaces accepted artifact versions in work item pipeline gates", async () => {
+    const { router, company, store } = companyRouterFixture();
+    const created = company.companies.create({ name: "曜石" });
+    const owner = hireEmployee(company, created.id);
+    const workItem = company.work.createWorkItem({
+      companyId: created.id,
+      type: "implementation",
+      title: "Ship module",
+      problem: "RPC is missing",
+      expectedOutcome: "RPC is available",
+      ownerId: owner.id,
+    });
+    const spec = company.gates.upsertDraft({
+      workItemId: workItem.id,
+      kind: "spec",
+      content: "Accepted behavior",
+      actorId: owner.id,
+    });
+    company.gates.acceptArtifact({ artifactId: spec.id, actorId: owner.id });
+    store.db.prepare(
+      `INSERT INTO company_run_links
+        (id, company_id, work_item_id, run_id, plan_artifact_id, created_at)
+      VALUES
+        ('run_link_empty', ?, ?, '', NULL, '2026-09-09T09:00:00.000Z'),
+        ('run_link_filled', ?, ?, 'run_123', NULL, '2026-09-09T09:01:00.000Z')`,
+    ).run(created.id, workItem.id, created.id, workItem.id);
+
+    const item = await router.handleUntyped(
+      DAEMON_COMPANY_METHODS.WORK_ITEMS_GET,
+      { workItemId: workItem.id },
+      rpcContext(),
+    );
+    const dashboard = await router.handleUntyped(
+      DAEMON_COMPANY_METHODS.DASHBOARD_GET,
+      { companyId: created.id },
+      rpcContext(),
+    ) as { pipelines: unknown[] };
+
+    expect(item).toMatchObject({
+      specVersion: 1,
+      currentGate: "缺 plan",
+      runIds: ["run_123"],
+    });
+    expect(dashboard.pipelines).toEqual([
+      expect.objectContaining({
+        id: workItem.id,
+        specVersion: 1,
+        currentGate: "缺 plan",
+      }),
+    ]);
+  });
 });
 
 function hireEmployee(

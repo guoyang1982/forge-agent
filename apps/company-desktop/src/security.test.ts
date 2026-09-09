@@ -68,4 +68,30 @@ describe("company renderer guardrails", () => {
     expect(canApprove("emp_1", "emp_1")).toBe(false);
     expect(canApprove("emp_2", "emp_1")).toBe(true);
   });
+
+  it("derives a missing plan gate from an accepted spec", () => {
+    const helper = app.match(/function pipelineGate\(item\) \{[\s\S]*?\n\}/)?.[0];
+    expect(helper).toBeTruthy();
+    const pipelineGate = Function(`return (${helper})`)() as (
+      item: Record<string, unknown>,
+    ) => string;
+
+    expect(pipelineGate({ state: "draft", specVersion: 1 })).toBe("缺 plan");
+  });
+
+  it("renders a workbench run button for linked work items", () => {
+    const escapeHelper = app.match(/function escapeHtml\(value\) \{[\s\S]*?\n\}/)?.[0];
+    const buttonHelper = app.match(/function workItemRunButton\(item\) \{[\s\S]*?\n\}/)?.[0];
+    expect(escapeHelper).toBeTruthy();
+    expect(buttonHelper).toBeTruthy();
+    const workItemRunButton = Function(
+      `${escapeHelper}\n${buttonHelper}\nreturn workItemRunButton;`,
+    )() as (item: Record<string, unknown>) => string;
+
+    expect(workItemRunButton({ runIds: ["run_123"] })).toContain(
+      'data-open-run="run_123"',
+    );
+    expect(workItemRunButton({ runIds: ["run_123"] })).toContain("在工作台打开");
+    expect(workItemRunButton({ runIds: [] })).toBe("");
+  });
 });

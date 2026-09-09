@@ -99,3 +99,43 @@ Verification:
 - `pnpm --filter @forge/desktop exec vitest run src/product-shell-isolation.test.ts` — PASS (2/2)
 - `node --check apps/company-desktop/src/renderer/app.js` — PASS
 - IDE diagnostics for covering files — no errors
+
+## Fix — Pipeline gates and linked runs
+
+### Covering files
+
+- `apps/daemon/src/modules/company-module.ts`
+- `apps/daemon/src/modules/company-module.test.ts`
+- `apps/company-desktop/src/renderer/app.js`
+- `apps/company-desktop/src/security.test.ts`
+
+### RED
+
+Added the daemon assertion before implementation and ran
+`pnpm --filter @forge/daemon test -- src/modules/company-module.test.ts`.
+The new test failed because `company.workItems.get` omitted `specVersion` and
+`currentGate`.
+
+Added the renderer helper assertion before implementation and ran
+`pnpm --filter @forge/company-desktop test`. The new test failed because no
+linked-work-item run button helper existed.
+
+### GREEN
+
+- Enriched dashboard pipelines, work-item list entries, and
+  `company.workItems.get` with accepted spec/plan versions and artifact-aware
+  gates.
+- Returned only non-empty linked Core run ids as `runIds`.
+- Rendered persisted work items in the work center and added an
+  `forge://workbench/run/<id>` button whenever `runIds[0]` exists.
+- Kept `company.workItems.requestRun` as a placeholder-link operation; it does
+  not create a Core run.
+- Did not add Task 10's delivered-state lock.
+
+Verification:
+
+- `pnpm --filter @forge/daemon test -- src/modules/company-module.test.ts` — PASS (7/7)
+- `pnpm --filter @forge/company-desktop test` — PASS (9/9)
+- `pnpm --filter @forge/desktop exec vitest run src/product-shell-isolation.test.ts` — PASS (2/2)
+- `node --check apps/company-desktop/src/renderer/app.js` — PASS
+- IDE diagnostics for covering files — no errors

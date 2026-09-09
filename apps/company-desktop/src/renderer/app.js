@@ -94,6 +94,11 @@ function pipelineGate(item) {
   return item.planVersion ? "执行中" : item.specVersion ? "缺 plan" : "缺 spec";
 }
 
+function workItemRunButton(item) {
+  const runId = item.runIds?.[0];
+  return runId ? `<button data-open-run="${escapeHtml(runId)}">在工作台打开</button>` : "";
+}
+
 function renderOverview(dashboard = {}) {
   const active = state.workItems.filter((item) =>
     !["accepted", "completed", "cancelled", "rejected"].includes(item.state));
@@ -195,8 +200,22 @@ function renderApprovals() {
 function addTrace(label, result) {
   const runId = result?.runId || result?.id?.startsWith?.("run_") && result.id;
   state.traces.unshift({ label, result, runId });
+  renderWorkCenter();
+}
+
+function renderWorkCenter() {
   $("#traceList").classList.remove("empty");
-  $("#traceList").innerHTML = state.traces.map((trace) => {
+  const workItems = state.workItems.map((item) => {
+    const details = [
+      item.id,
+      item.state || "draft",
+      item.specVersion != null && `spec v${item.specVersion}`,
+      item.planVersion != null && `plan v${item.planVersion}`,
+    ].filter(Boolean).join(" · ");
+    return `<div class="list-row"><div><b>${escapeHtml(item.title || item.id)}</b>
+      <small>${escapeHtml(details)}</small></div>${workItemRunButton(item)}</div>`;
+  });
+  const traces = state.traces.map((trace) => {
     const value = trace.result || {};
     const details = [
       value.workItemId && `WorkItem ${value.workItemId}`,
@@ -208,7 +227,10 @@ function addTrace(label, result) {
     ].filter(Boolean).join(" · ") || JSON.stringify(value);
     return `<div class="list-row"><div><b>${escapeHtml(trace.label)}</b><small>${escapeHtml(details)}</small></div>
       ${trace.runId ? `<button data-open-run="${escapeHtml(trace.runId)}">在工作台打开</button>` : ""}</div>`;
-  }).join("");
+  });
+  const entries = [...workItems, ...traces];
+  $("#traceList").classList.toggle("empty", !entries.length);
+  $("#traceList").innerHTML = entries.join("") || "执行操作后显示追溯信息";
 }
 
 async function loadData() {
@@ -239,6 +261,7 @@ async function loadData() {
   if (employeeResult.status === "fulfilled") state.employees = listFrom(employeeResult.value, ["employees", "items"]);
   if (approvalResult.status === "fulfilled") state.approvals = listFrom(approvalResult.value, ["pending", "approvals", "items"]);
   renderOverview(dashboardResult.status === "fulfilled" ? dashboardResult.value : {});
+  renderWorkCenter();
   renderOrganization(orgResult.status === "fulfilled" ? orgResult.value : {});
   renderApprovals();
   const failures = [companyResult, dashboardResult, workResult, employeeResult, approvalResult, orgResult]
