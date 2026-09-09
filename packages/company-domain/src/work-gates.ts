@@ -89,8 +89,12 @@ export class WorkGates {
         .run({ ...artifact, createdAt: now, updatedAt: now });
       return artifact;
     })();
-    persistWorkArtifactFile(this.artifactOptions, artifact, this.db);
-    return artifact;
+    const workspacePath = persistWorkArtifactFile(
+      this.artifactOptions,
+      artifact,
+      this.db,
+    );
+    return workspacePath ? { ...artifact, workspacePath } : artifact;
   }
 
   acceptArtifact(input: {
@@ -134,8 +138,12 @@ export class WorkGates {
 
       return this.getArtifact(artifact.id);
     })();
-    persistWorkArtifactFile(this.artifactOptions, artifact, this.db);
-    return artifact;
+    const workspacePath = persistWorkArtifactFile(
+      this.artifactOptions,
+      artifact,
+      this.db,
+    );
+    return workspacePath ? { ...artifact, workspacePath } : artifact;
   }
 
   dispatch(input: {

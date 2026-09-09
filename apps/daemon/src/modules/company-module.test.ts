@@ -523,7 +523,7 @@ function companyRouterFixture(options: { artifactRoot?: true } = {}) {
     router,
     company,
     store,
-    artifactRoot: options.artifactRoot ? artifactRoot : undefined,
+    artifactRoot,
   };
 }
 

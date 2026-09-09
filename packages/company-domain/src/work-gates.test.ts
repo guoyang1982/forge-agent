@@ -29,12 +29,15 @@ describe("WorkGates", () => {
     const { gates, item, companyId, artifactRoot, employee } = openFixture({
       artifactRoot: true,
     });
-    gates.upsertDraft({
+    const first = gates.upsertDraft({
       workItemId: item.id,
       kind: "spec",
       content: "范围：最大化",
       actorId: employee.id,
     });
+    expect(first.workspacePath).toBe(
+      `${companyId}/work/${item.id}/spec.md`,
+    );
     const v2 = gates.upsertDraft({
       workItemId: item.id,
       kind: "spec",
@@ -50,8 +53,15 @@ describe("WorkGates", () => {
     );
 
     expect(readFileSync(specPath, "utf8")).toBe("范围：最大化 + 徽章");
-    gates.acceptArtifact({ artifactId: v2.id, actorId: employee.id });
+    rmSync(specPath);
+    const accepted = gates.acceptArtifact({
+      artifactId: v2.id,
+      actorId: employee.id,
+    });
     expect(readFileSync(specPath, "utf8")).toBe("范围：最大化 + 徽章");
+    expect(accepted.workspacePath).toBe(
+      `${companyId}/work/${item.id}/spec.md`,
+    );
     expect(gates.getArtifact(v2.id).workspacePath).toBe(
       `${companyId}/work/${item.id}/spec.md`,
     );

@@ -38,10 +38,10 @@ export function persistWorkArtifactFile(
     content: string;
   },
   db: Database.Database,
-): void {
+): string | null {
   const artifactRoot = options?.artifactRoot;
   if (!artifactRoot) {
-    return;
+    return null;
   }
 
   const relative = writeWorkArtifactFile({
@@ -54,4 +54,5 @@ export function persistWorkArtifactFile(
   db.prepare(
     "UPDATE company_work_artifacts SET workspace_path = ? WHERE id = ?",
   ).run(relative, artifact.id);
+  return relative;
 }
