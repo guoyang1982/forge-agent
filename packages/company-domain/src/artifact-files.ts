@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type Database from "better-sqlite3";
 
 export type WorkArtifactFileKind = "intent" | "spec" | "plan";
 
@@ -25,4 +26,32 @@ export function writeWorkArtifactFile(input: {
   mkdirSync(dirname(absolute), { recursive: true });
   writeFileSync(absolute, input.content, "utf8");
   return relative;
+}
+
+export function persistWorkArtifactFile(
+  options: CompanyArtifactOptions | undefined,
+  artifact: {
+    id: string;
+    companyId: string;
+    workItemId: string;
+    kind: WorkArtifactFileKind;
+    content: string;
+  },
+  db: Database.Database,
+): void {
+  const artifactRoot = options?.artifactRoot;
+  if (!artifactRoot) {
+    return;
+  }
+
+  const relative = writeWorkArtifactFile({
+    artifactRoot,
+    companyId: artifact.companyId,
+    workItemId: artifact.workItemId,
+    kind: artifact.kind,
+    content: artifact.content,
+  });
+  db.prepare(
+    "UPDATE company_work_artifacts SET workspace_path = ? WHERE id = ?",
+  ).run(relative, artifact.id);
 }

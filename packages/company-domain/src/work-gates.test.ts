@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ForgeStore } from "@forge/store";
@@ -25,6 +25,38 @@ afterEach(() => {
 });
 
 describe("WorkGates", () => {
+  it("rewrites spec.md on the second upsert and after accept", () => {
+    const { gates, item, companyId, artifactRoot, employee } = openFixture({
+      artifactRoot: true,
+    });
+    gates.upsertDraft({
+      workItemId: item.id,
+      kind: "spec",
+      content: "范围：最大化",
+      actorId: employee.id,
+    });
+    const v2 = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "spec",
+      content: "范围：最大化 + 徽章",
+      actorId: employee.id,
+    });
+    const specPath = join(
+      artifactRoot,
+      companyId,
+      "work",
+      item.id,
+      "spec.md",
+    );
+
+    expect(readFileSync(specPath, "utf8")).toBe("范围：最大化 + 徽章");
+    gates.acceptArtifact({ artifactId: v2.id, actorId: employee.id });
+    expect(readFileSync(specPath, "utf8")).toBe("范围：最大化 + 徽章");
+    expect(gates.getArtifact(v2.id).workspacePath).toBe(
+      `${companyId}/work/${item.id}/spec.md`,
+    );
+  });
+
   it("rejects dispatch without an accepted spec", () => {
     const { gates, item, employee } = openFixture();
 
@@ -195,10 +227,37 @@ describe("WorkGates", () => {
     });
     expect(intent?.content).toBe(reason);
   });
+
+  it("writes the fix child intent after pauseForFix", () => {
+    const { gates, item, employee, work, artifactRoot, companyId } = openFixture(
+      { artifactRoot: true },
+    );
+    const reason = "验收发现快捷键冲突";
+
+    const child = gates.pauseForFix({
+      workItemId: item.id,
+      reason,
+      ownerId: employee.id,
+    });
+
+    const intent = work
+      .listArtifacts(child.id)
+      .find((artifact) => artifact.kind === "intent");
+    expect(intent?.workspacePath).toBe(
+      `${companyId}/work/${child.id}/intent.md`,
+    );
+    expect(
+      readFileSync(
+        join(artifactRoot, companyId, "work", child.id, "intent.md"),
+        "utf8",
+      ),
+    ).toBe(reason);
+  });
 });
 
-function openFixture() {
+function openFixture(options?: { artifactRoot?: boolean }) {
   const root = mkdtempSync(join(tmpdir(), "forge-work-gates-"));
+  const artifactRoot = join(root, "company");
   fixtureRoots.push(root);
   const store = ForgeStore.open({
     dbPath: join(root, "data.db"),
@@ -231,7 +290,8 @@ function openFixture() {
     positionId: position.id,
     autonomyLevel: 2,
   });
-  const work = new WorkService(store.db, clock);
+  const artifactOptions = options?.artifactRoot ? { artifactRoot } : undefined;
+  const work = new WorkService(store.db, clock, artifactOptions);
   const item = work.createWorkItem({
     companyId: company.id,
     type: "implementation",
@@ -242,9 +302,11 @@ function openFixture() {
   });
 
   return {
+    artifactRoot,
+    companyId: company.id,
     db: store.db,
     employee,
-    gates: new WorkGates(store.db, clock),
+    gates: new WorkGates(store.db, clock, artifactOptions),
     item,
     work,
   };

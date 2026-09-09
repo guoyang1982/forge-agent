@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ForgeStore } from "@forge/store";
@@ -27,6 +27,48 @@ afterEach(() => {
 });
 
 describe("WorkService", () => {
+  it("writes intent.md after creating a work item when artifactRoot is set", () => {
+    const { company, employee, work, artifactRoot } = openFixture({
+      artifactRoot: true,
+    });
+
+    const item = work.createWorkItem({
+      companyId: company.id,
+      type: "implementation",
+      title: "团队版窗格最大化",
+      problem: "给 SSH 客户端出团队版：窗格一键最大化",
+      expectedOutcome: "可一键最大化窗格",
+      ownerId: employee.id,
+    });
+
+    const intent = work
+      .listArtifacts(item.id)
+      .find((artifact) => artifact.kind === "intent");
+    const relative = `${company.id}/work/${item.id}/intent.md`;
+    expect(intent?.workspacePath).toBe(relative);
+    expect(
+      readFileSync(
+        join(artifactRoot, company.id, "work", item.id, "intent.md"),
+        "utf8",
+      ),
+    ).toBe(item.problem);
+  });
+
+  it("does not write files when artifactRoot is omitted", () => {
+    const { company, employee, work, artifactRoot } = openFixture();
+
+    work.createWorkItem({
+      companyId: company.id,
+      type: "implementation",
+      title: "t",
+      problem: "p",
+      expectedOutcome: "o",
+      ownerId: employee.id,
+    });
+
+    expect(existsSync(join(artifactRoot, company.id))).toBe(false);
+  });
+
   it("registers a demand as a draft work item with intent artifact", () => {
     const { company, employee, work } = openFixture();
 
@@ -81,12 +123,14 @@ describe("WorkService", () => {
   });
 });
 
-function openFixture(): {
+function openFixture(options?: { artifactRoot?: boolean }): {
   company: ReturnType<CompanyService["create"]>;
   employee: ReturnType<OrganizationService["hire"]>;
   work: WorkService;
+  artifactRoot: string;
 } {
   const root = mkdtempSync(join(tmpdir(), "forge-company-domain-"));
+  const artifactRoot = join(root, "company");
   fixtureRoots.push(root);
   const store = ForgeStore.open({
     dbPath: join(root, "data.db"),
@@ -123,6 +167,11 @@ function openFixture(): {
   return {
     company,
     employee,
-    work: new WorkService(store.db, clock),
+    work: new WorkService(
+      store.db,
+      clock,
+      options?.artifactRoot ? { artifactRoot } : undefined,
+    ),
+    artifactRoot,
   };
 }

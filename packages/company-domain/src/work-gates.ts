@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
+import {
+  persistWorkArtifactFile,
+  type CompanyArtifactOptions,
+} from "./artifact-files.js";
 import type { Clock } from "./clock.js";
 import { newCompanyId } from "./ids.js";
 import type {
@@ -14,6 +18,7 @@ export class WorkGates {
   constructor(
     private readonly db: Database.Database,
     private readonly clock: Clock,
+    private readonly artifactOptions?: CompanyArtifactOptions,
   ) {}
 
   upsertDraft(input: {
@@ -22,7 +27,7 @@ export class WorkGates {
     content: string;
     actorId: string;
   }): WorkArtifact {
-    return this.db.transaction(() => {
+    const artifact = this.db.transaction(() => {
       const item = this.getWorkItem(input.workItemId);
       const now = this.clock.now();
       const contentHash = createHash("sha256")
@@ -84,13 +89,15 @@ export class WorkGates {
         .run({ ...artifact, createdAt: now, updatedAt: now });
       return artifact;
     })();
+    persistWorkArtifactFile(this.artifactOptions, artifact, this.db);
+    return artifact;
   }
 
   acceptArtifact(input: {
     artifactId: string;
     actorId: string;
   }): WorkArtifact {
-    return this.db.transaction(() => {
+    const artifact = this.db.transaction(() => {
       const artifact = this.getArtifact(input.artifactId);
       if (artifact.status !== "draft") {
         throw new Error("artifact not draft");
@@ -127,6 +134,8 @@ export class WorkGates {
 
       return this.getArtifact(artifact.id);
     })();
+    persistWorkArtifactFile(this.artifactOptions, artifact, this.db);
+    return artifact;
   }
 
   dispatch(input: {
@@ -209,7 +218,7 @@ export class WorkGates {
     reason: string;
     ownerId: string;
   }): WorkItem {
-    return this.db.transaction(() => {
+    const result = this.db.transaction(() => {
       const parent = this.getWorkItem(input.workItemId);
       const now = this.clock.now();
       this.db
@@ -232,6 +241,8 @@ export class WorkGates {
         now,
       });
     })();
+    persistWorkArtifactFile(this.artifactOptions, result.artifact, this.db);
+    return result.item;
   }
 
   getArtifact(id: string): WorkArtifact {
@@ -302,7 +313,7 @@ export class WorkGates {
     expectedOutcome: string;
     ownerId: string;
     now: string;
-  }): WorkItem {
+  }): { item: WorkItem; artifact: WorkArtifact } {
     const item: WorkItem = {
       id: newCompanyId("work"),
       companyId: input.companyId,
@@ -360,6 +371,6 @@ export class WorkGates {
             @createdAt, @updatedAt)`,
       )
       .run({ ...artifact, createdAt: input.now, updatedAt: input.now });
-    return item;
+    return { item, artifact };
   }
 }

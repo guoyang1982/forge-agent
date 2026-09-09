@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
+import {
+  persistWorkArtifactFile,
+  type CompanyArtifactOptions,
+} from "./artifact-files.js";
 import type { Clock } from "./clock.js";
 import { newCompanyId } from "./ids.js";
 import { WorkGates } from "./work-gates.js";
@@ -72,6 +76,7 @@ export class WorkService {
   constructor(
     private readonly db: Database.Database,
     private readonly clock: Clock,
+    private readonly artifactOptions?: CompanyArtifactOptions,
   ) {}
 
   createGoal(input: {
@@ -191,6 +196,7 @@ export class WorkService {
         )
         .run({ ...artifact, createdAt: now, updatedAt: now });
     })();
+    persistWorkArtifactFile(this.artifactOptions, artifact, this.db);
 
     return item;
   }
@@ -214,7 +220,11 @@ export class WorkService {
     assigneeId: string;
     actorId: string;
   }): WorkItem {
-    return new WorkGates(this.db, this.clock).dispatch(input);
+    return new WorkGates(
+      this.db,
+      this.clock,
+      this.artifactOptions,
+    ).dispatch(input);
   }
 
   pauseForFix(input: {
@@ -222,6 +232,10 @@ export class WorkService {
     reason: string;
     ownerId: string;
   }): WorkItem {
-    return new WorkGates(this.db, this.clock).pauseForFix(input);
+    return new WorkGates(
+      this.db,
+      this.clock,
+      this.artifactOptions,
+    ).pauseForFix(input);
   }
 }
