@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { Clock } from "./clock.js";
 import { newCompanyId } from "./ids.js";
+import { WorkGates } from "./work-gates.js";
 
 export type Goal = {
   id: string;
@@ -21,6 +22,20 @@ export type Project = {
 
 export type WorkItemType = "intent" | "implementation" | "fix" | "research";
 
+export type WorkItemState =
+  | "draft"
+  | "ready"
+  | "in_progress"
+  | "waiting_input"
+  | "waiting_approval"
+  | "blocked"
+  | "submitted"
+  | "verifying"
+  | "accepted"
+  | "rejected"
+  | "completed"
+  | "cancelled";
+
 export type WorkItem = {
   id: string;
   companyId: string;
@@ -33,7 +48,7 @@ export type WorkItem = {
   expectedOutcome: string;
   ownerId: string;
   assigneeId: string | null;
-  state: "draft";
+  state: WorkItemState;
   risk: "low";
   autonomyLevel: 2;
   version: number;
@@ -192,5 +207,21 @@ export class WorkService {
         ORDER BY created_at, id`,
       )
       .all(workItemId) as WorkArtifact[];
+  }
+
+  dispatch(input: {
+    workItemId: string;
+    assigneeId: string;
+    actorId: string;
+  }): WorkItem {
+    return new WorkGates(this.db, this.clock).dispatch(input);
+  }
+
+  pauseForFix(input: {
+    workItemId: string;
+    reason: string;
+    ownerId: string;
+  }): WorkItem {
+    return new WorkGates(this.db, this.clock).pauseForFix(input);
   }
 }
