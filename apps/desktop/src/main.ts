@@ -1751,6 +1751,8 @@ app.whenReady().then(async () => {
     createWorkbenchWindow: createWindow,
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
+    requestDaemonMethod: (method, params) =>
+      requestDaemonMethod(loadConfig(), method, params),
   });
   void ensureDaemonEventSubscriber(loadConfig());
 

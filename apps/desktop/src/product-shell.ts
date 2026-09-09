@@ -1,6 +1,7 @@
 import { BrowserWindow, Menu, ipcMain, type MenuItemConstructorOptions } from "electron";
 import { existsSync } from "node:fs";
 import { COMPANY_WINDOW_OPTIONS, resolveCompanyAssetPaths } from "@forge/company-desktop";
+import { DAEMON_COMPANY_METHODS } from "@forge/protocol";
 import { routeForgeDeepLink } from "./product-shell-menu.js";
 
 let companyWindow: BrowserWindow | null = null;
@@ -10,7 +11,18 @@ export type ProductShellDeps = {
   createWorkbenchWindow: () => BrowserWindow;
   isPackaged: boolean;
   resourcesPath: string;
+  requestDaemonMethod: (method: string, params?: unknown) => Promise<unknown>;
 };
+
+export function assertCompanyInvokeMethod(method: unknown): string {
+  if (
+    typeof method !== "string" ||
+    !Object.values(DAEMON_COMPANY_METHODS).includes(method as never)
+  ) {
+    throw new Error(`blocked method: ${String(method)}`);
+  }
+  return method;
+}
 
 export function installProductShell(deps: ProductShellDeps): void {
   const focusWorkbench = () => {
@@ -60,6 +72,7 @@ export function installProductShell(deps: ProductShellDeps): void {
 
   ipcMain.removeHandler("company:open-workbench");
   ipcMain.removeHandler("company:get-app-info");
+  ipcMain.removeHandler("company:invoke");
   ipcMain.handle("company:open-workbench", (_event, url?: unknown) => {
     if (typeof url === "string" && url.length > 0) {
       if (routeForgeDeepLink(url) !== "workbench") {
@@ -73,6 +86,10 @@ export function installProductShell(deps: ProductShellDeps): void {
     name: "Forge Company",
     product: "company",
   }));
+  ipcMain.handle("company:invoke", (_event, method, params) => {
+    const allowed = assertCompanyInvokeMethod(method);
+    return deps.requestDaemonMethod(allowed, params);
+  });
 
   const isMac = process.platform === "darwin";
   const template: MenuItemConstructorOptions[] = [
