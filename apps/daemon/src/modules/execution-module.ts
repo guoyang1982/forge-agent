@@ -45,6 +45,7 @@ export function createExecutionModule(): DaemonModule<ForgeDaemonContext> {
     start: async (context) => {
       await context.executionRecovery.recoverOnStartup();
       context.workspaceLeases?.reclaimExpired(context.executionClock.now());
+      context.workspaceLeases?.reclaimOrphaned?.();
       context.wakeExecutor();
     },
   };

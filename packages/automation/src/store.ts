@@ -18,6 +18,7 @@ export interface CreateAutomationInput {
   trigger: AutomationRecord["trigger"];
   prompt: string;
   model?: string;
+  runtime?: string;
   memoryEnabled?: boolean;
   sessionMode?: "new" | "resume";
   resumeSessionId?: string;
@@ -67,6 +68,7 @@ interface AutomationRow {
   timezone: string | null;
   prompt: string;
   model: string | null;
+  runtime?: string | null;
   memory_enabled: number;
   session_mode: string;
   resume_session_id: string | null;
@@ -124,6 +126,7 @@ function rowToRecord(row: AutomationRow): AutomationRecord {
     trigger,
     prompt: row.prompt,
     model: row.model ?? undefined,
+    runtime: row.runtime ?? undefined,
     memoryEnabled: row.memory_enabled === 1,
     sessionMode: row.session_mode as "new" | "resume",
     resumeSessionId: row.resume_session_id ?? undefined,
@@ -167,6 +170,8 @@ function draftToInput(draft: AutomationDraft & { cwd: string }): CreateAutomatio
     cwd: draft.cwd,
     trigger,
     prompt: draft.prompt,
+    model: draft.model?.trim() || undefined,
+    runtime: draft.runtime?.trim() || undefined,
     enabled: draft.enabled,
     notify: draft.notify,
   };
@@ -175,7 +180,17 @@ function draftToInput(draft: AutomationDraft & { cwd: string }): CreateAutomatio
 export class AutomationStore {
   constructor(private readonly db: Database.Database) {
     this.ensureNotifyColumns();
+    this.ensureRuntimeColumn();
     this.ensureDurableRunColumns();
+  }
+
+  private ensureRuntimeColumn(): void {
+    const rows = this.db.prepare("PRAGMA table_info(automations)").all() as Array<{
+      name: string;
+    }>;
+    if (!rows.some((row) => row.name === "runtime")) {
+      this.db.exec("ALTER TABLE automations ADD COLUMN runtime TEXT");
+    }
   }
 
   private ensureNotifyColumns(): void {
@@ -238,10 +253,10 @@ export class AutomationStore {
       .prepare(
         `INSERT INTO automations (
           id, name, description, enabled, cwd, trigger_type, cron_expr, timezone,
-          prompt, model, memory_enabled, session_mode, resume_session_id,
+          prompt, model, runtime, memory_enabled, session_mode, resume_session_id,
           created_at, updated_at, last_run_at, next_run_at,
           notify_enabled, notify_channel_kind, notify_channel_id, notify_thread_key
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -254,6 +269,7 @@ export class AutomationStore {
         timezone,
         data.prompt,
         data.model ?? null,
+        data.runtime ?? null,
         data.memoryEnabled ? 1 : 0,
         data.sessionMode ?? "new",
         data.resumeSessionId ?? null,
@@ -299,7 +315,10 @@ export class AutomationStore {
     const cwd = patch.cwd ?? existing.cwd;
     const trigger = patch.trigger ?? existing.trigger;
     const prompt = patch.prompt ?? existing.prompt;
-    const model = patch.model !== undefined ? patch.model : existing.model;
+    const model =
+      patch.model !== undefined ? patch.model.trim() || undefined : existing.model;
+    const runtime =
+      patch.runtime !== undefined ? patch.runtime.trim() || undefined : existing.runtime;
     const memoryEnabled =
       patch.memoryEnabled !== undefined ? patch.memoryEnabled : existing.memoryEnabled;
     const sessionMode = patch.sessionMode ?? existing.sessionMode;
@@ -325,7 +344,7 @@ export class AutomationStore {
       .prepare(
         `UPDATE automations SET
           name = ?, description = ?, enabled = ?, cwd = ?, trigger_type = ?,
-          cron_expr = ?, timezone = ?, prompt = ?, model = ?, memory_enabled = ?,
+          cron_expr = ?, timezone = ?, prompt = ?, model = ?, runtime = ?, memory_enabled = ?,
           session_mode = ?, resume_session_id = ?, updated_at = ?, next_run_at = ?,
           notify_enabled = ?, notify_channel_kind = ?, notify_channel_id = ?,
           notify_thread_key = ?
@@ -341,6 +360,7 @@ export class AutomationStore {
         trigger.type === "cron" ? trigger.timezone : null,
         prompt,
         model ?? null,
+        runtime ?? null,
         memoryEnabled ? 1 : 0,
         sessionMode,
         resumeSessionId ?? null,

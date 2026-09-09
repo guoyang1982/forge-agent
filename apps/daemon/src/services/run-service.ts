@@ -9,7 +9,7 @@ import type {
 } from "@forge/protocol";
 import { flattenContentForTextOnlyApi, plainTextFromChatContent } from "@forge/protocol";
 import { DEFAULT_CONFIG } from "@forge/protocol";
-import { loadConfig } from "@forge/config";
+import { applyRequestedModel, loadConfig } from "@forge/config";
 import type { SessionStore } from "@forge/session";
 import {
   AgentMaxStepsError,
@@ -128,19 +128,10 @@ export async function handleRun(
   const cwd = req.cwd || process.cwd();
   const absCwd = resolve(cwd);
   const loaded = loadConfig({ cwd: absCwd });
-  const requestedModel = effectiveModelName(
-    runtimePolicy?.model || req.runtime?.model,
-  );
   const provider = req.runtime?.provider?.trim() || "forge";
   const config =
-    provider === "forge" && requestedModel
-      ? {
-          ...loaded,
-          model: {
-            ...loaded.model,
-            name: requestedModel,
-          },
-        }
+    provider === "forge"
+      ? applyRequestedModel(loaded, runtimePolicy?.model || req.runtime?.model)
       : loaded;
   const guard = await WorkspaceGuard.ensure(absCwd, {
     allowedRoots: config.permissions?.fileSystem.allowedRoots,
@@ -1546,10 +1537,4 @@ function linkExternalAbortSignal(
     return;
   }
   externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
-}
-
-function effectiveModelName(name: string | undefined): string | undefined {
-  const trimmed = name?.trim();
-  if (!trimmed || trimmed === "forge-default") return undefined;
-  return trimmed;
 }

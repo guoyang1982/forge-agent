@@ -7,6 +7,7 @@ import { ForgeStore } from "@forge/store";
 import { TriggerStore } from "@forge/workflows";
 import {
   TriggerScheduleClaimStore,
+  automationRunInput,
   automationToWorkflow,
   processScheduledAutomationCatchUp,
 } from "./durable-adapter.js";
@@ -26,6 +27,39 @@ describe("automationToWorkflow", () => {
       triggers: [{ kind: "cron" }],
       steps: [{ kind: "forge.agent" }],
     });
+  });
+
+  it("does not bake run timeout into the published workflow definition", () => {
+    expect(automationToWorkflow(legacyAutomationFixture()).steps[0]?.timeoutMs).toBeUndefined();
+  });
+
+  it("passes the automation model into the forge run request", () => {
+    expect(
+      automationRunInput(
+        legacyAutomationFixture({ model: "deepseek-v4-flash" }),
+        "sess-1",
+      ),
+    ).toMatchObject({
+      cwd: "/tmp/project",
+      message: "Summarize open PRs",
+      sessionId: "sess-1",
+      runtime: { model: "deepseek-v4-flash" },
+    });
+  });
+
+  it("passes cursor runtime into the forge run request", () => {
+    expect(
+      automationRunInput(
+        legacyAutomationFixture({ runtime: "cursor", model: "composer" }),
+        "sess-1",
+      ),
+    ).toMatchObject({
+      runtime: { provider: "cursor", model: "composer" },
+    });
+  });
+
+  it("omits runtime when the automation has no model override", () => {
+    expect(automationRunInput(legacyAutomationFixture()).runtime).toBeUndefined();
   });
 
   it("maps a manual automation to a manual trigger", () => {

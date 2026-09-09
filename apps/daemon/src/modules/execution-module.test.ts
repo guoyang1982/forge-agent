@@ -175,6 +175,10 @@ describe("execution module", () => {
         order.push("reclaim");
         return [];
       },
+      reclaimOrphaned: () => {
+        order.push("reclaim-orphaned");
+        return [];
+      },
     } as ForgeDaemonContext["workspaceLeases"];
     context.executionRecovery = {
       recoverOnStartup: async () => {
@@ -187,7 +191,7 @@ describe("execution module", () => {
 
     await createExecutionModule().start?.(context);
 
-    expect(order).toEqual(["recover", "reclaim", "wake"]);
+    expect(order).toEqual(["recover", "reclaim", "reclaim-orphaned", "wake"]);
   });
 });
 

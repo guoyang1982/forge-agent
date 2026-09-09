@@ -22,6 +22,18 @@ export function buildAcpPromptBlocks(
 
   sections.push(FORGE_TURN_RULES);
 
+  if (request.automationRun) {
+    sections.push(
+      [
+        "Automation execution:",
+        "- You are the unattended executor, not a chatbot. Complete the task in this turn.",
+        "- Do not ask the user clarifying questions, preferences, or confirmation.",
+        "- If a tool is denied or fails, pick a reasonable default and continue; do not wait for a reply.",
+        "- Write real files to the workspace and finish with a concrete result summary.",
+      ].join("\n"),
+    );
+  }
+
   if (options?.priorHistory) {
     sections.push(options.priorHistory);
   }

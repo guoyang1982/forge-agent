@@ -82,8 +82,19 @@ export class WorkspaceLeaseService {
           .get(input.workspaceId) as LeaseHolderRow | undefined;
 
         if (active) {
-          if (active.expires_at <= acquiredAt && !this.holderStillOwns(active)) {
-            this.release(active.id, "expired");
+          if (this.holderStillOwns(active)) {
+            throw new WorkspaceConflictError(
+              `workspace ${input.workspaceId} already has an active write lease`,
+            );
+          }
+          if (
+            this.holderIsTerminated(active) ||
+            active.expires_at <= acquiredAt
+          ) {
+            this.release(
+              active.id,
+              active.expires_at <= acquiredAt ? "expired" : "orphaned",
+            );
           } else {
             throw new WorkspaceConflictError(
               `workspace ${input.workspaceId} already has an active write lease`,
@@ -158,6 +169,62 @@ export class WorkspaceLeaseService {
       ids.push(row.id);
     }
     return ids;
+  }
+
+  reclaimOrphaned(): string[] {
+    const active = this.db
+      .prepare(
+        `SELECT id, expires_at, run_id, step_id, attempt_id
+         FROM core_workspace_leases
+         WHERE released_at IS NULL`,
+      )
+      .all() as LeaseHolderRow[];
+    const ids: string[] = [];
+    for (const row of active) {
+      if (!this.holderIsTerminated(row)) continue;
+      this.release(row.id, "orphaned");
+      ids.push(row.id);
+    }
+    return ids;
+  }
+
+  releaseByRunId(runId: string, reason = "run cancelled"): number {
+    const rows = this.db
+      .prepare(
+        `SELECT id FROM core_workspace_leases
+         WHERE run_id = ? AND released_at IS NULL`,
+      )
+      .all(runId) as Array<{ id: string }>;
+    for (const row of rows) {
+      this.release(row.id, reason);
+    }
+    return rows.length;
+  }
+
+  private holderIsTerminated(lease: LeaseHolderRow): boolean {
+    if (lease.attempt_id) {
+      const attempt = this.db
+        .prepare(`SELECT state FROM core_attempts WHERE id = ?`)
+        .get(lease.attempt_id) as { state: string } | undefined;
+      if (
+        attempt &&
+        (attempt.state === "abandoned" ||
+          attempt.state === "cancelled" ||
+          attempt.state === "failed" ||
+          attempt.state === "succeeded")
+      ) {
+        return true;
+      }
+    }
+    const run = this.db
+      .prepare(`SELECT state FROM core_runs WHERE id = ?`)
+      .get(lease.run_id) as { state: string } | undefined;
+    return Boolean(
+      run &&
+        (run.state === "cancelled" ||
+          run.state === "failed" ||
+          run.state === "succeeded"),
+    );
   }
 
   private holderStillOwns(lease: LeaseHolderRow): boolean {

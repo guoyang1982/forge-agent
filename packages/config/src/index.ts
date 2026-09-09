@@ -147,6 +147,23 @@ function mergeConfig(
             ? layer.profiles
             : { ...(out.profiles ?? {}), ...layer.profiles },
       activeProfile: layer.activeProfile ?? out.activeProfile,
+      runtimes: layer.runtimes
+        ? {
+            ...out.runtimes,
+            ...layer.runtimes,
+            claudeCode: {
+              ...out.runtimes?.claudeCode,
+              ...layer.runtimes.claudeCode,
+              env: {
+                ...out.runtimes?.claudeCode?.env,
+                ...layer.runtimes.claudeCode?.env,
+              },
+              models:
+                layer.runtimes.claudeCode?.models ??
+                out.runtimes?.claudeCode?.models,
+            },
+          }
+        : out.runtimes,
     };
   }
   return out;
@@ -256,6 +273,7 @@ function stripDaemonForFile(cfg: ForgeConfig): Partial<ForgeConfig> {
     ui: cfg.ui,
     reflection: cfg.reflection,
     permissions: cfg.permissions,
+    runtimes: cfg.runtimes,
   };
   // With profiles, active model is derived from activeProfile on load — no duplicate block.
   const hasProfiles =
@@ -399,6 +417,7 @@ export {
 } from "./providers.js";
 export {
   applyActiveProfile,
+  applyRequestedModel,
   formatProfilesList,
   migrateLegacyProfiles,
 } from "./profiles.js";

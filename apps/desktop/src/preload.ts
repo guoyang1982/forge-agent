@@ -589,6 +589,8 @@ const api = {
           | { type: "cron"; cron: string; timezone: string }
           | { type: "manual" };
         prompt: string;
+        model?: string;
+        runtime?: string;
         nextRunAt?: string;
         lastRunAt?: string;
       };
@@ -602,6 +604,8 @@ const api = {
       prompt: string;
       cwd?: string;
       enabled?: boolean;
+      model?: string;
+      runtime?: string;
       notify?: {
         enabled: boolean;
         channelKind?: "ilink" | "feishu" | "dingtalk" | "http";
@@ -624,6 +628,8 @@ const api = {
       prompt?: string;
       cwd?: string;
       enabled?: boolean;
+      model?: string;
+      runtime?: string;
       notify?: {
         enabled: boolean;
         channelKind?: "ilink" | "feishu" | "dingtalk" | "http";

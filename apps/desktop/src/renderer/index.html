@@ -658,6 +658,24 @@
           <label for="automationPromptInput">Prompt</label>
           <textarea id="automationPromptInput" class="modal-input" rows="6" placeholder="自动化任务说明…"></textarea>
         </div>
+        <div class="field-grid">
+          <div class="field">
+            <label for="automationRuntimeSelect">Runtime</label>
+            <select id="automationRuntimeSelect" class="modal-input">
+              <option value="">跟随项目默认</option>
+              <option value="forge">Forge</option>
+              <option value="cursor">Cursor</option>
+              <option value="codex">Codex</option>
+              <option value="claude-code">Claude Code</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="automationModelSelect">模型</label>
+            <select id="automationModelSelect" class="modal-input">
+              <option value="">跟随项目默认</option>
+            </select>
+          </div>
+        </div>
         <div class="field">
           <label>工作目录</label>
           <div id="automationCwdDisplay" class="automation-cwd-display tiny">—</div>

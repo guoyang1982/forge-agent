@@ -131,6 +131,39 @@ describe("durable automation occurrence integration", () => {
     expect(fx.workflowInstances()[0]?.state).toBe("succeeded");
   });
 
+  it("releases a workflow concurrency slot when the automation run already failed", async () => {
+    const fx = durableAutomationFixture();
+
+    await fx.runManualOccurrence();
+    fx.simulateFailedProjectionLeavingInstanceRunning();
+    expect(fx.workflowInstances()[0]?.state).toBe("running");
+
+    await fx.reconcileProjections();
+
+    expect(fx.workflowInstances()[0]?.state).toBe("failed");
+    await expect(fx.runManualOccurrence()).resolves.toMatchObject({ status: "success" });
+    expect(fx.manualAutomationRuns()).toHaveLength(2);
+  });
+
+  it("releases a slot when daemon restart parked the agent step for manual review", async () => {
+    const fx = durableAutomationFixture();
+
+    await fx.runManualOccurrence();
+    fx.simulateInterruptedAgentWaitAfterRestart();
+    expect(fx.workflowInstances()[0]?.state).toBe("waiting");
+    expect(fx.manualAutomationRuns()[0]?.status).toBe("running");
+
+    await fx.reconcileProjections();
+
+    expect(fx.manualAutomationRuns()[0]).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("重启"),
+    });
+    expect(fx.workflowInstances()[0]?.state).toMatch(/failed|cancelled/);
+    await expect(fx.runManualOccurrence()).resolves.toMatchObject({ status: "success" });
+    expect(fx.manualAutomationRuns()).toHaveLength(2);
+  });
+
   it("publishes a new workflow version when the automation definition changes", async () => {
     const fx = durableAutomationFixture();
 
@@ -276,8 +309,9 @@ function durableAutomationFixture(options: { seedGrants?: boolean } = {}) {
     },
     async runManualOccurrence() {
       newScheduler();
-      await execute(manual.id, "manual");
+      const run = await execute(manual.id, "manual");
       activeScheduler.stop();
+      return run;
     },
     updateManualPromptAndAuthorizeNextVersion(prompt: string) {
       store.update(manual.id, { prompt });
@@ -338,6 +372,86 @@ function durableAutomationFixture(options: { seedGrants?: boolean } = {}) {
            WHERE id = ?`,
         )
         .run(projection.workflowInstanceId);
+    },
+    simulateFailedProjectionLeavingInstanceRunning() {
+      const projection = store.listRuns(manual.id)[0]!;
+      forgeStore.db
+        .prepare(
+          `UPDATE automation_runs
+           SET status = 'failed', error = 'simulated failure', finished_at = ?
+           WHERE id = ?`,
+        )
+        .run(new Date().toISOString(), projection.id);
+      forgeStore.db
+        .prepare(
+          `UPDATE core_workflow_instances
+           SET state = 'running'
+           WHERE id = ?`,
+        )
+        .run(projection.workflowInstanceId);
+      if (projection.durableRunId) {
+        forgeStore.db
+          .prepare(
+            `UPDATE core_runs SET state = 'running', updated_at = ? WHERE id = ?`,
+          )
+          .run(new Date().toISOString(), projection.durableRunId);
+      }
+    },
+    simulateInterruptedAgentWaitAfterRestart() {
+      const projection = store.listRuns(manual.id)[0]!;
+      const now = new Date().toISOString();
+      forgeStore.db
+        .prepare(
+          `UPDATE automation_runs
+           SET status = 'running', finished_at = NULL, preview = NULL, error = NULL
+           WHERE id = ?`,
+        )
+        .run(projection.id);
+      forgeStore.db
+        .prepare(
+          `UPDATE core_workflow_instances SET state = 'waiting' WHERE id = ?`,
+        )
+        .run(projection.workflowInstanceId);
+      if (projection.durableRunId) {
+        forgeStore.db
+          .prepare(
+            `UPDATE core_runs SET state = 'running', updated_at = ? WHERE id = ?`,
+          )
+          .run(now, projection.durableRunId);
+        forgeStore.db
+          .prepare(
+            `UPDATE core_steps SET state = 'waiting', updated_at = ? WHERE run_id = ?`,
+          )
+          .run(now, projection.durableRunId);
+        const attempt = forgeStore.db
+          .prepare(
+            `SELECT id FROM core_attempts WHERE run_id = ? ORDER BY attempt_number DESC LIMIT 1`,
+          )
+          .get(projection.durableRunId) as { id: string } | undefined;
+        forgeStore.db
+          .prepare(
+            `UPDATE core_attempts SET state = 'abandoned', finished_at = ?, updated_at = ?
+             WHERE run_id = ?`,
+          )
+          .run(now, now, projection.durableRunId);
+        if (attempt?.id) {
+          forgeStore.db
+            .prepare(
+              `INSERT INTO core_step_waits (
+                 id, run_id, step_id, attempt_id, wait_kind, wait_ref, state,
+                 payload_json, created_at
+               ) VALUES (?, ?, 'agent', ?, 'manual_review', ?, 'waiting', ?, ?)`,
+            )
+            .run(
+              "wait-interrupted",
+              projection.durableRunId,
+              attempt.id,
+              "wait-interrupted",
+              JSON.stringify({ reason: "interrupted_non_idempotent" }),
+              now,
+            );
+        }
+      }
     },
     async reconcileProjections() {
       await reconcileAutomationRuns({

@@ -15,6 +15,7 @@ import {
   waitForDaemonDisconnect,
 } from "./daemon-lifecycle.js";
 import { connectDaemon } from "@forge/bus";
+import { agentEventFromCoreNotification } from "./core-event-bridge.js";
 import {
   DAEMON_METHODS,
   FORGE_DAEMON_BUILD,
@@ -1639,6 +1640,10 @@ async function ensureDaemonEventSubscriber(cfg?: ForgeConfig): Promise<void> {
       const client = await connectDaemon(config.daemon.socketPath);
       daemonEventClient = client;
       client.onEvent((ev) => sendAgentEvent(ev));
+      client.onNotification((event) => {
+        const ev = agentEventFromCoreNotification(event);
+        if (ev) sendAgentEvent(ev);
+      });
       client.onClose(() => {
         daemonEventClient = null;
         setTimeout(() => {

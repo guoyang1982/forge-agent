@@ -56,6 +56,17 @@ describe("cross-device session synchronization", () => {
     ).toBe(true);
   });
 
+  it("soft-refreshes a snapshot of a still-running session from the daemon journal", () => {
+    const source = readFileSync(join(here, "session-run-ui.js"), "utf8");
+    const switchFn =
+      source.match(/function switchSessionView[\s\S]*?\n    function isSessionRunning/)?.[0] ??
+      "";
+
+    expect(switchFn).toContain("needsJournalRefresh");
+    expect(switchFn).not.toContain("!isSessionRunning(newSessionId) &&");
+    expect(switchFn).toContain("restoreSessionTimeline");
+  });
+
   it("keeps polling an externally-owned run but not a local live run", () => {
     const api = loadSessionRunUi();
 
@@ -66,6 +77,14 @@ describe("cross-device session synchronization", () => {
         versionChanged: false,
       }),
     ).toBe(true);
+    expect(
+      api.shouldRefreshSessionTimeline({
+        running: true,
+        locallyOwned: false,
+        versionChanged: false,
+        liveEventRecently: true,
+      }),
+    ).toBe(false);
     expect(
       api.shouldRefreshSessionTimeline({
         running: true,
@@ -88,6 +107,10 @@ describe("cross-device session synchronization", () => {
     expect(replay).toContain("sessionRuns.markSessionRunning(");
     expect(refresh).toContain("shouldRefreshSessionTimeline");
     expect(refresh).toContain("state.clientRuns.values()");
+    expect(refresh).toContain("liveEventRecently");
+    const restore =
+      source.match(/async function restoreSessionTimeline[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(restore).toContain("!(running && !locallyOwned)");
   });
 
   it("clears a journal-only ghost run when cancel finds no backend work", () => {

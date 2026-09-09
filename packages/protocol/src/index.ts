@@ -1406,6 +1406,13 @@ export interface ForgeConfig {
   activeProfile?: string;
   /** Named profiles — deepseek, openai, custom, … */
   profiles?: Record<string, ModelProfile>;
+  /** External agent runtime settings (Claude Code CLI, etc.). */
+  runtimes?: {
+    claudeCode?: {
+      env?: Record<string, string>;
+      models?: RuntimeModelSummary[];
+    };
+  };
   model: {
     /** Catalog id: openai | deepseek | dashscope | anthropic-deepseek | custom */
     provider?: string;

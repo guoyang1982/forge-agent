@@ -206,6 +206,8 @@ export function registerAutomationCommands(program: Command): void {
       "send successful run results to a channel kind: ilink, feishu, dingtalk, http",
     )
     .option("--notify-channel-id <id>", "send notifications to a specific channel id")
+    .option("--model <name>", "model id or profile id for each run")
+    .option("--runtime <id>", "runtime: forge, cursor, codex, or claude-code")
     .option("-y, --yes", "skip confirmation prompt")
     .action(async (opts: {
       name: string;
@@ -216,6 +218,8 @@ export function registerAutomationCommands(program: Command): void {
       notifyIlink?: boolean;
       notifyChannel?: string;
       notifyChannelId?: string;
+      model?: string;
+      runtime?: string;
       yes?: boolean;
     }) => {
       try {
@@ -226,6 +230,8 @@ export function registerAutomationCommands(program: Command): void {
           timezone: opts.timezone,
         };
         if (opts.cron) draft.cron = opts.cron;
+        if (opts.model?.trim()) draft.model = opts.model.trim();
+        if (opts.runtime?.trim()) draft.runtime = opts.runtime.trim();
         const notifyKind = opts.notifyIlink
           ? "ilink"
           : opts.notifyChannel;
@@ -289,6 +295,37 @@ export function registerAutomationCommands(program: Command): void {
         )) as RunAutomationResult;
         console.log(
           `Run ${shortId(result.run.id)} started (${result.run.status}) · session ${shortId(result.run.sessionId)}`,
+        );
+      } catch (error) {
+        handleError(error);
+      }
+    });
+
+  auto
+    .command("update")
+    .description("Update an automation")
+    .argument("<id>", "automation id or prefix")
+    .option("--model <name>", "model id or profile id; empty string follows project default")
+    .option("--runtime <id>", "runtime: forge, cursor, codex, or claude-code")
+    .action(async (id: string, opts: { model?: string; runtime?: string }) => {
+      try {
+        if (opts.model === undefined && opts.runtime === undefined) {
+          console.error("Specify at least one field to update, e.g. --runtime cursor --model composer");
+          process.exit(1);
+        }
+        const automationId = await resolveAutomationId(id);
+        if (!automationId) process.exit(1);
+        const patch: { model?: string; runtime?: string } = {};
+        if (opts.model !== undefined) patch.model = opts.model.trim();
+        if (opts.runtime !== undefined) patch.runtime = opts.runtime.trim();
+        const result = (await withDaemon(undefined, (socketPath) =>
+          requestDaemon(socketPath, DAEMON_METHODS.UPDATE_AUTOMATION, {
+            id: automationId,
+            patch,
+          }),
+        )) as UpdateAutomationResult;
+        console.log(
+          `Updated ${result.automation.name} (${shortId(result.automation.id)}) · ${result.automation.runtime || "forge"} ${result.automation.model || "default"}`,
         );
       } catch (error) {
         handleError(error);

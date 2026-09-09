@@ -6516,6 +6516,12 @@ textarea {
   border-bottom-color: rgba(251, 191, 36, 0.45);
 }
 
+.bootstrap-banner.is-ok {
+  background: rgba(20, 83, 45, 0.95);
+  color: #bbf7d0;
+  border-bottom-color: rgba(74, 222, 128, 0.45);
+}
+
 /* Run conclusion at timeline root (outside step groups) */
 .run-conclusion {
   margin-top: 18px;
@@ -8260,7 +8266,9 @@ textarea {
   font-size: 12px;
 }
 
-.automation-detail-meta code {
+.automation-detail-meta code,
+.automation-runtime-select,
+.automation-model-select {
   display: block;
   margin-top: 4px;
   padding: 6px 8px;
@@ -8270,6 +8278,12 @@ textarea {
   font-family: "SF Mono", Menlo, monospace;
   font-size: 11px;
   word-break: break-all;
+}
+
+.automation-runtime-select,
+.automation-model-select {
+  width: 100%;
+  color: var(--text);
 }
 
 .automation-detail-history-title {

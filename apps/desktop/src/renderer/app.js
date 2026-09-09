@@ -31,7 +31,7 @@ function showBootstrapBanner(message, options = {}) {
   if (!message) {
     el.classList.add("hidden");
     el.replaceChildren();
-    el.classList.remove("is-warn");
+    el.classList.remove("is-warn", "is-ok");
     return;
   }
   const content = document.createElement("span");
@@ -302,6 +302,7 @@ function notifyUser(message, level = "warn") {
     clearTimeout(notifyUserHideTimer);
     notifyUserHideTimer = null;
     el.classList.toggle("is-warn", level === "warn");
+    el.classList.toggle("is-ok", level === "done" || level === "status");
     showBootstrapBanner(text, { dismissible: level === "err" });
     if (level !== "err") {
       notifyUserHideTimer = setTimeout(() => showBootstrapBanner(null), 4500);
@@ -442,6 +443,8 @@ const state = {
   /** sessionId -> last daemon row version applied to the timeline (kills refresh loops:
    *  local rows carry a local-clock updatedAt that never equals the daemon's). */
   externalSessionVersionSeen: new Map(),
+  /** Date.now() of the last live AgentEvent painted on the viewed timeline. */
+  lastViewedLiveEventAt: 0,
   /** Sessions whose run finished while not being viewed — sidebar dot until opened. */
   unreadDoneSessions: new Set(),
   /** sessionId -> { used, max, truncated } from the daemon's context_usage event. */
@@ -2742,6 +2745,7 @@ function initSessionRuns() {
     structuredTimelineShouldReload,
     forgetSessionRunCaches,
     finalizeRunConclusionOnMount,
+    syncComposerToSessionRuntime,
     withOffscreenRoot: (sessionId, fn) => {
       const prevRoute = state.eventRouteSessionId;
       const prevLive = state.liveRunSessionId;
@@ -3093,6 +3097,45 @@ function isCodexRuntime(sessionId) {
   return getTimelineMount()?.dataset?.runtime === "codex";
 }
 
+function isChipStyleRuntime(sessionId) {
+  if (isCodexRuntime(sessionId)) return true;
+  const sid = sessionId || getActiveEventSessionId();
+  const runtime =
+    (sid && state.runtimeBySession.get(sid)) || getTimelineMount()?.dataset?.runtime || "";
+  return runtime === "claude-code" || runtime === "cursor";
+}
+
+function isChipStyleRuntimeActivity(runtime, activityKind) {
+  const kind = String(activityKind || "");
+  return (
+    runtime === "codex" ||
+    runtime === "claude-code" ||
+    runtime === "cursor" ||
+    kind === "file" ||
+    kind === "command" ||
+    kind === "search" ||
+    kind === "read" ||
+    kind === "mcp"
+  );
+}
+
+function runtimeActivityFallbackLabel(ev) {
+  if (ev?.label) return ev.label;
+  const name = ev?.name || "";
+  const args = ev?.args || {};
+  const done = ev?.status !== "running";
+  const path = String(ev?.path || "")
+    .split("/")
+    .pop();
+  const command = String(args.command || args.cmd || "").trim();
+  const action = actionToolName(name, args, done);
+  if (path) return `${action} ${path}`;
+  if (command) return `${action} ${command}`;
+  const summary = toolCallSummary(name, args);
+  if (summary) return `${action} ${summary}`;
+  return action;
+}
+
 function codexActivityIconMarkup(icon) {
   switch (icon) {
     case "search":
@@ -3179,7 +3222,7 @@ function extractCodexMentionedFiles(text) {
 }
 
 function maybeStartCodexProvisionalFileActivities(text) {
-  if (!isCodexRuntime()) return;
+  if (!isChipStyleRuntime()) return;
   if (!/(准备新建|新建文件|新建|开始写文件|写文件|创建文件|编辑文件|生成文件|新增文件)/.test(String(text || ""))) return;
   const sid = getActiveEventSessionId();
   if (!sid) return;
@@ -3533,6 +3576,25 @@ function renderCodexActivityChip(payload) {
     });
     if (serialized) line.dataset.forgeDetail = serialized;
     line.classList.add("clickable");
+  } else if (!line.dataset.forgeDetail && (payload.name || payload.args || payload.result)) {
+    const serialized = serializeEventDetail({
+      title: payload.label || payload.name || "Tool",
+      meta: payload.name || "工具调用",
+      content: buildToolDetailContent(payload.name, payload.args, payload.result),
+      ...(payload.patch
+        ? {
+            patch: {
+              path: payload.path || payload.patch.path,
+              unifiedDiff: payload.patch.unifiedDiff,
+              applied: payload.status === "done",
+            },
+          }
+        : {}),
+    });
+    if (serialized) {
+      line.dataset.forgeDetail = serialized;
+      line.classList.add("clickable");
+    }
   }
   if (state.runActivityStats && payload.label) {
     state.runActivityStats.lastStatus = String(payload.label);
@@ -3631,7 +3693,8 @@ function handleRuntimeActivityEvent(ev) {
     if (sid) state.runtimeBySession.set(sid, runtime);
     setTimelineRuntime(runtime);
   }
-  if (ev.activityKind === "tool") {
+  const useChips = isChipStyleRuntimeActivity(runtime, ev.activityKind);
+  if (ev.activityKind === "tool" && !useChips) {
     finishStreamTextSegment();
     if (ev.status === "running") {
       const toolName = ev.name || "runtime_tool";
@@ -3689,13 +3752,13 @@ function handleRuntimeActivityEvent(ev) {
     const path = normalizeWorkspaceRelPath(getActiveProject()?.cwd, ev.path);
     if (path) state.normalizedFileActivityPaths.add(path);
   }
-  if (runtime === "codex" || ev.activityKind === "file") {
+  if (useChips) {
     const displayEvent =
       ev.activityKind === "file" ? normalizeRuntimeFileActivityForDisplay(ev) : ev;
     handleCodexActivityEvent({
       callId: displayEvent.callId,
       icon: runtimeActivityIcon(displayEvent),
-      label: displayEvent.label,
+      label: displayEvent.label || runtimeActivityFallbackLabel(displayEvent),
       status: displayEvent.status,
       path: displayEvent.path,
       adds: displayEvent.adds,
@@ -3736,7 +3799,10 @@ function appendCodexCommentaryBlock(text) {
   if (shouldSkipCodexCommentary(sid, trimmed)) return;
   ensureRunActivity();
   endStepToolGroup();
-  setTimelineRuntime("codex");
+  const currentRuntime =
+    (sid && state.runtimeBySession.get(sid)) || getTimelineMount()?.dataset?.runtime;
+  if (currentRuntime) setTimelineRuntime(currentRuntime);
+  else setTimelineRuntime("codex");
   maybeStartCodexProvisionalFileActivities(trimmed);
   const mount = state.runActivityBody || getTimelineMount();
   const wrap = document.createElement("div");
@@ -3753,7 +3819,7 @@ function appendCodexCommentaryBlock(text) {
   }
   mount.appendChild(wrap);
   if (sid) {
-    state.runtimeBySession.set(sid, "codex");
+    if (currentRuntime) state.runtimeBySession.set(sid, currentRuntime);
     recordStepNarrativeEntry(
       sid,
       trimmed,
@@ -9644,6 +9710,7 @@ function startNewChat(opts = {}) {
   $("messageInput").value = opts.prefill ? String(opts.prefill) : "";
   slashPaletteApi?.close?.();
   fileMentionApi?.close?.();
+  applyRuntimePrefsToComposer();
   sessionRuns?.syncComposerRunChrome();
   setNav("chat");
   scheduleAcpPrewarm();
@@ -10119,6 +10186,42 @@ function applyRuntimePrefsToComposer() {
     scheduleAcpPrewarm();
   }
   if (prefs.defaultProvider === "codex") void loadCodexModelsForActiveProject();
+  if (prefs.defaultProvider === "claude-code") void loadClaudeModelsForActiveProject();
+}
+
+/** Reflect the current session/run runtime in the composer bar without saving it as the user default. */
+function applyComposerRuntime(provider, model) {
+  const next = String(provider || "").trim() || "forge";
+  const sel = $("runtimeSelect");
+  if (!sel) return;
+  if (![...sel.options].some((opt) => opt.value === next)) return;
+  const modelId = String(model || "").trim();
+  if (sel.value === next && !modelId) {
+    renderRuntimeModelSelect();
+    return;
+  }
+  sel.value = next;
+  if (modelId) {
+    if (next === "cursor") state.selectedCursorModel = modelId;
+    if (next === "codex") state.selectedCodexModel = modelId;
+    if (next === "claude-code") state.selectedClaudeModel = modelId;
+  }
+  renderRuntimeModelSelect();
+  if (next === "cursor") {
+    void loadCursorModelsForActiveProject();
+    scheduleAcpPrewarm();
+  }
+  if (next === "codex") void loadCodexModelsForActiveProject();
+  if (next === "claude-code") void loadClaudeModelsForActiveProject();
+}
+
+function syncComposerToSessionRuntime(sessionId) {
+  if (!sessionId) {
+    applyRuntimePrefsToComposer();
+    return;
+  }
+  const provider = state.runtimeBySession.get(sessionId);
+  if (provider) applyComposerRuntime(provider);
 }
 
 function setDefaultRuntimeProvider(providerId) {
@@ -10805,6 +10908,7 @@ function normalizeRuntimeToolKey(name) {
     return "write_file";
   }
   if (compact === "read" || compact === "readfile") return "read_file";
+  if (compact === "bash" || compact === "shell" || compact === "command") return "run_command";
   return String(name || "");
 }
 
@@ -11134,6 +11238,7 @@ function beginToolLine(name, args, callId, talentOverride) {
   // counting the root "工具操作" group there would leave an empty group with a
   // phantom count at the top level.
   beginStepToolGroup();
+  if (state.stepToolGroupEl?.isConnected) state.stepToolGroupEl.open = true;
   const mount = getToolEventMount();
   trackRunActivityStats(toolLineText(name, args, false, talentOverride), "tool-event is-running");
   const line = pushEventIn(mount, toolLineText(name, args, false, talentOverride), "tool-event is-running", detail);
@@ -11655,7 +11760,6 @@ function appendRestoredAssistantText(text) {
       Boolean(host?.querySelector(".md-preview")),
     );
   }
-  beginStepToolGroup();
 }
 
 function escapeRegex(text) {
@@ -12432,13 +12536,19 @@ async function restoreSessionTimeline(sessionId, switchGen, options = {}) {
     }
     clearTimeline();
     const running = sessionRuns?.isSessionRunning(sessionId);
+    const locallyOwned = [...state.clientRuns.values()].some(
+      (run) => run.sessionId === sessionId,
+    );
     // Idle + no conclusion must replay the journal — an earlier truncated
     // restore (or live drop of `done`) can leave a rich-looking cache that
     // would otherwise skip the real finalText forever.
+    // Scheduled / channel runs are not locally owned: never reuse a snapshot
+    // that froze before later journal events arrived.
     const cacheHasConclusion =
       structuredTimelineHasConclusion(sessionId) ||
       Boolean(state.runFinalTextBySession.get(sessionId));
     const cacheOk =
+      !(running && !locallyOwned) &&
       structuredTimelineCacheUsable(sessionId, running) &&
       structuredTimelineMatchesMessages(sessionId, messages) &&
       (running || cacheHasConclusion);
@@ -12610,7 +12720,7 @@ function splitLiveResponseLines(text) {
 function renderLiveResponseLines(host, rawText) {
   if (!host) return;
   host.dataset.rawText = rawText || "";
-  if (isCodexRuntime()) {
+  if (isChipStyleRuntime()) {
     host.classList.add("codex-live-response");
     host.textContent = rawText || "";
     return;
@@ -12652,7 +12762,7 @@ function flushStreamText() {
   const segmentText = String(node.dataset.rawText || "") + state.streamTextBuffer;
   renderLiveResponseLines(node, segmentText);
   state.streamTextRaw = segmentText;
-  if (isCodexRuntime()) maybeStartCodexProvisionalFileActivities(segmentText);
+  if (isChipStyleRuntime()) maybeStartCodexProvisionalFileActivities(segmentText);
   state.streamTextBuffer = "";
   if (node.closest(".run-activity-body")) {
     if (runActivityBodyShouldAutoScroll()) scheduleRunViewScroll();
@@ -12669,7 +12779,7 @@ function finishStreamTextSegment(options = {}) {
   if (segmentText && !shouldSkipPersist) {
     ensureRunActivity();
     if (state.runActivityBody) {
-      if (isCodexRuntime()) appendCodexCommentaryBlock(segmentText);
+      if (isChipStyleRuntime()) appendCodexCommentaryBlock(segmentText);
       else appendRestoredAssistantText(segmentText);
     }
   }
@@ -13205,6 +13315,26 @@ function renderRuntimeModelSelect() {
   }
 }
 
+async function loadClaudeModelsForActiveProject({ force = false } = {}) {
+  if (!force && state.claudeModels.some((m) => String(m.model || "").includes("anthropic."))) {
+    renderRuntimeModelSelect();
+    return;
+  }
+  try {
+    const cwd = getActiveProject()?.cwd;
+    const listed = await requireBridge().listRuntimes({ cwd });
+    const claude = (listed?.providers || []).find((p) => p.id === "claude-code");
+    if (Array.isArray(claude?.models) && claude.models.length) {
+      state.claudeModels = claude.models;
+      const def = claude.models.find((m) => m.isDefault) || claude.models[0];
+      if (def?.model || def?.id) state.selectedClaudeModel = def.model || def.id;
+    }
+  } catch {
+    /* keep built-in aliases */
+  }
+  renderRuntimeModelSelect();
+}
+
 async function loadCodexModelsForActiveProject({ force = false } = {}) {
   if (state.loadingCodexModels) return;
   if (!force && state.codexModels.length) {
@@ -13544,11 +13674,16 @@ async function refreshViewedSessionFromDaemonIfChanged() {
     const locallyOwned = [...state.clientRuns.values()].some(
       (run) => run.sessionId === sessionId,
     );
+    const liveEventRecently =
+      Boolean(sessionId) &&
+      state.viewingTimelineSessionId === sessionId &&
+      Date.now() - (state.lastViewedLiveEventAt || 0) < 4000;
     if (
       !window.ForgeSessionRunUi.shouldRefreshSessionTimeline({
         running,
         locallyOwned,
         versionChanged,
+        liveEventRecently,
       })
     ) return;
     const switchGen = state.viewSwitchGeneration;
@@ -16324,6 +16459,8 @@ async function submitAutomationDraftFromChat(message, cwd, { retainCreateMode } 
             enabled: true,
           };
           if (draft.description) payloadDraft.description = draft.description;
+          if (draft.model) payloadDraft.model = draft.model;
+          if (draft.runtime) payloadDraft.runtime = draft.runtime;
           if (draft.notify?.enabled) payloadDraft.notify = draft.notify;
           const res = await requireBridge().createAutomation({
             draft: payloadDraft,
@@ -16456,8 +16593,125 @@ function normalizeAutomationDraft(draft, cwd) {
     prompt: draft?.prompt || "",
     cwd: draft?.cwd || activeCwd,
     enabled: draft?.enabled !== false,
+    model: String(draft?.model || "").trim(),
+    runtime: String(draft?.runtime || "").trim(),
     notify: draft?.notify || { enabled: false },
   };
+}
+
+function automationModelChoices(cfg) {
+  const profiles = cfg?.profiles ?? {};
+  return Object.entries(profiles)
+    .filter(([, profile]) => profile && profile.enabled !== false)
+    .map(([id, profile]) => {
+      const model = String(profile.name || "").trim();
+      return {
+        id,
+        model,
+        value: model || id,
+        label: model && model !== id ? `${id} · ${model}` : id,
+      };
+    });
+}
+
+function fillAutomationRuntimeSelect(select, selected) {
+  if (!select) return;
+  const current = String(selected || "").trim();
+  const choices = [
+    { id: "", label: "跟随项目默认" },
+    { id: "forge", label: "Forge" },
+    { id: "cursor", label: "Cursor" },
+    { id: "codex", label: "Codex" },
+    { id: "claude-code", label: "Claude Code" },
+  ];
+  select.innerHTML = choices
+    .map(
+      (row) =>
+        `<option value="${escapeHtml(row.id)}"${current === row.id ? " selected" : ""}>${escapeHtml(row.label)}</option>`,
+    )
+    .join("");
+  select.value = current;
+}
+
+function automationExternalModels(runtime) {
+  if (runtime === "cursor") return state.cursorModels || [];
+  if (runtime === "codex") return state.codexModels || [];
+  if (runtime === "claude-code") return state.claudeModels || [];
+  return [];
+}
+
+async function ensureAutomationRuntimeModels(runtime) {
+  if (runtime === "cursor") {
+    await loadCursorModelsForActiveProject();
+    return;
+  }
+  if (runtime === "codex") {
+    await loadCodexModelsForActiveProject();
+    return;
+  }
+  if (runtime === "claude-code") {
+    await loadClaudeModelsForActiveProject();
+  }
+}
+
+function fillAutomationModelSelect(select, selected, cfg = state.config, runtime = "") {
+  if (!select) return;
+  const current = String(selected || "").trim();
+  const provider = String(runtime || "").trim();
+  if (!provider) {
+    select.innerHTML = `<option value="">跟随项目默认</option>`;
+    select.value = "";
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  const options = [
+    `<option value="">${provider === "forge" ? "跟随项目默认" : "运行时默认模型"}</option>`,
+  ];
+  let matched = "";
+  const rows =
+    provider === "forge"
+      ? automationModelChoices(cfg)
+      : automationExternalModels(provider).map((item) => {
+          const value = item.model || item.id || "";
+          return {
+            id: item.id || value,
+            value,
+            label: item.displayName || value,
+          };
+        });
+  for (const row of rows) {
+    const isSelected = Boolean(current) && (current === row.value || current === row.id);
+    if (isSelected) matched = row.value;
+    options.push(
+      `<option value="${escapeHtml(row.value)}"${isSelected ? " selected" : ""}>${escapeHtml(row.label)}</option>`,
+    );
+  }
+  if (current && !matched) {
+    options.push(
+      `<option value="${escapeHtml(current)}" selected>${escapeHtml(current)}</option>`,
+    );
+    matched = current;
+  }
+  select.innerHTML = options.join("");
+  select.value = matched;
+}
+
+function automationRuntimeSummary(automation) {
+  const runtime = String(automation?.runtime || "").trim();
+  const model = String(automation?.model || "").trim();
+  if (!runtime && !model) return "项目默认模型";
+  const labels = {
+    forge: "Forge",
+    cursor: "Cursor",
+    codex: "Codex",
+    "claude-code": "Claude Code",
+  };
+  const runtimeLabel = labels[runtime] || runtime;
+  if (runtime && runtime !== "forge") {
+    return model ? `${runtimeLabel} · ${model}` : `${runtimeLabel} · 默认模型`;
+  }
+  return model || "项目默认模型";
 }
 
 function closeAutomationEditorModal() {
@@ -16473,6 +16727,15 @@ function openAutomationEditorModal(draft) {
   $("automationCronInput").value = normalized.cron;
   $("automationTzInput").value = normalized.timezone;
   $("automationPromptInput").value = normalized.prompt;
+  fillAutomationRuntimeSelect($("automationRuntimeSelect"), normalized.runtime);
+  void ensureAutomationRuntimeModels(normalized.runtime).then(() => {
+    fillAutomationModelSelect(
+      $("automationModelSelect"),
+      normalized.model,
+      state.config,
+      normalized.runtime,
+    );
+  });
   $("automationCwdDisplay").textContent = normalized.cwd || "—";
   $("automationEnabledInput").checked = normalized.enabled;
   void renderAutomationNotifyChannelOptions(normalized);
@@ -16533,6 +16796,8 @@ async function saveAutomationFromModal() {
       cron: $("automationCronInput")?.value?.trim(),
       timezone: $("automationTzInput")?.value?.trim(),
       prompt: $("automationPromptInput")?.value?.trim(),
+      model: $("automationModelSelect")?.value?.trim(),
+      runtime: $("automationRuntimeSelect")?.value?.trim(),
       cwd: state.automationEditorDraft?.cwd,
       enabled: $("automationEnabledInput")?.checked,
       notify: (() => {
@@ -16573,6 +16838,8 @@ async function saveAutomationFromModal() {
   if (draft.description) payloadDraft.description = draft.description;
   if (draft.cron) payloadDraft.cron = draft.cron;
   if (draft.timezone) payloadDraft.timezone = draft.timezone;
+  if (draft.model) payloadDraft.model = draft.model;
+  if (draft.runtime) payloadDraft.runtime = draft.runtime;
   if (draft.notify?.enabled) payloadDraft.notify = draft.notify;
   try {
     const res = await requireBridge().createAutomation({
@@ -16693,6 +16960,14 @@ function renderAutomationCardDetail(automation, runs) {
       <div class="automation-detail-meta">
         <div><span class="automation-detail-label">触发</span><code>${escapeHtml(formatAutomationTrigger(automation))}</code></div>
         <div><span class="automation-detail-label">目录</span><code>${escapeHtml(automation.cwd || "")}</code></div>
+        <div>
+          <span class="automation-detail-label">Runtime</span>
+          <select class="automation-runtime-select modal-input" data-automation-id="${escapeHtml(automation.id)}"></select>
+        </div>
+        <div>
+          <span class="automation-detail-label">模型</span>
+          <select class="automation-model-select modal-input" data-automation-id="${escapeHtml(automation.id)}"></select>
+        </div>
         <div><span class="automation-detail-label">通知</span><code>${automation.notify?.enabled ? automationNotifyLabel(automation.notify.channelKind) : "关闭"}</code></div>
       </div>
     </div>
@@ -16720,6 +16995,8 @@ function renderAutomationCard(a, lastRun, expandedAutomation, expandedRuns) {
           <span>下次 ${escapeHtml(formatNextRunCompact(a))}</span>
           <span class="automation-card-meta-sep">·</span>
           <span>${escapeHtml(automationTriggerSummary(a))}</span>
+          <span class="automation-card-meta-sep">·</span>
+          <span>${escapeHtml(automationRuntimeSummary(a))}</span>
         </p>
       </div>
       <div class="automation-card-side">
@@ -16799,12 +17076,71 @@ function bindAutomationsView(root, automations, lastRunById) {
   });
   root.querySelectorAll(".automation-card-main").forEach((row) => {
     row.addEventListener("click", async (e) => {
-      if (e.target.closest("button, input, label, .automation-card-actions")) return;
+      if (e.target.closest("button, input, label, select, .automation-card-actions")) return;
       const id = row.getAttribute("data-automation-id");
       if (!id) return;
       state.automationExpandedId =
         state.automationExpandedId === id ? null : id;
       await renderAutomationsView();
+    });
+  });
+
+  root.querySelectorAll(".automation-runtime-select").forEach((select) => {
+    const id = select.getAttribute("data-automation-id");
+    const auto = automations.find((a) => a.id === id);
+    fillAutomationRuntimeSelect(select, auto?.runtime);
+    select.addEventListener("click", (e) => e.stopPropagation());
+    select.addEventListener("change", async (e) => {
+      e.stopPropagation();
+      if (!id) return;
+      const modelSelect = root.querySelector(
+        `.automation-model-select[data-automation-id="${cssEscape(id)}"]`,
+      );
+      try {
+        await ensureAutomationRuntimeModels(select.value);
+        fillAutomationModelSelect(modelSelect, "", state.config, select.value);
+        await requireBridge().updateAutomation({
+          id,
+          patch: { runtime: select.value || "", model: modelSelect?.value || "" },
+        });
+        notifyUser(
+          select.value
+            ? `已切换 Runtime: ${automationRuntimeSummary({ runtime: select.value, model: modelSelect?.value })}`
+            : "已改回项目默认模型",
+          "done",
+        );
+        await renderAutomationsView();
+      } catch (err) {
+        fillAutomationRuntimeSelect(select, auto?.runtime);
+        notifyUser(`更新 Runtime 失败: ${String(err)}`, "err");
+      }
+    });
+  });
+
+  root.querySelectorAll(".automation-model-select").forEach((select) => {
+    const id = select.getAttribute("data-automation-id");
+    const auto = automations.find((a) => a.id === id);
+    const runtimeSelect = root.querySelector(
+      `.automation-runtime-select[data-automation-id="${cssEscape(id)}"]`,
+    );
+    void ensureAutomationRuntimeModels(auto?.runtime).then(() => {
+      fillAutomationModelSelect(select, auto?.model, state.config, auto?.runtime);
+    });
+    select.addEventListener("click", (e) => e.stopPropagation());
+    select.addEventListener("change", async (e) => {
+      e.stopPropagation();
+      if (!id) return;
+      try {
+        await requireBridge().updateAutomation({
+          id,
+          patch: { runtime: runtimeSelect?.value || "", model: select.value || "" },
+        });
+        notifyUser(select.value ? `已切换模型: ${select.value}` : "已改回默认模型", "done");
+        await renderAutomationsView();
+      } catch (err) {
+        fillAutomationModelSelect(select, auto?.model, state.config, auto?.runtime);
+        notifyUser(`更新模型失败: ${String(err)}`, "err");
+      }
     });
   });
 
@@ -16841,6 +17177,7 @@ function bindAutomationsView(root, automations, lastRunById) {
       }
       if (auto?.cwd) activateProjectForCwd(auto.cwd);
       startNewChat();
+      if (auto?.runtime) applyComposerRuntime(auto.runtime, auto.model);
       btn.disabled = true;
       try {
         const res = await requireBridge().runAutomation({
@@ -16860,6 +17197,7 @@ function bindAutomationsView(root, automations, lastRunById) {
           notifyUser(`运行结束 (${status})`, "done");
         }
         if (run?.sessionId) {
+          if (auto?.runtime) state.runtimeBySession.set(run.sessionId, auto.runtime);
           const active = getActiveProject();
           if (active) {
             const outgoingSid =
@@ -17006,6 +17344,11 @@ function bindAutomationsPageUi() {
   editorModal?.querySelector(".modal-mask")?.addEventListener("click", closeEditor);
   $("automationEditorSaveBtn")?.addEventListener("click", () => {
     void saveAutomationFromModal();
+  });
+  $("automationRuntimeSelect")?.addEventListener("change", async () => {
+    const runtime = $("automationRuntimeSelect")?.value || "";
+    await ensureAutomationRuntimeModels(runtime);
+    fillAutomationModelSelect($("automationModelSelect"), "", state.config, runtime);
   });
 
 }
@@ -18204,6 +18547,14 @@ async function renderRuntimesView() {
       state.cursorModels = cursorProvider.models || state.cursorModels;
       state.cursorModes = cursorProvider.modes || state.cursorModes;
     }
+    const claudeProvider = state.runtimeProviders.find((p) => p.id === "claude-code");
+    if (claudeProvider?.models?.length) {
+      state.claudeModels = claudeProvider.models;
+      if (!state.selectedClaudeModel) {
+        const def = claudeProvider.models.find((m) => m.isDefault) || claudeProvider.models[0];
+        state.selectedClaudeModel = def.model || def.id || "sonnet";
+      }
+    }
     const prefs = loadRuntimePrefs();
     await loadCodexModelsForActiveProject();
     window.ForgeRuntimeUI.renderPage(
@@ -18936,7 +19287,7 @@ function bindActions() {
     };
     const cfg = await requireBridge().saveConfig(patch);
     renderConfig(cfg);
-    pushEvent("已保存快捷配置", "done");
+    notifyUser("已保存快捷配置", "done");
   });
 
   $("savePermissionsBtn")?.addEventListener("click", async () => {
@@ -18992,11 +19343,11 @@ function bindActions() {
     try {
       const cfg = await requireBridge().saveConfig(patch);
       renderConfig(cfg);
-      pushEvent("已保存权限配置", "done");
+      notifyUser("已保存权限配置", "done");
       if (state.activeNav === "automations") void renderAutomationsView();
       if (state.activeNav === "channels") void renderChannelsView();
     } catch (e) {
-      pushEvent(`保存权限失败: ${String(e)}`, "err");
+      notifyUser(`保存权限失败: ${String(e)}`, "err");
     }
   });
 
@@ -19008,8 +19359,12 @@ function bindActions() {
   });
 
   $("saveModelProfilesBtn")?.addEventListener("click", async () => {
+    const btn = $("saveModelProfilesBtn");
+    const label = btn?.textContent || "保存模型配置";
+    if (btn) btn.disabled = true;
     try {
       const ui = window.ForgeModelProfilesUI;
+      if (!ui) throw new Error("模型配置编辑器未加载");
       const { profiles, activeProfile } = ui.collectProfilesFromList(
         $("modelProfilesList"),
         state.config,
@@ -19020,9 +19375,19 @@ function bindActions() {
         replaceProfiles: true,
       });
       renderConfig(cfg);
-      pushEvent("已保存模型配置", "done");
+      if (btn) btn.textContent = "已保存";
+      notifyUser("已保存模型配置", "done");
+      setTimeout(() => {
+        if (!btn) return;
+        btn.disabled = false;
+        btn.textContent = label;
+      }, 1800);
     } catch (e) {
-      pushEvent(`模型配置错误: ${String(e)}`, "err");
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = label;
+      }
+      notifyUser(`模型配置错误: ${String(e)}`, "err");
     }
   });
 
@@ -19030,9 +19395,9 @@ function bindActions() {
     try {
       const cfg = await requireBridge().saveConfigJson(JSON.parse($("configJsonInput").value));
       renderConfig(cfg);
-      pushEvent("已保存完整配置 JSON", "done");
+      notifyUser("已保存完整配置 JSON", "done");
     } catch (e) {
-      pushEvent(`JSON 格式错误: ${String(e)}`, "err");
+      notifyUser(`JSON 格式错误: ${String(e)}`, "err");
     }
   });
 
@@ -19560,6 +19925,7 @@ function handleForgeAgentEvent(ev) {
           showChatEmpty(false);
           if (ev.preview) renderUserPromptOnce(ev.preview);
           updateStatusLine({ message: "正在提交任务…", elapsedSec: 0 });
+          state.lastViewedLiveEventAt = Date.now();
         });
       } else if (ev.preview) {
         if (!state.runtimeBySession.has(ev.sessionId)) {
@@ -19629,6 +19995,7 @@ function handleForgeAgentEvent(ev) {
         state.viewingTimelineSessionId = sid;
       }
       ensureLiveRunSession(sid);
+      state.lastViewedLiveEventAt = Date.now();
       if (ev.type === "session_start") return;
       return handleLiveAgentEvent(ev);
     });
@@ -19933,6 +20300,7 @@ function handleLiveAgentEventBody(ev, opts = {}) {
           ev.sessionId || state.eventRouteSessionId || state.liveRunSessionId || "";
         if (provider && runtimeSid) state.runtimeBySession.set(runtimeSid, provider);
         if (provider) setTimelineRuntime(provider);
+        if (provider && !opts.offscreen) applyComposerRuntime(provider);
         return updateStatusLine(ev);
       }
       if (opts.offscreen) {

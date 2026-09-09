@@ -178,4 +178,15 @@ export class ForgeAgentStepExecutor implements StepExecutor {
       };
     }
   }
+
+  async reconcile(_input: StepExecutionInput): Promise<StepOutcome | "unknown"> {
+    return {
+      state: "failed",
+      error: {
+        code: "CORE_INTERRUPTED",
+        message: "daemon restarted during agent step",
+      },
+      retryable: false,
+    };
+  }
 }

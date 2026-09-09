@@ -54,6 +54,9 @@ describe("merged tool line rendering", () => {
     // The legacy two-line rendering must be gone.
     expect(source).not.toContain("Tool Start ·");
     expect(source).not.toContain("Tool End ·");
+    const begin =
+      source.match(/function beginToolLine[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(begin).toContain("state.stepToolGroupEl.open = true");
   });
 
   it("restored sessions also render a single completed line per tool call", () => {

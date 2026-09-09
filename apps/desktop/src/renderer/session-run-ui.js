@@ -32,8 +32,9 @@
     running,
     locallyOwned,
     versionChanged,
+    liveEventRecently,
   }) {
-    if (running) return !locallyOwned;
+    if (running) return !locallyOwned && !liveEventRecently;
     return versionChanged;
   }
 
@@ -329,6 +330,7 @@
       helpers.detachLiveRunSession();
 
       const finish = () => {
+        helpers.syncComposerToSessionRuntime?.(newSessionId);
         syncComposerRunChrome();
         return true;
       };
@@ -343,13 +345,12 @@
       // Paint from in-memory structured cache first — no daemon round-trip,
       // no "正在加载会话…" flash when the snapshot is rich enough.
       if (restoreTimelineSnapshot(newSessionId, switchGen)) {
-        // Incomplete idle snapshots (stuck 思考中, no 结论) still soft-refresh
-        // from the daemon so a previously truncated journal can deliver `done`.
-        const needsConclusionRepair =
-          !isSessionRunning(newSessionId) &&
+        // Snapshots without a conclusion (idle stuck 思考中, or a still-running
+        // scheduled automation) must soft-refresh from the daemon journal.
+        const needsJournalRefresh =
           !helpers.structuredTimelineHasConclusion?.(newSessionId) &&
           !st.runFinalTextBySession?.get?.(newSessionId);
-        if (needsConclusionRepair && helpers.restoreSessionTimeline) {
+        if (needsJournalRefresh && helpers.restoreSessionTimeline) {
           void helpers
             .restoreSessionTimeline(newSessionId, switchGen, {
               scrollToBottom: false,

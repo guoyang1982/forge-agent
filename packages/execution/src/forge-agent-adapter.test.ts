@@ -119,6 +119,21 @@ describe("forge agent adapter", () => {
     expect(receivedPolicy).toEqual(runtimePolicy);
   });
 
+  it("fails interrupted agent steps on daemon restart instead of parking them", async () => {
+    const adapter = new ForgeAgentStepExecutor({
+      run: vi.fn<ForgeAgentRunFn>().mockResolvedValue({
+        sessionId: "session-1",
+        finalText: "done",
+      }),
+    });
+    const outcome = await adapter.reconcile!(stepInput());
+    expect(outcome).toMatchObject({
+      state: "failed",
+      retryable: false,
+      error: { code: "CORE_INTERRUPTED" },
+    });
+  });
+
   it("hashes final text deterministically", () => {
     expect(finalTextToArtifactRef("s1", "hello")).toBe(
       finalTextToArtifactRef("s1", "hello"),

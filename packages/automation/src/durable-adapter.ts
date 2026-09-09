@@ -112,6 +112,8 @@ export function automationRunInput(
   row: AutomationRecord,
   sessionId?: string,
 ): Record<string, unknown> {
+  const provider = row.runtime?.trim();
+  const model = row.model?.trim();
   return {
     cwd: row.cwd,
     message: row.prompt,
@@ -119,6 +121,14 @@ export function automationRunInput(
     hookSource: "startup",
     autoApply: false,
     automationRun: buildAutomationRunContext(row),
+    ...(provider || model
+      ? {
+          runtime: {
+            ...(provider ? { provider } : {}),
+            ...(model ? { model } : {}),
+          },
+        }
+      : {}),
   };
 }
 

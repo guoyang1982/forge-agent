@@ -623,7 +623,7 @@ describe("restored step narratives", () => {
       /function appendRestoredAssistantText[\s\S]*?\n}\n/,
     )?.[0] ?? "";
     expect(restored).toContain("step-narrative");
-    expect(restored).toContain("beginStepToolGroup");
+    expect(restored).not.toContain("beginStepToolGroup");
     expect(restored).toContain("recordStepNarrativeEntry");
     expect(restored).not.toContain("assistant（步骤内说明");
   });
@@ -862,6 +862,21 @@ describe("restored step narratives", () => {
     expect(css).toContain(".run-files-changed-bar .modified-file-status");
   });
 
+  it("renders Claude Code tool activity as Codex-style chips instead of empty 工具操作 groups", () => {
+    const source = appSource();
+    const handler = source.match(/function handleRuntimeActivityEvent[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(handler).toContain("isChipStyleRuntimeActivity");
+    expect(handler).toContain("runtimeActivityFallbackLabel");
+    expect(handler).toContain("handleCodexActivityEvent");
+    expect(source).toContain("function isChipStyleRuntime");
+    const finish = source.match(/function finishStreamTextSegment[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(finish).toContain("isChipStyleRuntime()");
+    expect(finish).toContain("appendCodexCommentaryBlock");
+    const render = source.match(/function renderCodexActivityChip[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(render).toContain("buildToolDetailContent");
+    expect(render).toContain("clickable");
+  });
+
   it("shows exact runtime commands and expands their output inline", () => {
     const source = appSource();
     const handler = source.match(/function handleRuntimeActivityEvent[\s\S]*?\n}\n/)?.[0] ?? "";
@@ -950,9 +965,9 @@ describe("session restore timeline", () => {
     );
     expect(snapIdx).toBeGreaterThan(-1);
     expect(missClearIdx).toBeGreaterThan(snapIdx);
-    // Incomplete idle caches soft-refresh so truncated restores can still
-    // pick up the journal `done` / conclusion card.
-    expect(switchFn).toContain("needsConclusionRepair");
+    // Incomplete caches (idle stuck 思考中, or a still-running scheduled run)
+    // soft-refresh from the daemon journal so the timeline can catch up.
+    expect(switchFn).toContain("needsJournalRefresh");
     expect(switchFn).toContain("structuredTimelineHasConclusion");
   });
 
@@ -1264,6 +1279,31 @@ describe("timeline prompt and source-link handling", () => {
     const click = source.match(/function bindTimelineClickDelegation[\s\S]*?\n}\n/)?.[0] ?? "";
     expect(click).toContain('e.target.closest("a")');
     expect(click).toContain("openWorkspaceSourceLinkFromTimeline");
+  });
+});
+
+describe("automation model picker", () => {
+  it("lets each scheduled task pick a model profile", () => {
+    const source = appSource();
+    const html = readFileSync(join(here, "index.html"), "utf-8");
+    const preload = readFileSync(join(here, "../preload.ts"), "utf-8");
+
+    expect(html).toContain('id="automationModelSelect"');
+    expect(html).toContain('id="automationRuntimeSelect"');
+    expect(html).toContain("跟随项目默认");
+    expect(html).toContain("Cursor");
+    expect(html).toContain("Codex");
+    expect(source).toContain("function fillAutomationModelSelect");
+    expect(source).toContain("function fillAutomationRuntimeSelect");
+    expect(source).toContain("automation-model-select");
+    expect(source).toContain("automation-runtime-select");
+    expect(source).toContain("payloadDraft.model = draft.model");
+    expect(source).toContain("payloadDraft.runtime = draft.runtime");
+    expect(source).toContain("patch: { runtime:");
+    expect(source).toContain("function applyComposerRuntime");
+    expect(source).toContain("if (auto?.runtime) applyComposerRuntime(auto.runtime, auto.model);");
+    expect(preload).toContain("model?: string");
+    expect(preload).toContain("runtime?: string");
   });
 });
 
