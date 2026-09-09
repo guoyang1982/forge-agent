@@ -6,6 +6,7 @@ import {
 } from "./permissions.js";
 import type { NetworkServiceConfig } from "./network-service.js";
 import type { BrowserBackendSummary } from "./browser.js";
+import { DAEMON_COMPANY_METHODS } from "./company.js";
 
 export {
   DEFAULT_PERMISSIONS,
@@ -37,6 +38,7 @@ export * from "./automation.js";
 export * from "./channel.js";
 export * from "./mobile.js";
 export * from "./browser.js";
+export * from "./company.js";
 export * from "./v2/index.js";
 
 export type JsonRpcId = number | string;
@@ -1601,6 +1603,7 @@ export const DAEMON_METHODS = {
   MOBILE_WORKSPACE_DIFF_LIST: "mobile.workspace.diff.list",
   MOBILE_WORKSPACE_DIFF_GET: "mobile.workspace.diff.get",
   PERMISSION_RESPONSE: "permission_response",
+  ...DAEMON_COMPANY_METHODS,
 } as const;
 
 export const AGENT_EVENT_METHOD = "agent.event";

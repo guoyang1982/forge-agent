@@ -166,6 +166,9 @@ importers:
       '@forge/channel-ilink':
         specifier: workspace:*
         version: link:../../packages/channel-ilink
+      '@forge/company-domain':
+        specifier: workspace:*
+        version: link:../../packages/company-domain
       '@forge/config':
         specifier: workspace:*
         version: link:../../packages/config

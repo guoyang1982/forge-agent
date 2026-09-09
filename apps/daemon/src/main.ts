@@ -10,6 +10,12 @@ import { SessionStore } from "@forge/session";
 import { ForgeStore } from "@forge/store";
 import { AutomationStore } from "@forge/automation";
 import { ChannelStore } from "@forge/channel";
+import {
+  CompanyService,
+  OrganizationService,
+  WorkGates,
+  WorkService,
+} from "@forge/company-domain";
 import { AgentProfileStore } from "@forge/agent-profile";
 import { ArtifactService, ValidationService } from "@forge/evidence";
 import { ApprovalService } from "@forge/policy";
@@ -124,6 +130,13 @@ const channelGatewayHost = new ChannelGatewayHost({
 const executionClock = {
   now: () => new Date().toISOString(),
   nowMs: () => Date.now(),
+};
+const companyClock = { now: () => executionClock.now() };
+const company = {
+  companies: new CompanyService(forgeStore.db, companyClock),
+  org: new OrganizationService(forgeStore.db, companyClock),
+  work: new WorkService(forgeStore.db, companyClock),
+  gates: new WorkGates(forgeStore.db, companyClock),
 };
 let host!: DaemonHost<ForgeDaemonContext>;
 const workspaceGroups = new WorkspaceGroupService(forgeStore.db);
@@ -261,6 +274,7 @@ const context: ForgeDaemonContext = {
   agentProfiles,
   artifacts,
   validations,
+  company,
   automationGovernance,
   executor,
   executionRecovery,

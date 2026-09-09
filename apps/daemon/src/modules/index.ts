@@ -2,6 +2,7 @@ import type { DaemonModule } from "../host/types.js";
 import { createAssetsModule } from "./assets-module.js";
 import { createAutomationModule } from "./automation-module.js";
 import { createChannelModule } from "./channel-module.js";
+import { createCompanyModule } from "./company-module.js";
 import type { ForgeDaemonContext } from "./context.js";
 import { createEventModule } from "./event-module.js";
 import { createEvidenceModule } from "./evidence-module.js";
@@ -25,5 +26,6 @@ export function createDaemonModules(
     createAssetsModule(),
     createAutomationModule(),
     createChannelModule(),
+    createCompanyModule(),
   ];
 }
