@@ -151,6 +151,29 @@ export class WorkGates {
     return this.requireAccepted(workItemId, "plan", "plan not accepted");
   }
 
+  linkRun(input: {
+    workItemId: string;
+    runId: string;
+    planArtifactId: string;
+  }): void {
+    const item = this.getWorkItem(input.workItemId);
+    this.db
+      .prepare(
+        `INSERT INTO company_run_links
+          (id, company_id, work_item_id, run_id, plan_artifact_id, created_at)
+        VALUES
+          (@id, @companyId, @workItemId, @runId, @planArtifactId, @createdAt)`,
+      )
+      .run({
+        id: newCompanyId("run_link"),
+        companyId: item.companyId,
+        workItemId: input.workItemId,
+        runId: input.runId,
+        planArtifactId: input.planArtifactId,
+        createdAt: this.clock.now(),
+      });
+  }
+
   pauseForFix(input: {
     workItemId: string;
     reason: string;

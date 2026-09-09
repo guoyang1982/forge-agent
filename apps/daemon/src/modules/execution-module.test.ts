@@ -13,6 +13,12 @@ import {
 } from "@forge/execution";
 import { EventStore } from "@forge/event-store";
 import { ForgeStore } from "@forge/store";
+import {
+  CompanyService,
+  OrganizationService,
+  WorkGates,
+  WorkService,
+} from "@forge/company-domain";
 import { CancelService } from "../services/cancel-service.js";
 import { RpcFaultError, TypedRouter } from "../host/router.js";
 import type { ForgeDaemonContext } from "./context.js";
@@ -43,6 +49,66 @@ describe("execution module", () => {
 
     expect(result).toEqual({ runId: "run-1", state: "running" });
     expect(context.executionStore.getRun("run-1")?.state).toBe("running");
+  });
+
+  it("rejects run.create for a company work item without an accepted plan", async () => {
+    const { router, context } = executionRouterFixture();
+    const { item } = createCompanyWorkItem(context);
+
+    await expect(
+      router.handle(
+        "run.create",
+        {
+          ...singleStepRunSpec(),
+          policyContext: { companyWorkItemId: item.id },
+        },
+        rpcContext(),
+      ),
+    ).rejects.toMatchObject({
+      fault: {
+        code: "POLICY_DENIED",
+        message: expect.stringMatching(/plan not accepted/),
+      },
+    });
+  });
+
+  it("links a company-gated run to its accepted plan", async () => {
+    const { router, context } = executionRouterFixture();
+    const { item, employee } = createCompanyWorkItem(context);
+    const plan = context.company.gates.upsertDraft({
+      workItemId: item.id,
+      kind: "plan",
+      content: "Implement the durable run",
+      actorId: employee.id,
+    });
+    context.company.gates.acceptArtifact({
+      artifactId: plan.id,
+      actorId: employee.id,
+    });
+
+    const result = await router.handle(
+      "run.create",
+      {
+        ...singleStepRunSpec(),
+        policyContext: { companyWorkItemId: item.id },
+      },
+      rpcContext(),
+    );
+    const link = context.store.db
+      .prepare(
+        `SELECT work_item_id AS workItemId, run_id AS runId,
+          plan_artifact_id AS planArtifactId
+        FROM company_run_links
+        WHERE work_item_id = ?`,
+      )
+      .get(item.id);
+
+    expect(result).toEqual({ runId: "run-1", state: "running" });
+    expect(link).toEqual({
+      workItemId: item.id,
+      runId: "run-1",
+      planArtifactId: plan.id,
+    });
   });
 
   it("returns run details including step states", async () => {
@@ -216,6 +282,12 @@ function executionRouterFixture(): {
     stepExecutors,
     clock,
   );
+  const company = {
+    companies: new CompanyService(forgeStore.db, clock),
+    org: new OrganizationService(forgeStore.db, clock),
+    work: new WorkService(forgeStore.db, clock),
+    gates: new WorkGates(forgeStore.db, clock),
+  };
   let tickScheduled = false;
   const context = {
     socketPath: join(root, "daemon.sock"),
@@ -242,6 +314,7 @@ function executionRouterFixture(): {
     agentProfiles: {} as ForgeDaemonContext["agentProfiles"],
     artifacts: {} as ForgeDaemonContext["artifacts"],
     validations: {} as ForgeDaemonContext["validations"],
+    company,
     automationGovernance: {} as ForgeDaemonContext["automationGovernance"],
     workspaceLeases: { reclaimExpired: () => [] } as ForgeDaemonContext["workspaceLeases"],
     executor,
@@ -261,6 +334,40 @@ function executionRouterFixture(): {
   registerExecutionHandlers(router, context);
   expect(tickScheduled).toBe(false);
   return { router, context };
+}
+
+function createCompanyWorkItem(context: ForgeDaemonContext) {
+  const company = context.company.companies.create({ name: "Forge Test Co" });
+  const department = context.company.org.createDepartment({
+    companyId: company.id,
+    name: "Engineering",
+  });
+  const template = context.company.org.createPositionTemplate({
+    companyId: company.id,
+    name: "Engineer",
+    charter: "Implement accepted plans",
+  });
+  const position = context.company.org.createPosition({
+    companyId: company.id,
+    departmentId: department.id,
+    templateId: template.id,
+    title: "Engineer",
+  });
+  const employee = context.company.org.hire({
+    companyId: company.id,
+    displayName: "Test Engineer",
+    positionId: position.id,
+    autonomyLevel: 2,
+  });
+  const item = context.company.work.createWorkItem({
+    companyId: company.id,
+    type: "implementation",
+    title: "Create a run",
+    problem: "No run exists",
+    expectedOutcome: "A durable run exists",
+    ownerId: employee.id,
+  });
+  return { item, employee };
 }
 
 function singleStepRunSpec(input?: { id?: string; sessionId?: string }): RunSpec {

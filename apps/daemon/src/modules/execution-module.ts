@@ -57,6 +57,31 @@ async function handleRunCreate(
   correlationId: string,
 ) {
   validateRunSpec(spec, correlationId);
+  const workItemId =
+    typeof spec.policyContext.companyWorkItemId === "string"
+      ? spec.policyContext.companyWorkItemId
+      : undefined;
+  if (workItemId !== undefined) {
+    let plan;
+    try {
+      plan = context.company.gates.assertImplementationRunAllowed(workItemId);
+    } catch {
+      throw new RpcFaultError(
+        rpcFault("POLICY_DENIED", "plan not accepted", { correlationId }),
+      );
+    }
+    const created = context.executionStore.createRun(
+      spec,
+      context.executionClock.now(),
+    );
+    context.company.gates.linkRun({
+      workItemId,
+      runId: created.id,
+      planArtifactId: plan.id,
+    });
+    context.wakeExecutor();
+    return { runId: created.id, state: created.state };
+  }
   const created = context.executionStore.createRun(spec, context.executionClock.now());
   context.wakeExecutor();
   return { runId: created.id, state: created.state };
