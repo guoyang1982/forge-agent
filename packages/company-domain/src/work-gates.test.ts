@@ -37,6 +37,60 @@ describe("WorkGates", () => {
     ).toThrow(/spec not accepted/);
   });
 
+  it("dispatches after accepting the spec", () => {
+    const { gates, item, employee } = openFixture();
+    const spec = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "spec",
+      content: "范围：最大化",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: spec.id, actorId: employee.id });
+
+    const dispatched = gates.dispatch({
+      workItemId: item.id,
+      assigneeId: employee.id,
+      actorId: employee.id,
+    });
+
+    expect(dispatched.state).toBe("ready");
+    expect(dispatched.assigneeId).toBe(employee.id);
+  });
+
+  it("updates the live draft in place until it is accepted", () => {
+    const { gates, item, employee, work } = openFixture();
+    const first = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "spec",
+      content: "范围：最大化",
+      actorId: employee.id,
+    });
+    const edited = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "spec",
+      content: "范围：最大化 + 快捷键",
+      actorId: employee.id,
+    });
+
+    expect(edited.id).toBe(first.id);
+    expect(edited.version).toBe(1);
+    expect(edited.content).toBe("范围：最大化 + 快捷键");
+    expect(edited.contentHash).not.toBe(first.contentHash);
+    expect(
+      work.listArtifacts(item.id).filter((artifact) => artifact.kind === "spec"),
+    ).toHaveLength(1);
+
+    gates.acceptArtifact({ artifactId: edited.id, actorId: employee.id });
+    const next = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "spec",
+      content: "范围：最大化 + 快捷键 + 徽章",
+      actorId: employee.id,
+    });
+    expect(next.version).toBe(2);
+    expect(next.id).not.toBe(first.id);
+  });
+
   it("does not mutate an accepted spec", () => {
     const { gates, item, employee } = openFixture();
     const spec = gates.upsertDraft({
@@ -59,6 +113,28 @@ describe("WorkGates", () => {
     expect(gates.getArtifact(spec.id).content).toBe("范围：最大化");
   });
 
+  it("supersedes the previous accepted artifact of the same kind", () => {
+    const { gates, item, employee } = openFixture();
+    const first = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "spec",
+      content: "范围：最大化",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: first.id, actorId: employee.id });
+    const second = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "spec",
+      content: "范围：最大化 + 徽章",
+      actorId: employee.id,
+    });
+
+    gates.acceptArtifact({ artifactId: second.id, actorId: employee.id });
+
+    expect(gates.getArtifact(first.id).status).toBe("superseded");
+    expect(gates.getArtifact(second.id).status).toBe("accepted");
+  });
+
   it("rejects implementation run without accepted plan", () => {
     const { gates, item, employee } = openFixture();
     const spec = gates.upsertDraft({
@@ -72,6 +148,52 @@ describe("WorkGates", () => {
     expect(() => gates.assertImplementationRunAllowed(item.id)).toThrow(
       /plan not accepted/,
     );
+  });
+
+  it("returns the accepted plan after spec and plan acceptance", () => {
+    const { gates, item, employee } = openFixture();
+    const spec = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "spec",
+      content: "范围：最大化",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: spec.id, actorId: employee.id });
+    const plan = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "plan",
+      content: "先实现状态切换，再补快捷键",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: plan.id, actorId: employee.id });
+
+    expect(gates.assertImplementationRunAllowed(item.id)).toEqual(
+      gates.getArtifact(plan.id),
+    );
+  });
+
+  it("blocks the parent and creates a fix child carrying the reason", () => {
+    const { db, gates, item, employee, work } = openFixture();
+    const reason = "验收发现快捷键冲突";
+
+    const child = gates.pauseForFix({
+      workItemId: item.id,
+      reason,
+      ownerId: employee.id,
+    });
+
+    const parent = db
+      .prepare("SELECT state FROM company_work_items WHERE id = ?")
+      .get(item.id) as { state: string };
+    const intent = work
+      .listArtifacts(child.id)
+      .find((artifact) => artifact.kind === "intent");
+    expect(parent.state).toBe("blocked");
+    expect(child).toMatchObject({
+      parentId: item.id,
+      type: "fix",
+    });
+    expect(intent?.content).toBe(reason);
   });
 });
 
@@ -120,8 +242,10 @@ function openFixture() {
   });
 
   return {
+    db: store.db,
     employee,
     gates: new WorkGates(store.db, clock),
     item,
+    work,
   };
 }

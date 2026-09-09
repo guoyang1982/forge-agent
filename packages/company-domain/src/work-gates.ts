@@ -24,6 +24,31 @@ export class WorkGates {
   }): WorkArtifact {
     return this.db.transaction(() => {
       const item = this.getWorkItem(input.workItemId);
+      const now = this.clock.now();
+      const contentHash = createHash("sha256")
+        .update(input.content, "utf8")
+        .digest("hex");
+      const liveDraft = this.db
+        .prepare(
+          `SELECT id
+          FROM company_work_artifacts
+          WHERE work_item_id = ? AND kind = ? AND status = 'draft'
+          ORDER BY version DESC
+          LIMIT 1`,
+        )
+        .get(input.workItemId, input.kind) as { id: string } | undefined;
+
+      if (liveDraft) {
+        this.db
+          .prepare(
+            `UPDATE company_work_artifacts
+            SET content = ?, content_hash = ?, updated_at = ?
+            WHERE id = ?`,
+          )
+          .run(input.content, contentHash, now, liveDraft.id);
+        return this.getArtifact(liveDraft.id);
+      }
+
       const next = this.db
         .prepare(
           `SELECT COALESCE(MAX(version), 0) + 1 AS version
@@ -31,7 +56,6 @@ export class WorkGates {
           WHERE work_item_id = ? AND kind = ?`,
         )
         .get(input.workItemId, input.kind) as { version: number };
-      const now = this.clock.now();
       const artifact: WorkArtifact = {
         id: newCompanyId("artifact"),
         companyId: item.companyId,
@@ -40,9 +64,7 @@ export class WorkGates {
         version: next.version,
         status: "draft",
         content: input.content,
-        contentHash: createHash("sha256")
-          .update(input.content, "utf8")
-          .digest("hex"),
+        contentHash,
         workspacePath: null,
         acceptedAt: null,
         acceptedBy: null,
@@ -72,6 +94,18 @@ export class WorkGates {
       const artifact = this.getArtifact(input.artifactId);
       if (artifact.status !== "draft") {
         throw new Error("artifact not draft");
+      }
+      const current = this.db
+        .prepare(
+          `SELECT id
+          FROM company_work_artifacts
+          WHERE work_item_id = ? AND kind = ?
+          ORDER BY version DESC
+          LIMIT 1`,
+        )
+        .get(artifact.workItemId, artifact.kind) as { id: string };
+      if (current.id !== artifact.id) {
+        throw new Error("artifact not current draft");
       }
       const now = this.clock.now();
 
