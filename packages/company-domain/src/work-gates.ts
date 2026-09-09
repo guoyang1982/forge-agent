@@ -174,24 +174,33 @@ export class WorkGates {
         this.db
           .prepare("UPDATE company_run_links SET run_id = ? WHERE id = ?")
           .run(input.runId, placeholder.id);
-        return;
+      } else {
+        this.db
+          .prepare(
+            `INSERT INTO company_run_links
+              (id, company_id, work_item_id, run_id, plan_artifact_id, created_at)
+            VALUES
+              (@id, @companyId, @workItemId, @runId, @planArtifactId, @createdAt)`,
+          )
+          .run({
+            id: newCompanyId("run_link"),
+            companyId: item.companyId,
+            workItemId: input.workItemId,
+            runId: input.runId,
+            planArtifactId: input.planArtifactId,
+            createdAt: this.clock.now(),
+          });
       }
 
-      this.db
-        .prepare(
-          `INSERT INTO company_run_links
-            (id, company_id, work_item_id, run_id, plan_artifact_id, created_at)
-          VALUES
-            (@id, @companyId, @workItemId, @runId, @planArtifactId, @createdAt)`,
-        )
-        .run({
-          id: newCompanyId("run_link"),
-          companyId: item.companyId,
-          workItemId: input.workItemId,
-          runId: input.runId,
-          planArtifactId: input.planArtifactId,
-          createdAt: this.clock.now(),
-        });
+      if (input.runId.trim() !== "") {
+        this.db
+          .prepare(
+            `UPDATE company_work_items
+            SET state = 'waiting_approval', updated_at = ?
+            WHERE id = ?`,
+          )
+          .run(this.clock.now(), input.workItemId);
+      }
     })();
   }
 

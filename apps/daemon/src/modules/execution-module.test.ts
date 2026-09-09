@@ -115,6 +115,9 @@ describe("execution module", () => {
         WHERE work_item_id = ?`,
       )
       .all(item.id);
+    const linkedItem = context.store.db
+      .prepare("SELECT state FROM company_work_items WHERE id = ?")
+      .get(item.id);
 
     expect(result).toEqual({ runId: "run-1", state: "running" });
     expect(links).toEqual([
@@ -124,6 +127,7 @@ describe("execution module", () => {
         planArtifactId: plan.id,
       },
     ]);
+    expect(linkedItem).toEqual({ state: "waiting_approval" });
   });
 
   it("maps unexpected company gate failures to INTERNAL_ERROR", async () => {

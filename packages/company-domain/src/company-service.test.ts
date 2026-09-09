@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ForgeStore } from "@forge/store";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CompanyService } from "./index.js";
 
 const migrationsDir = join(import.meta.dirname, "..", "..", "..", "migrations");
@@ -19,7 +19,10 @@ afterEach(() => {
 });
 
 describe("CompanyService", () => {
-  const service = openService();
+  let service: CompanyService;
+  beforeEach(() => {
+    service = openService();
+  });
 
   it("creates and reads a company", () => {
     const created = service.create({ name: "曜石智能" });

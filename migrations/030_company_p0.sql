@@ -232,6 +232,7 @@ CREATE TABLE IF NOT EXISTS company_decisions (
   work_item_id TEXT NOT NULL,
   employee_id TEXT NOT NULL,
   decision TEXT NOT NULL,
+  reason TEXT,
   version INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,

@@ -117,7 +117,8 @@ function deliveryTraceHtml(item) {
     : trace.artifactIds?.join(", ") || "—";
   const validations = trace.validationIds?.join(", ") || "无";
   const chain = `${trace.workItemId || item.id} → spec ${trace.specVersion == null ? "—" : `v${trace.specVersion}`} → plan ${trace.planVersion == null ? "—" : `v${trace.planVersion}`} → run/artifact ${runOrArtifact} → 验证证据 ${validations}`;
-  return `<small class="delivery-trace">${escapeHtml(chain)}</small>${canMarkDelivered(trace) ? '<span class="gate">已交付</span>' : ""}`;
+  const independentlyAccepted = ["accepted", "completed"].includes(item.state);
+  return `<small class="delivery-trace">${escapeHtml(chain)}</small>${canMarkDelivered(trace) && independentlyAccepted ? '<span class="gate">已交付</span>' : ""}`;
 }
 
 function renderOverview(dashboard = {}) {

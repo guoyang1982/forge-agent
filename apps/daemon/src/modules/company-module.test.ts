@@ -169,6 +169,136 @@ describe("company module", () => {
     expect(error.message).toMatch(/decision must be approved or rejected/);
   });
 
+  it("moves a linked run through independent approval to accepted", async () => {
+    const { router, company, store } = companyRouterFixture();
+    const created = company.companies.create({ name: "曜石" });
+    const reviewer = hireEmployee(company, created.id);
+    const assignee = hireEmployee(company, created.id);
+    const workItem = company.work.createWorkItem({
+      companyId: created.id,
+      type: "implementation",
+      title: "Ship module",
+      problem: "RPC is missing",
+      expectedOutcome: "RPC is available",
+      ownerId: reviewer.id,
+    });
+    const spec = company.gates.upsertDraft({
+      workItemId: workItem.id,
+      kind: "spec",
+      content: "Accepted behavior",
+      actorId: reviewer.id,
+    });
+    company.gates.acceptArtifact({ artifactId: spec.id, actorId: reviewer.id });
+    const plan = company.gates.upsertDraft({
+      workItemId: workItem.id,
+      kind: "plan",
+      content: "Implement accepted behavior",
+      actorId: reviewer.id,
+    });
+    company.gates.acceptArtifact({ artifactId: plan.id, actorId: reviewer.id });
+    company.gates.dispatch({
+      workItemId: workItem.id,
+      assigneeId: assignee.id,
+      actorId: reviewer.id,
+    });
+
+    company.gates.linkRun({
+      workItemId: workItem.id,
+      runId: "run_accepted_1",
+      planArtifactId: plan.id,
+    });
+    const approvals = await router.handleUntyped(
+      DAEMON_COMPANY_METHODS.APPROVALS_LIST,
+      { companyId: created.id },
+      rpcContext(),
+    ) as { pending: Array<{ id: string }> };
+    expect(approvals.pending).toEqual([
+      expect.objectContaining({ id: workItem.id, state: "waiting_approval" }),
+    ]);
+
+    const decision = await router.handleUntyped(
+      DAEMON_COMPANY_METHODS.APPROVALS_DECIDE,
+      {
+        workItemId: workItem.id,
+        actorId: reviewer.id,
+        decision: "approved",
+        reason: "Acceptance checks passed",
+      },
+      rpcContext(),
+    );
+
+    expect(decision).toMatchObject({
+      workItemId: workItem.id,
+      decision: "approved",
+      reason: "Acceptance checks passed",
+    });
+    expect(
+      store.db.prepare("SELECT state FROM company_work_items WHERE id = ?").get(workItem.id),
+    ).toEqual({ state: "accepted" });
+    expect(
+      store.db.prepare("SELECT reason FROM company_decisions WHERE work_item_id = ?").get(workItem.id),
+    ).toEqual({ reason: "Acceptance checks passed" });
+  });
+
+  it("requires and persists rejection reasons while rejecting the item", async () => {
+    const { router, company, store } = companyRouterFixture();
+    const created = company.companies.create({ name: "曜石" });
+    const reviewer = hireEmployee(company, created.id);
+    const assignee = hireEmployee(company, created.id);
+    const workItem = company.work.createWorkItem({
+      companyId: created.id,
+      type: "implementation",
+      title: "Ship module",
+      problem: "RPC is missing",
+      expectedOutcome: "RPC is available",
+      ownerId: reviewer.id,
+    });
+    store.db
+      .prepare(
+        "UPDATE company_work_items SET assignee_id = ?, state = 'waiting_approval' WHERE id = ?",
+      )
+      .run(assignee.id, workItem.id);
+
+    await expect(
+      router.handleUntyped(
+        DAEMON_COMPANY_METHODS.APPROVALS_DECIDE,
+        {
+          workItemId: workItem.id,
+          actorId: reviewer.id,
+          decision: "rejected",
+        },
+        rpcContext(),
+      ),
+    ).rejects.toMatchObject({
+      fault: { code: "INVALID_REQUEST" },
+    });
+
+    await router.handleUntyped(
+      DAEMON_COMPANY_METHODS.APPROVALS_DECIDE,
+      {
+        workItemId: workItem.id,
+        actorId: reviewer.id,
+        decision: "rejected",
+        reason: "Missing acceptance evidence",
+      },
+      rpcContext(),
+    );
+
+    expect(
+      store.db
+        .prepare(
+          `SELECT item.state, decision.reason
+          FROM company_work_items AS item
+          JOIN company_decisions AS decision ON decision.work_item_id = item.id
+          WHERE item.id = ?`,
+        )
+        .get(workItem.id),
+    ).toEqual({
+      state: "rejected",
+      reason: "Missing acceptance evidence",
+    });
+  });
+
   it("rejects a run request without an accepted plan", async () => {
     const { router, company } = companyRouterFixture();
     const created = company.companies.create({ name: "曜石" });
@@ -192,6 +322,47 @@ describe("company module", () => {
 
     expect(error).toBeInstanceOf(Error);
     expect(error.message).toMatch(/plan not accepted/);
+  });
+
+  it("reuses an existing empty run request for the accepted plan", async () => {
+    const { router, company, store } = companyRouterFixture();
+    const created = company.companies.create({ name: "曜石" });
+    const owner = hireEmployee(company, created.id);
+    const workItem = company.work.createWorkItem({
+      companyId: created.id,
+      type: "implementation",
+      title: "Ship module",
+      problem: "RPC is missing",
+      expectedOutcome: "RPC is available",
+      ownerId: owner.id,
+    });
+    const plan = company.gates.upsertDraft({
+      workItemId: workItem.id,
+      kind: "plan",
+      content: "Implement accepted behavior",
+      actorId: owner.id,
+    });
+    company.gates.acceptArtifact({ artifactId: plan.id, actorId: owner.id });
+
+    await router.handleUntyped(
+      DAEMON_COMPANY_METHODS.WORK_ITEMS_REQUEST_RUN,
+      { workItemId: workItem.id },
+      rpcContext(),
+    );
+    await router.handleUntyped(
+      DAEMON_COMPANY_METHODS.WORK_ITEMS_REQUEST_RUN,
+      { workItemId: workItem.id },
+      rpcContext(),
+    );
+
+    expect(
+      store.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM company_run_links
+          WHERE work_item_id = ? AND plan_artifact_id = ? AND run_id = ''`,
+        )
+        .get(workItem.id, plan.id),
+    ).toEqual({ count: 1 });
   });
 
   it("surfaces accepted artifact versions in work item pipeline gates", async () => {

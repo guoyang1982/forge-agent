@@ -109,11 +109,18 @@ export function createCompanyModule(): DaemonModule<ForgeDaemonContext> {
 
 function requestRun(context: ForgeDaemonContext, workItemId: string) {
   const plan = context.company.gates.assertImplementationRunAllowed(workItemId);
-  context.store.db.prepare(
-    `INSERT INTO company_run_links
-      (id, company_id, work_item_id, run_id, plan_artifact_id, created_at)
-    VALUES (?, ?, ?, '', ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`,
-  ).run(newCompanyId("run_link"), plan.companyId, workItemId, plan.id);
+  const placeholder = context.store.db.prepare(
+    `SELECT id FROM company_run_links
+    WHERE work_item_id = ? AND plan_artifact_id = ? AND run_id = ''
+    ORDER BY created_at, id LIMIT 1`,
+  ).get(workItemId, plan.id);
+  if (!placeholder) {
+    context.store.db.prepare(
+      `INSERT INTO company_run_links
+        (id, company_id, work_item_id, run_id, plan_artifact_id, created_at)
+      VALUES (?, ?, ?, '', ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`,
+    ).run(newCompanyId("run_link"), plan.companyId, workItemId, plan.id);
+  }
   return { workItemId, planArtifactId: plan.id };
 }
 
@@ -128,22 +135,34 @@ function decideApproval(context: ForgeDaemonContext, params: Params) {
     throw new Error("executor cannot approve own work");
   }
   const decision = approvalDecisionParam(params);
+  const reason = decision === "rejected"
+    ? stringParam(params, "reason")
+    : optionalReasonParam(params);
   const result = {
     id: newCompanyId("decision"),
     companyId: item.companyId,
     workItemId,
     employeeId: actorId,
     decision,
+    reason,
     version: 1,
   };
-  context.store.db.prepare(
-    `INSERT INTO company_decisions
-      (id, company_id, work_item_id, employee_id, decision, version, created_at, updated_at)
-    VALUES
-      (@id, @companyId, @workItemId, @employeeId, @decision, @version,
-        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`,
-  ).run(result);
+  context.store.db.transaction(() => {
+    context.store.db.prepare(
+      `INSERT INTO company_decisions
+        (id, company_id, work_item_id, employee_id, decision, reason, version,
+          created_at, updated_at)
+      VALUES
+        (@id, @companyId, @workItemId, @employeeId, @decision, @reason, @version,
+          strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+          strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`,
+    ).run(result);
+    context.store.db.prepare(
+      `UPDATE company_work_items
+      SET state = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ?`,
+    ).run(decision === "approved" ? "accepted" : "rejected", workItemId);
+  })();
   return result;
 }
 
@@ -155,7 +174,8 @@ function listApprovals(context: ForgeDaemonContext, companyId: string) {
   ).all(companyId);
   const decisions = context.store.db.prepare(
     `SELECT id, company_id AS companyId, work_item_id AS workItemId,
-      employee_id AS employeeId, decision, version, created_at AS createdAt
+      employee_id AS employeeId, decision, reason, version,
+      created_at AS createdAt
     FROM company_decisions
     WHERE company_id = ?
     ORDER BY created_at DESC LIMIT 20`,
@@ -294,6 +314,15 @@ function optionalStringParam(params: Params, name: string): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || value.trim() === "") {
     invalidRequest(`${name} must be a non-empty string`);
+  }
+  return value;
+}
+
+function optionalReasonParam(params: Params): string | null {
+  const value = params.reason;
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string") {
+    invalidRequest("reason must be a string");
   }
   return value;
 }

@@ -121,7 +121,7 @@ describe("company renderer guardrails", () => {
     );
     expect(incomplete).not.toContain("已交付");
 
-    const complete = deliveryTraceHtml({
+    const completeTrace = {
       id: "work_1",
       trace: {
         workItemId: "work_1",
@@ -131,10 +131,17 @@ describe("company renderer guardrails", () => {
         artifactIds: ["artifact_intent", "artifact_spec", "artifact_plan"],
         validationIds: ["validation_1"],
       },
+    };
+    const waitingApproval = deliveryTraceHtml({
+      ...completeTrace,
+      state: "waiting_approval",
     });
-    expect(complete).toContain(
+    expect(waitingApproval).toContain(
       "work_1 → spec v1 → plan v2 → run/artifact run_1 → 验证证据 validation_1",
     );
-    expect(complete).toContain("已交付");
+    expect(waitingApproval).not.toContain("已交付");
+    expect(deliveryTraceHtml({ ...completeTrace, state: "accepted" })).toContain(
+      "已交付",
+    );
   });
 });
