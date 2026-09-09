@@ -46,3 +46,27 @@ DONE
 ## Note
 
 The brief's daemon `pnpm ... exec vitest` form cannot resolve `vitest` because the daemon package has no direct Vitest dependency. Verification used its repository test script, which invokes the pinned workspace Vitest binary.
+
+## Fix: validation evidence
+
+### Covering files
+
+- `packages/company-domain/src/delivery-trace.ts`
+- `packages/company-domain/src/delivery-trace.test.ts`
+- `apps/company-desktop/src/renderer/app.js`
+- `apps/company-desktop/src/security.test.ts`
+
+### RED
+
+- `pnpm --filter @forge/company-domain exec vitest run src/delivery-trace.test.ts`
+  - Failed 1/3 tests: the linked validation was expected but `validationIds` remained empty.
+- `pnpm --filter @forge/company-desktop test`
+  - Failed 1/10 tests: the rendered delivery chain omitted `验证证据`.
+
+### GREEN
+
+- `pnpm --filter @forge/company-domain exec vitest run src/delivery-trace.test.ts`
+  - Passed: 1 file, 3 tests.
+- `pnpm --filter @forge/company-desktop test`
+  - Passed: 1 file, 10 tests.
+- Changed-file IDE diagnostics: none.

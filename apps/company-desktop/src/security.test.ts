@@ -116,7 +116,9 @@ describe("company renderer guardrails", () => {
         validationIds: [],
       },
     });
-    expect(incomplete).toContain("work_1 → spec v1 → plan — → run/artifact");
+    expect(incomplete).toContain(
+      "work_1 → spec v1 → plan — → run/artifact artifact_intent, artifact_spec → 验证证据 无",
+    );
     expect(incomplete).not.toContain("已交付");
 
     const complete = deliveryTraceHtml({
@@ -127,10 +129,12 @@ describe("company renderer guardrails", () => {
         planVersion: 2,
         runIds: ["run_1"],
         artifactIds: ["artifact_intent", "artifact_spec", "artifact_plan"],
-        validationIds: [],
+        validationIds: ["validation_1"],
       },
     });
-    expect(complete).toContain("work_1 → spec v1 → plan v2 → run/artifact run_1");
+    expect(complete).toContain(
+      "work_1 → spec v1 → plan v2 → run/artifact run_1 → 验证证据 validation_1",
+    );
     expect(complete).toContain("已交付");
   });
 });

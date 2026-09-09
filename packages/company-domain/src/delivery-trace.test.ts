@@ -61,6 +61,23 @@ describe("delivery trace", () => {
       runId: "run_delivery_1",
       planArtifactId: plan.id,
     });
+    db.prepare(
+      `INSERT INTO core_validations (
+        id, run_id, validator_id, layer, status, severity,
+        evidence_ids_json, summary, details_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "validation_delivery_1",
+      "run_delivery_1",
+      employee.id,
+      "result",
+      "passed",
+      "info",
+      "[]",
+      "Delivery output verified",
+      "{}",
+      clock.now(),
+    );
 
     const trace = buildDeliveryTrace(db, item.id);
 
@@ -70,7 +87,7 @@ describe("delivery trace", () => {
       planVersion: 1,
       runIds: ["run_delivery_1"],
       artifactIds: work.listArtifacts(item.id).map(({ id }) => id),
-      validationIds: [],
+      validationIds: ["validation_delivery_1"],
     });
     expect(canMarkDelivered(trace)).toBe(true);
   });

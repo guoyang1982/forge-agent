@@ -110,11 +110,13 @@ function deliveryTraceHtml(item) {
     planVersion: item.planVersion,
     runIds: item.runIds || [],
     artifactIds: [],
+    validationIds: [],
   };
   const runOrArtifact = trace.runIds?.length
     ? trace.runIds.join(", ")
     : trace.artifactIds?.join(", ") || "—";
-  const chain = `${trace.workItemId || item.id} → spec ${trace.specVersion == null ? "—" : `v${trace.specVersion}`} → plan ${trace.planVersion == null ? "—" : `v${trace.planVersion}`} → run/artifact ${runOrArtifact}`;
+  const validations = trace.validationIds?.join(", ") || "无";
+  const chain = `${trace.workItemId || item.id} → spec ${trace.specVersion == null ? "—" : `v${trace.specVersion}`} → plan ${trace.planVersion == null ? "—" : `v${trace.planVersion}`} → run/artifact ${runOrArtifact} → 验证证据 ${validations}`;
   return `<small class="delivery-trace">${escapeHtml(chain)}</small>${canMarkDelivered(trace) ? '<span class="gate">已交付</span>' : ""}`;
 }
 

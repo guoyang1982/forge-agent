@@ -27,6 +27,18 @@ export function buildDeliveryTrace(
       ORDER BY created_at, id`,
     )
     .all(workItemId) as Array<{ runId: string }>;
+  const linkedRunIds = runIds.map(({ runId }) => runId);
+  const validationIds =
+    linkedRunIds.length === 0
+      ? []
+      : (db
+          .prepare(
+            `SELECT id
+            FROM core_validations
+            WHERE run_id IN (${linkedRunIds.map(() => "?").join(", ")})
+            ORDER BY created_at, id`,
+          )
+          .all(...linkedRunIds) as Array<{ id: string }>);
   const artifactIds = db
     .prepare(
       `SELECT id
@@ -44,9 +56,9 @@ export function buildDeliveryTrace(
     ...(accepted.planVersion === null
       ? {}
       : { planVersion: accepted.planVersion }),
-    runIds: runIds.map(({ runId }) => runId),
+    runIds: linkedRunIds,
     artifactIds: artifactIds.map(({ id }) => id),
-    validationIds: [],
+    validationIds: validationIds.map(({ id }) => id),
   };
 }
 
