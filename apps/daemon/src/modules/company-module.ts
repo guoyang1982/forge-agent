@@ -120,11 +120,14 @@ function requestRun(context: ForgeDaemonContext, workItemId: string) {
 function decideApproval(context: ForgeDaemonContext, params: Params) {
   const workItemId = stringParam(params, "workItemId");
   const actorId = stringParam(params, "actorId");
-  const decision = stringParam(params, "decision");
   const item = getWorkItem(context, workItemId);
+  if (!["submitted", "waiting_approval", "verifying"].includes(item.state)) {
+    throw new Error("work item is not a submission");
+  }
   if (item.assigneeId === actorId) {
     throw new Error("executor cannot approve own work");
   }
+  const decision = approvalDecisionParam(params);
   const result = {
     id: newCompanyId("decision"),
     companyId: item.companyId,
@@ -223,6 +226,7 @@ function getWorkItem(context: ForgeDaemonContext, workItemId: string) {
     id: string;
     companyId: string;
     assigneeId: string | null;
+    state: string;
   } & Record<string, unknown>;
 }
 
@@ -291,6 +295,14 @@ function artifactKindParam(params: Params) {
   return value;
 }
 
+function approvalDecisionParam(params: Params): "approved" | "rejected" {
+  const value = stringParam(params, "decision");
+  if (value !== "approved" && value !== "rejected") {
+    invalidRequest("decision must be approved or rejected");
+  }
+  return value;
+}
+
 function invalidRequest(message: string): never {
   throw new RpcFaultError(rpcFault("INVALID_REQUEST", message));
 }
@@ -302,6 +314,7 @@ function companyRpcError(error: unknown): RpcFaultError {
     message === "spec not accepted"
     || message === "plan not accepted"
     || message === "executor cannot approve own work"
+    || message === "work item is not a submission"
   ) {
     return new RpcFaultError(rpcFault("POLICY_DENIED", message));
   }
