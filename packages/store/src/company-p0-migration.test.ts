@@ -70,6 +70,67 @@ describe("Company P0 migrations", () => {
     }
   });
 
+  it("rejects cross-company work artifact references", () => {
+    const store = openMigrated();
+    try {
+      const insertCompany = store.db.prepare(
+        "INSERT INTO company_companies (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+      );
+      insertCompany.run("company-1", "Forge One", "2026-09-09", "2026-09-09");
+      insertCompany.run("company-2", "Forge Two", "2026-09-09", "2026-09-09");
+      store.db
+        .prepare(
+          "INSERT INTO company_employees (id, company_id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run("employee-1", "company-1", "Owner", "2026-09-09", "2026-09-09");
+      store.db
+        .prepare(
+          `INSERT INTO company_work_items (
+            id, company_id, type, title, problem, expected_outcome, owner_id,
+            state, risk, autonomy_level, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "work-1",
+          "company-1",
+          "implementation",
+          "Build schema",
+          "Schema missing",
+          "Schema exists",
+          "employee-1",
+          "draft",
+          "low",
+          2,
+          "2026-09-09",
+          "2026-09-09",
+        );
+
+      expect(() =>
+        store.db
+          .prepare(
+            `INSERT INTO company_work_artifacts (
+              id, company_id, work_item_id, kind, version, status, content,
+              content_hash, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            "artifact-cross-company",
+            "company-2",
+            "work-1",
+            "plan",
+            1,
+            "draft",
+            "{}",
+            "hash-cross-company",
+            "2026-09-09",
+            "2026-09-09",
+          ),
+      ).toThrow(/FOREIGN KEY constraint failed/);
+    } finally {
+      store.close();
+    }
+  });
+
   it("enforces unique work artifact versions", () => {
     const store = openMigrated();
     try {
