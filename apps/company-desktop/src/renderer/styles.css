@@ -452,6 +452,15 @@ select {
   resize: vertical;
 }
 
+.fixed-field {
+  padding: 9px 10px;
+  border: 1px solid rgba(139, 240, 201, 0.2);
+  border-radius: 8px;
+  color: var(--mint);
+  background: rgba(139, 240, 201, 0.06);
+  font-size: 12px;
+}
+
 input:focus,
 textarea:focus,
 select:focus {
@@ -495,6 +504,46 @@ select:focus {
   color: var(--mint);
   background: rgba(139, 240, 201, 0.1);
   font-weight: 800;
+}
+
+.org-department {
+  padding: 10px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.org-department:first-child {
+  border-top: 0;
+}
+
+.org-department-head,
+.org-position-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.org-department-head {
+  color: var(--mint);
+}
+
+.org-department-head small,
+.org-position-head small {
+  font-size: 10px;
+}
+
+.org-branch {
+  margin: 8px 0 0 9px;
+  padding-left: 14px;
+  border-left: 1px solid rgba(139, 240, 201, 0.18);
+}
+
+.org-position {
+  padding: 8px 0;
+}
+
+.org-position .org-node {
+  margin-left: 8px;
 }
 
 .approval-row input {

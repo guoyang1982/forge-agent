@@ -69,7 +69,7 @@
               <form id="hireForm" class="form-stack">
                 <label>姓名<input name="displayName" required placeholder="例如：研发负责人" /></label>
                 <label>岗位<input name="positionId" required placeholder="岗位 ID" /></label>
-                <label>自主等级<select name="autonomyLevel"><option value="0">L0</option><option value="1">L1</option><option value="2" selected>L2</option><option value="3">L3</option><option value="4">L4</option></select></label>
+                <label>自主等级<input type="hidden" name="autonomyLevel" value="2" /><span class="fixed-field">L2（P0 固定）</span></label>
                 <button type="submit">确认雇佣</button>
               </form>
             </article>

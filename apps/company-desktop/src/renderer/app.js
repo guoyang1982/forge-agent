@@ -112,16 +112,66 @@ function renderOverview(dashboard = {}) {
 }
 
 function renderOrganization(payload) {
-  const source = listFrom(payload, ["employees", "nodes", "positions"]);
-  const employees = source.length ? source : state.employees;
-  $("#organizationTree").classList.toggle("empty", !employees.length);
-  $("#organizationTree").innerHTML = employees.length
-    ? employees.map((employee) => `<div class="org-node">
-        <span class="avatar">${escapeHtml((employee.displayName || employee.name || "?").slice(0, 1))}</span>
-        <div><b>${escapeHtml(employee.displayName || employee.name || employee.id)}</b>
-        <small>${escapeHtml(employee.positionId || employee.position || "未分配岗位")} · L${escapeHtml(employee.autonomyLevel ?? 2)}</small></div>
-      </div>`).join("")
-    : "暂无员工";
+  const departments = payload?.departments || [];
+  const positions = payload?.positions || [];
+  const employees = payload?.employees || [];
+  const departmentIds = new Set(departments.map((department) => department.id));
+  const childrenByParent = new Map();
+  const positionsByDepartment = new Map();
+  const employeesByPosition = new Map();
+
+  for (const department of departments) {
+    const parentId = departmentIds.has(department.parentId) ? department.parentId : null;
+    const children = childrenByParent.get(parentId) || [];
+    children.push(department);
+    childrenByParent.set(parentId, children);
+  }
+  for (const position of positions) {
+    const departmentPositions = positionsByDepartment.get(position.departmentId) || [];
+    departmentPositions.push(position);
+    positionsByDepartment.set(position.departmentId, departmentPositions);
+  }
+  for (const employee of employees) {
+    const positionEmployees = employeesByPosition.get(employee.positionId) || [];
+    positionEmployees.push(employee);
+    employeesByPosition.set(employee.positionId, positionEmployees);
+  }
+
+  const visited = new Set();
+  const renderEmployee = (employee) => `<div class="org-node">
+    <span class="avatar">${escapeHtml((employee.displayName || employee.name || "?").slice(0, 1))}</span>
+    <div><b>${escapeHtml(employee.displayName || employee.name || employee.id)}</b>
+    <small>${escapeHtml(employee.id)} · L${escapeHtml(employee.autonomyLevel ?? 2)}</small></div>
+  </div>`;
+  const renderDepartment = (department) => {
+    if (visited.has(department.id)) return "";
+    visited.add(department.id);
+    const departmentPositions = positionsByDepartment.get(department.id) || [];
+    const childDepartments = childrenByParent.get(department.id) || [];
+    return `<section class="org-department">
+      <div class="org-department-head"><b>${escapeHtml(department.name || department.id)}</b><small>${escapeHtml(department.id)}</small></div>
+      <div class="org-branch">
+        ${departmentPositions.map((position) => `<div class="org-position">
+          <div class="org-position-head"><b>${escapeHtml(position.title || position.id)}</b><small>${escapeHtml(position.id)}</small></div>
+          ${(employeesByPosition.get(position.id) || []).map(renderEmployee).join("")}
+        </div>`).join("")}
+        ${childDepartments.map(renderDepartment).join("")}
+      </div>
+    </section>`;
+  };
+
+  const roots = childrenByParent.get(null) || [];
+  const tree = [
+    ...roots.map(renderDepartment),
+    ...departments.filter((department) => !visited.has(department.id)).map(renderDepartment),
+  ].join("");
+  $("#organizationTree").classList.toggle("empty", !departments.length);
+  $("#organizationTree").innerHTML = tree || "暂无部门";
+}
+
+function canApprove(actorId, assigneeId) {
+  const normalizedActorId = String(actorId || "").trim();
+  return Boolean(normalizedActorId && normalizedActorId !== String(assigneeId || "").trim());
 }
 
 function renderApprovals() {
@@ -129,12 +179,13 @@ function renderApprovals() {
   $("#approvalList").classList.toggle("empty", !state.approvals.length);
   $("#approvalList").innerHTML = state.approvals.length
     ? state.approvals.map((item) => {
-        const ownSubmission = Boolean(actorId && item.assigneeId === actorId);
-        return `<article class="approval-row" data-work-item="${escapeHtml(item.workItemId || item.id)}">
+        const approvalAllowed = canApprove(actorId, item.assigneeId);
+        const disabledReason = actorId ? "不能批准自己的提交" : "请输入审批人 ID";
+        return `<article class="approval-row" data-work-item="${escapeHtml(item.workItemId || item.id)}" data-assignee="${escapeHtml(item.assigneeId || "")}">
           <div><b>${escapeHtml(item.title || item.workItemId || item.id)}</b>
           <small>执行人：${escapeHtml(item.assigneeId || "未知")} · ${escapeHtml(item.state || "待审批")}</small></div>
           <input data-reason placeholder="驳回理由" />
-          <button data-decision="approved" ${ownSubmission ? "disabled title=\"不能批准自己的提交\"" : ""}>通过</button>
+          <button data-decision="approved" ${approvalAllowed ? "" : `disabled title="${disabledReason}"`}>通过</button>
           <button class="danger" data-decision="rejected">驳回</button>
         </article>`;
       }).join("")
@@ -225,7 +276,7 @@ $("#hireForm").addEventListener("submit", async (event) => {
       companyId: state.companyId,
       displayName: values.displayName,
       positionId: values.positionId,
-      autonomyLevel: Number(values.autonomyLevel),
+      autonomyLevel: 2,
     }));
     event.currentTarget.reset();
     await loadData();
@@ -306,6 +357,9 @@ $("#approvalList").addEventListener("click", async (event) => {
   const row = button.closest("[data-work-item]");
   const actorId = $("#approvalActorId").value.trim();
   const reason = row.querySelector("[data-reason]").value.trim();
+  if (button.dataset.decision === "approved" && !canApprove(actorId, row.dataset.assignee)) {
+    return toast(actorId ? "不能批准自己的提交" : "请输入审批人 ID", true);
+  }
   if (button.dataset.decision === "rejected" && !reason) return toast("驳回必须填写理由", true);
   try {
     await action(button.dataset.decision === "approved" ? "审批通过" : "审批驳回", () =>

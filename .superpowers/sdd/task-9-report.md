@@ -63,3 +63,39 @@ Tests       4 passed (4)
 The current daemon `company.workItems.requestRun` response can omit a concrete
 `runId`; the UI renders and deep-links a run whenever a run id is returned, and
 otherwise preserves the returned WorkItem/plan trace without fabricating one.
+
+## Fix — Important review findings
+
+### Covering files
+
+- `apps/company-desktop/src/renderer/index.html`
+- `apps/company-desktop/src/renderer/app.js`
+- `apps/company-desktop/src/renderer/styles.css`
+- `apps/company-desktop/src/security.test.ts`
+
+### RED
+
+Added focused renderer guardrail tests, then ran
+`pnpm --filter @forge/company-desktop test`.
+
+Observed 3 expected failures:
+
+- hire markup still offered autonomy L3/L4
+- organization rendering did not reference `payload.departments`
+- no `canApprove(actorId, assigneeId)` guard existed
+
+### GREEN
+
+- Rendered departments recursively by `parentId`, with positions grouped under
+  each department and employees grouped under their positions.
+- Replaced the hire autonomy selector with a fixed L2 field and hard-coded the
+  RPC payload to L2.
+- Disabled approval when the actor is blank or matches the assignee, and
+  retained a click-path guard before invoking the RPC.
+
+Verification:
+
+- `pnpm --filter @forge/company-desktop test` — PASS (7/7)
+- `pnpm --filter @forge/desktop exec vitest run src/product-shell-isolation.test.ts` — PASS (2/2)
+- `node --check apps/company-desktop/src/renderer/app.js` — PASS
+- IDE diagnostics for covering files — no errors
