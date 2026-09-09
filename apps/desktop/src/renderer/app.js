@@ -17251,11 +17251,12 @@ function renderChannelsTroubleshooting(activeCwd) {
   </details>`;
 }
 
-function renderChannelsGatewayBar(gw) {
+function renderChannelsGatewayBar(gw, daemonOk) {
   const running = Boolean(gw?.running);
   const url = gw?.listenUrl ? escapeHtml(gw.listenUrl) : "—";
   const pid = gw?.pid ? ` · PID ${gw.pid}` : "";
-  const daemonOk = Boolean(gw?.daemonConnected);
+  const gatewayLinked = Boolean(gw?.daemonConnected);
+  const daemonReachable = Boolean(daemonOk);
   return `<section class="channel-gateway-card${running ? " is-running" : ""}">
     <div class="channel-gateway-card-main">
       <div class="channel-gateway-symbol" aria-hidden="true">
@@ -17272,14 +17273,14 @@ function renderChannelsGatewayBar(gw) {
         </div>
         <p class="channel-gateway-desc">统一承载微信等消息渠道与 Forge Mobile 公网 Relay 连接，并转发给本机 Agent。</p>
         <div class="channel-gateway-url"><span class="channel-gateway-url-label">监听</span><code>${url}</code></div>
-        <div class="channel-gateway-daemon${daemonOk ? " is-ok" : ""}">
+        <div class="channel-gateway-daemon${running ? (gatewayLinked ? " is-ok" : "") : daemonReachable ? " is-ok" : ""}">
           <span class="channel-gateway-daemon-dot"></span>
           ${
             running
-              ? gw?.daemonConnected
+              ? gatewayLinked
                 ? "Daemon 已连接"
                 : "Daemon 未连接（无法运行 Agent）"
-              : daemonOk
+              : daemonReachable
                 ? "Gateway 未启动"
                 : "Daemon 未运行"
           }
@@ -18003,7 +18004,7 @@ async function renderChannelsView(options = {}) {
       daemonOk
         ? ""
         : `<div class="channels-daemon-banner event warn">需保持 Daemon 运行，Gateway 才能转发消息。</div>`
-    }${renderChannelsPermissionsBanner()}${renderChannelsGatewayBar(gw)}
+    }${renderChannelsPermissionsBanner()}${renderChannelsGatewayBar(gw, daemonOk)}
       ${renderGlobalMobileSection(mobileChannels, kindLabels, runtimeById, gw, daemonOk)}
       ${renderProjectChannelsSection(projectChannels, kinds, kindLabels, runtimeById, gw, daemonOk, cwd)}`);
     bindChannelsView(root, channels, gw);

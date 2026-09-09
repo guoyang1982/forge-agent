@@ -7,6 +7,7 @@ import {
   shell,
   type WebContents,
 } from "electron";
+import { installProductShell } from "./product-shell.js";
 import { killDaemonInDataDir } from "@forge/platform";
 import {
   resolveDevelopmentNodeExecutable,
@@ -1740,6 +1741,12 @@ app.whenReady().then(async () => {
     console.error("[forge-browser] failed to start browser host", error);
   }
   const win = createWindow();
+  installProductShell({
+    getWorkbenchWindow: () => mainWindow,
+    createWorkbenchWindow: createWindow,
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+  });
   void ensureDaemonEventSubscriber(loadConfig());
 
   win.webContents.on("did-finish-load", () => {

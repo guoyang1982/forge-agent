@@ -17,6 +17,12 @@ extraResources:
     to: daemon
     filter:
       - "**/*"
+  - from: ../company-desktop
+    to: company-desktop
+    filter:
+      - "dist/preload.cjs"
+      - "dist/preload-api.js"
+      - "src/renderer/**/*"
 mac:
   category: public.app-category.developer-tools
   extendInfo:

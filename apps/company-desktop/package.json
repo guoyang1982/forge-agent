@@ -1,0 +1,28 @@
+{
+  "name": "@forge/company-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/host.js",
+  "types": "./dist/host.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/host.d.ts",
+      "import": "./dist/host.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc && tsc -p tsconfig.preload.json && mv dist/preload.js dist/preload.cjs",
+    "test": "vitest run",
+    "start": "pnpm run build && pnpm --filter @forge/desktop exec electron ../company-desktop/dist/main.js"
+  },
+  "dependencies": {
+    "@forge/forge-links": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "electron": "^39.8.5",
+    "typescript": "^5.8.3",
+    "vitest": "^3.0.9"
+  }
+}

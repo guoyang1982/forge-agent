@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Forge Company</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="rail">
+        <div class="brand">
+          <span class="mark">C</span>
+          <div>
+            <strong>Company</strong>
+            <small>经营台</small>
+          </div>
+        </div>
+        <nav>
+          <button class="nav on" type="button">总览</button>
+          <button class="nav" type="button" disabled>目标</button>
+          <button class="nav" type="button" disabled>组织</button>
+          <button class="nav" type="button" disabled>工作</button>
+          <button class="nav" type="button" disabled>审批</button>
+          <button class="nav" type="button" disabled>资产</button>
+        </nav>
+      </aside>
+      <main class="main">
+        <header class="top">
+          <div class="switch" aria-label="产品入口">
+            <button id="openWorkbenchBtn" type="button">工作台</button>
+            <button class="on" type="button">公司</button>
+          </div>
+          <p class="org">曜石智能科技 · L2 · 同一 Daemon</p>
+        </header>
+        <section class="head">
+          <div>
+            <h1>早上好，创始人</h1>
+            <p>3 个目标进行中，2 项决策待处理。这是独立经营壳；领域功能后续在本包内演进，不改工作台。</p>
+          </div>
+        </section>
+        <section class="metrics">
+          <article><small>目标健康度</small><b>82%</b><span>↑ 6% 本周</span></article>
+          <article><small>数字员工</small><b>12</b><span>8 人工作中</span></article>
+          <article><small>待审批</small><b>2</b><span class="warn">1 项高风险</span></article>
+          <article><small>本月节省</small><b>126h</b><span>可追溯到任务</span></article>
+        </section>
+        <section class="cols">
+          <article class="card">
+            <h2>本季度目标</h2>
+            <div class="goal"><div class="goal-line"><b>发布 Company MVP</b><span>68%</span></div><div class="bar"><i style="width:68%"></i></div></div>
+            <div class="goal"><div class="goal-line"><b>跑通 5 个真实需求</b><span>45%</span></div><div class="bar"><i style="width:45%"></i></div></div>
+            <div class="goal"><div class="goal-line"><b>建立内容增长闭环</b><span>31%</span></div><div class="bar"><i style="width:31%"></i></div></div>
+          </article>
+          <article class="card">
+            <h2>需要你的决策</h2>
+            <p class="row">批准首批客户邀约</p>
+            <p class="row">确认 MVP 发布范围</p>
+          </article>
+        </section>
+        <section class="workitem">
+          <div>
+            <b>WI-118 跨仓写入租约</b>
+            <p>老周 · Run r_8f21 · 等待独立验证</p>
+          </div>
+          <button id="openRunBtn" type="button">在工作台打开</button>
+        </section>
+      </main>
+    </div>
+    <script src="./app.js"></script>
+  </body>
+</html>

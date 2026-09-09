@@ -32,6 +32,7 @@ async function main() {
   console.log("[prepare-electron-bundle] Building daemon + desktop dependency trees...");
   await run("pnpm", ["--filter", "@forge/daemon...", "run", "build"]);
   await run("pnpm", ["--filter", "@forge/desktop...", "run", "build"]);
+  await run("pnpm", ["--filter", "@forge/company-desktop", "run", "build"]);
 
   console.log("[prepare-electron-bundle] Deploying daemon + desktop to staging...");
   rmSync(stagingRoot, { recursive: true, force: true });
@@ -64,6 +65,22 @@ async function main() {
   if (!existsSync(join(appStaging, "dist", "main.js"))) {
     throw new Error(`Desktop entry missing: ${join(appStaging, "dist", "main.js")}`);
   }
+
+  const companySource = join(repoRoot, "apps", "company-desktop");
+  const companyStaging = join(stagingRoot, "company-desktop");
+  const companyPreload = join(companySource, "dist", "preload.cjs");
+  const companyRenderer = join(companySource, "src", "renderer");
+  if (!existsSync(companyPreload) || !existsSync(join(companyRenderer, "index.html"))) {
+    throw new Error("Company desktop assets missing; build @forge/company-desktop first");
+  }
+  mkdirSync(join(companyStaging, "dist"), { recursive: true });
+  mkdirSync(join(companyStaging, "src"), { recursive: true });
+  cpSync(companyPreload, join(companyStaging, "dist", "preload.cjs"));
+  const companyPreloadApi = join(companySource, "dist", "preload-api.js");
+  if (existsSync(companyPreloadApi)) {
+    cpSync(companyPreloadApi, join(companyStaging, "dist", "preload-api.js"));
+  }
+  cpSync(companyRenderer, join(companyStaging, "src", "renderer"), { recursive: true });
 
   const require = createRequire(join(appRoot, "package.json"));
   const electronVersion = require("electron/package.json").version;
