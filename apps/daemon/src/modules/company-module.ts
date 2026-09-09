@@ -1,4 +1,4 @@
-import { newCompanyId } from "@forge/company-domain";
+import { buildDeliveryTrace, newCompanyId } from "@forge/company-domain";
 import { DAEMON_COMPANY_METHODS, rpcFault } from "@forge/protocol";
 import { RpcFaultError } from "../host/router.js";
 import type { DaemonModule } from "../host/types.js";
@@ -247,33 +247,16 @@ type WorkItemRow = {
 type CurrentGate = "缺 spec" | "缺 plan" | "执行中" | "待验收" | "已完成";
 
 function enrichWorkItem(context: ForgeDaemonContext, item: WorkItemRow) {
-  const versions = context.store.db.prepare(
-    `SELECT
-      MAX(CASE WHEN kind = 'spec' AND status = 'accepted' THEN version END)
-        AS specVersion,
-      MAX(CASE WHEN kind = 'plan' AND status = 'accepted' THEN version END)
-        AS planVersion
-    FROM company_work_artifacts
-    WHERE work_item_id = ?`,
-  ).get(item.id) as {
-    specVersion: number | null;
-    planVersion: number | null;
-  };
-  const runIds = context.store.db.prepare(
-    `SELECT run_id AS runId
-    FROM company_run_links
-    WHERE work_item_id = ? AND TRIM(run_id) <> ''
-    ORDER BY created_at, id`,
-  ).all(item.id) as Array<{ runId: string }>;
-  const specVersion = versions.specVersion ?? undefined;
-  const planVersion = versions.planVersion ?? undefined;
+  const trace = buildDeliveryTrace(context.store.db, item.id);
+  const { specVersion, planVersion, runIds } = trace;
 
   return {
     ...item,
     ...(specVersion === undefined ? {} : { specVersion }),
     ...(planVersion === undefined ? {} : { planVersion }),
     currentGate: currentGate(item.state, specVersion, planVersion),
-    runIds: runIds.map(({ runId }) => runId),
+    runIds,
+    trace,
   };
 }
 

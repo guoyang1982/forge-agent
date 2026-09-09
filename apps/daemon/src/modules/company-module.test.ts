@@ -236,6 +236,13 @@ describe("company module", () => {
       specVersion: 1,
       currentGate: "缺 plan",
       runIds: ["run_123"],
+      trace: {
+        workItemId: workItem.id,
+        specVersion: 1,
+        runIds: ["run_123"],
+        artifactIds: expect.arrayContaining([spec.id]),
+        validationIds: [],
+      },
     });
     expect(dashboard.pipelines).toEqual([
       expect.objectContaining({

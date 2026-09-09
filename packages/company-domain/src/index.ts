@@ -1,4 +1,8 @@
 export { CompanyService } from "./company-service.js";
+export {
+  buildDeliveryTrace,
+  canMarkDelivered,
+} from "./delivery-trace.js";
 export { OrganizationService } from "./organization-service.js";
 export { WorkService } from "./work-service.js";
 export { WorkGates } from "./work-gates.js";

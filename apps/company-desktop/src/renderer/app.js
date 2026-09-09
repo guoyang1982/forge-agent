@@ -99,6 +99,25 @@ function workItemRunButton(item) {
   return runId ? `<button data-open-run="${escapeHtml(runId)}">在工作台打开</button>` : "";
 }
 
+function canMarkDelivered(trace) {
+  return trace?.specVersion != null && trace?.planVersion != null && trace.runIds?.length > 0;
+}
+
+function deliveryTraceHtml(item) {
+  const trace = item.trace || {
+    workItemId: item.id,
+    specVersion: item.specVersion,
+    planVersion: item.planVersion,
+    runIds: item.runIds || [],
+    artifactIds: [],
+  };
+  const runOrArtifact = trace.runIds?.length
+    ? trace.runIds.join(", ")
+    : trace.artifactIds?.join(", ") || "—";
+  const chain = `${trace.workItemId || item.id} → spec ${trace.specVersion == null ? "—" : `v${trace.specVersion}`} → plan ${trace.planVersion == null ? "—" : `v${trace.planVersion}`} → run/artifact ${runOrArtifact}`;
+  return `<small class="delivery-trace">${escapeHtml(chain)}</small>${canMarkDelivered(trace) ? '<span class="gate">已交付</span>' : ""}`;
+}
+
 function renderOverview(dashboard = {}) {
   const active = state.workItems.filter((item) =>
     !["accepted", "completed", "cancelled", "rejected"].includes(item.state));
@@ -213,7 +232,7 @@ function renderWorkCenter() {
       item.planVersion != null && `plan v${item.planVersion}`,
     ].filter(Boolean).join(" · ");
     return `<div class="list-row"><div><b>${escapeHtml(item.title || item.id)}</b>
-      <small>${escapeHtml(details)}</small></div>${workItemRunButton(item)}</div>`;
+      <small>${escapeHtml(details)}</small>${deliveryTraceHtml(item)}</div>${workItemRunButton(item)}</div>`;
   });
   const traces = state.traces.map((trace) => {
     const value = trace.result || {};
