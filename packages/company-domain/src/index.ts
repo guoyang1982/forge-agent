@@ -1,4 +1,11 @@
+export {
+  writeWorkArtifactFile,
+} from "./artifact-files.js";
 export { CompanyService } from "./company-service.js";
+export type {
+  CompanyArtifactOptions,
+  WorkArtifactFileKind,
+} from "./artifact-files.js";
 export {
   buildDeliveryTrace,
   canMarkDelivered,
