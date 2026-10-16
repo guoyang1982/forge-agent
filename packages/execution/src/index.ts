@@ -52,6 +52,7 @@ export type {
 export { mapGovernedOutcome } from "./governed-types.js";
 export { ExecutionRecovery } from "./recovery.js";
 export {
+  applyUnattendedRunFlags,
   bridgeAgentEvent,
   finalTextToArtifactRef,
   FIRST_PARTY_RUN_ORIGIN,

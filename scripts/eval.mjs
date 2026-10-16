@@ -96,6 +96,8 @@ function runExecutionGate() {
     "packages/execution/src/recovery.test.ts",
     "packages/daemon-client/src/subscription.test.ts",
     "apps/daemon/src/durable-restart.e2e.test.ts",
+    "apps/daemon/src/company-research.e2e.test.ts",
+    "apps/daemon/src/company-delivery.e2e.test.ts",
   ];
   const result = spawnSync(vitestBin, ["run", ...targets], {
     cwd: root,

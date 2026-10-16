@@ -9,8 +9,12 @@ import {
   buildClaudeProcessEnv,
   claudeStdioKeepsStdinOpen,
   createClaudeStreamState,
+  isClaudeTelemetryLine,
   listClaudeModels,
   resolveClaudeRuntimePermissionMode,
+  shouldSurfaceClaudeStderr,
+  shouldTreatClaudeStdoutLineAsAssistant,
+  stripAnsi,
 } from "./claude-runtime.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -233,6 +237,57 @@ describe("applyClaudeNdjsonMessage", () => {
       kind: "add",
     });
   });
+
+  it("keeps assistant text after a thinking-only partial stream", () => {
+    const { events } = feed([
+      {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          delta: { type: "thinking_delta", thinking: "User said hello." },
+        },
+      },
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "你好！有什么我可以帮你的吗？" }],
+        },
+      },
+      { type: "result", result: "" },
+    ]);
+    expect(events.filter((event) => event.type === "text_delta")).toEqual([
+      expect.objectContaining({ delta: "你好！有什么我可以帮你的吗？" }),
+    ]);
+  });
+
+  it("does not leak unrecognized_model telemetry as a status bubble", () => {
+    const { events } = feed([
+      {
+        type: "system",
+        subtype: "status",
+        status:
+          '[claude-code:unrecognized_model] ("model":"claude-for-deepseek-v4-pro","query_source":"generate_metadata")',
+      },
+    ]);
+    expect(events.filter((event) => event.type === "status")).toEqual([]);
+  });
+});
+
+describe("Claude Code stderr / stdout noise", () => {
+  const telemetry =
+    '[claude-code:unrecognized_model] ("model":"claude-for-deepseek-v4-pro\u001b[1m","query_source":"generate_metadata")';
+
+  it("strips ANSI and treats unrecognized_model telemetry as noise", () => {
+    expect(stripAnsi("claude-for-deepseek-v4-pro\u001b[1m")).toBe("claude-for-deepseek-v4-pro");
+    expect(isClaudeTelemetryLine(telemetry)).toBe(true);
+    expect(shouldSurfaceClaudeStderr(`Claude Code: ${telemetry}`)).toBe(false);
+    expect(shouldTreatClaudeStdoutLineAsAssistant(telemetry)).toBe(false);
+  });
+
+  it("still surfaces real Claude Code errors", () => {
+    expect(shouldSurfaceClaudeStderr("Error: Authentication failed")).toBe(true);
+    expect(shouldTreatClaudeStdoutLineAsAssistant("你好，有什么可以帮你的？")).toBe(true);
+  });
 });
 
 describe("claude stdio permission stdin", () => {
@@ -247,6 +302,8 @@ describe("claude stdio permission stdin", () => {
     ).toBe(false);
     const source = readFileSync(join(here, "claude-runtime.ts"), "utf8");
     expect(source).not.toMatch(/stdin\.write\([\s\S]{0,200}stdin\.end\(\)/);
+    expect(source).toMatch(/parsed\.type === "result"[\s\S]*stdin\.end\(/);
+    expect(source).toMatch(/parsed\.type === "result"[\s\S]*settleOk\(/);
   });
 
   it("bypasses interactive tool approval for unattended automations", () => {
@@ -257,5 +314,15 @@ describe("claude stdio permission stdin", () => {
     };
     expect(resolveClaudeRuntimePermissionMode(automation)).toBe("bypassPermissions");
     expect(claudeStdioKeepsStdinOpen(automation)).toBe(false);
+  });
+
+  it("bypasses interactive tool approval for company work-item runs", () => {
+    const company = {
+      cwd: "/tmp",
+      message: "实现已接受的计划",
+      companyWorkItemId: "work_1",
+    };
+    expect(resolveClaudeRuntimePermissionMode(company)).toBe("bypassPermissions");
+    expect(claudeStdioKeepsStdinOpen(company)).toBe(false);
   });
 });

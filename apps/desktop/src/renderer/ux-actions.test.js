@@ -12,6 +12,7 @@ describe("copy buttons in the timeline", () => {
     expect(source).toContain("decorateMarkdownCodeBlocks(host)");
     expect(source).toContain('data-copy-action="code"');
     expect(source).toContain('data-copy-action="conclusion"');
+    expect(source).toContain("run-conclusion-heading-quiet");
     expect(source).toContain("navigator.clipboard.writeText");
     // Clicks must be delegated — direct listeners die on innerHTML repaints.
     expect(source).toContain('closest("[data-copy-action]")');
@@ -154,8 +155,11 @@ describe("MCP resource status", () => {
   it("distinguishes plugin-provided MCP from optional manual config", () => {
     const source = appSource();
     expect(source).toContain("插件自动加载");
-    expect(source).toContain("由已启用插件自动加载，无需写入 mcp.servers");
+    expect(source).toContain("已启用插件提供的连接器会自动显示");
     expect(source).toContain("上方插件 MCP 已自动生效，无需重复写入设置 JSON");
+    expect(source).toContain("自定义连接器");
+    expect(source).toContain("saveMcpConfig");
+    expect(source).toContain("escapeHtml(text)");
     expect(source).not.toContain("个默认安装 MCP 未写入当前 config");
   });
 
@@ -491,6 +495,17 @@ describe("task plan card", () => {
     expect(source).toContain("renderIntentPlanCard(ev)");
   });
 
+  it("renders persona_active success and failure in the workbench timeline", () => {
+    const source = appSource();
+    expect(source).toContain('ev.type === "persona_active"');
+    expect(source).toContain("renderPersonaActiveBanner(ev)");
+    expect(source).toContain("人设状态：已使用 · 成功生效");
+    expect(source).toContain("人设状态：未使用 · 失败");
+    expect(source).toContain("已写入 system 上下文 · 使用成功");
+    expect(source).toContain("persona-status-banner");
+    expect(source).toContain("updateRunActivityPersonaChip");
+  });
+
   it("renders plan_update events as a card instead of tool lines", () => {
     const source = appSource();
     expect(source).toContain('ev.type === "plan_update"');
@@ -741,6 +756,7 @@ describe("restored step narratives", () => {
     const conclusion = source.match(/function renderRunConclusion[\s\S]*?\n}\n/)?.[0] ?? "";
     expect(conclusion).toContain("skipPersist");
     expect(conclusion).toContain("isDuplicateConclusionCopy(streamedText, finalCandidate)");
+    expect(conclusion).toContain("!hadToolSteps && streamedText");
     const finish = source.match(/function finishStreamTextSegment[\s\S]*?\n}\n/)?.[0] ?? "";
     expect(finish).toContain("state.runConclusionRendered");
     expect(finish).toContain("options.skipPersist");
@@ -890,6 +906,19 @@ describe("restored step narratives", () => {
     expect(source).toContain(".codex-activity-chip.clickable");
     const css = readFileSync(join(here, "styles.css"), "utf-8");
     expect(css).toContain(".codex-command-detail-output");
+    expect(css).toContain(".run-activity-meta");
+    expect(css).toContain("flex: 0 0 auto");
+    expect(css).toContain(".codex-activity-state");
+    const shorten = source.match(/function shortLiveActivityLabel[\s\S]*?\n}\n/)?.[0] ?? "";
+    const shortLiveActivityLabel = Function(`${shorten}; return shortLiveActivityLabel;`)();
+    expect(
+      shortLiveActivityLabel(
+        "已运行 /bin/zsh -lc \"cat > star-dodge/game-core.js <<'EOF' (function (root) {",
+      ),
+    ).toBe("已运行 game-core.js");
+    expect(shortLiveActivityLabel("正在运行 pnpm test")).toBe("正在运行 pnpm");
+    expect(source).toContain("codex-activity-state");
+    expect(source).toContain("处理中…");
   });
 
   it("normalizes legacy add-file events and terminalizes orphaned running chips", () => {
@@ -1305,6 +1334,23 @@ describe("automation model picker", () => {
     expect(preload).toContain("model?: string");
     expect(preload).toContain("runtime?: string");
   });
+
+  it("lets the expanded task card edit prompt and schedule", () => {
+    const source = appSource();
+    const detail =
+      source.match(/function renderAutomationCardDetail[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(detail).toContain("automation-prompt-input");
+    expect(detail).toContain("automation-cron-input");
+    expect(detail).toContain("automation-timezone-input");
+    expect(detail).not.toContain("automation-detail-prompt");
+    expect(source).toContain("function saveAutomationPrompt");
+    expect(source).toContain("function saveAutomationSchedule");
+    expect(source).toContain('closest("button, input, label, select, textarea');
+    expect(source).toContain("patch: { prompt");
+    expect(source).toContain("nextPrompt.startsWith(name)");
+    expect(source).toContain("flushAutomationCardEdits");
+    expect(source).toContain("patch: { cron:");
+  });
 });
 
 describe("automation intent gating", () => {
@@ -1325,7 +1371,7 @@ describe("automation intent gating", () => {
 });
 
 describe("flat run-activity streaming", () => {
-  it("streams process output flat while running, then folds long runs on conclusion", () => {
+  it("streams process output flat while running, then folds it on conclusion", () => {
     const source = appSource();
     expect(source).toContain("run-activity-stream");
     expect(source).toContain("shouldCollapseRunActivityContent");
@@ -1338,13 +1384,11 @@ describe("flat run-activity streaming", () => {
     expect(ensure).toContain("state.runActivityBody = stream");
     const finalize =
       source.match(/function finalizeRunActivity[\s\S]*?\n}\n/)?.[0] ?? "";
-    expect(finalize).toContain("shouldCollapseRunActivityContent");
     expect(finalize).toContain("foldLiveRunActivityContent");
-    expect(finalize).toContain("unwrapLiveRunActivityContent");
+    expect(finalize).not.toContain("unwrapLiveRunActivityContent");
     const collapse =
       source.match(/function shouldCollapseRunActivityContent[\s\S]*?\n}\n/)?.[0] ?? "";
-    expect(collapse).toContain("units >= 4");
-    expect(collapse).toContain("chars >= 800");
+    expect(collapse).toContain("countRunActivityContentUnits(host) > 0");
     const css = readFileSync(join(here, "styles.css"), "utf-8");
     expect(css).toContain(".run-activity-stream");
   });
@@ -1533,6 +1577,25 @@ describe("subagent talent fold nesting", () => {
   });
 });
 
+describe("Codex models-cache warnings", () => {
+  it("does not render the stale models-cache warning as a chat bubble", () => {
+    const warning =
+      appSource().match(/if \(ev\.type === "warning"\) \{[\s\S]*?return pushEvent\(`⚠ \$\{ev\.message\}`, "warn"\);/)?.[0] ?? "";
+    expect(warning).toMatch(/supports_reasoning_summaries|模型缓存字段过期/);
+  });
+});
+
+describe("long Claude Code / live-response lines", () => {
+  it("wraps unbreakable telemetry so event bubbles cannot overflow the column", () => {
+    const css = readFileSync(join(here, "styles.css"), "utf-8");
+    const eventBlock = css.match(/^\.event\s*\{[^}]+\}/m)?.[0] ?? "";
+    const liveBlock = css.match(/^\.timeline \.codex-live-response\s*\{[^}]+\}/m)?.[0] ?? "";
+    expect(eventBlock).toContain("overflow-wrap: anywhere");
+    expect(eventBlock).toContain("max-width: 100%");
+    expect(liveBlock).toContain("overflow-wrap: anywhere");
+  });
+});
+
 describe("compact modified-files list", () => {
   it("hugs file rows instead of stretching status across the timeline", () => {
     const css = readFileSync(join(here, "styles.css"), "utf-8");
@@ -1650,4 +1713,39 @@ it("does not fill an empty viewer agent with same-mention background activity", 
   expect(collect({mention: "same-role", children: [{type: "event", text: "viewer activity"}]}))
     .toEqual([{kind: "event", text: "viewer activity"}]);
   expect(domLookups).toBe(0);
+});
+
+describe("company work item return", () => {
+  it("lets the workbench open the matching company work item", () => {
+    const source = appSource();
+    const html = readFileSync(join(here, "index.html"), "utf-8");
+    const preload = readFileSync(join(here, "../preload.ts"), "utf-8");
+    expect(preload).toContain("openCompany");
+    expect(preload).toContain("forge:open-company");
+    expect(html).toContain("回经营台");
+    expect(source).toContain("openCompany");
+    expect(source).toContain("forge://company/work/");
+  });
+
+  it("opens the session bound to a company execution row", () => {
+    const source = appSource();
+    const open = source.match(/async function openCompanyLinkedSession[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(open).toContain("payload?.sessionId");
+    expect(open).toContain("payload?.runId");
+    expect(open).not.toContain("getTrace");
+    expect(open).toContain("isViewingSession");
+    expect(open).toContain("openSearchedSession(sessionId, cwd)");
+  });
+
+  it("shows 回经营台 only while viewing the linked company session", () => {
+    const source = appSource();
+    const show = source.match(/function showCompanyReturn[\s\S]*?\n}\n/)?.[0] ?? "";
+    const sync = source.match(/function syncCompanyReturnBar[\s\S]*?\n}\n/)?.[0] ?? "";
+    const switchView = readFileSync(join(here, "session-run-ui.js"), "utf-8")
+      .match(/function switchSessionView[\s\S]*?\n    \}/)?.[0] ?? "";
+    expect(show).toContain("sessionId");
+    expect(sync).toContain("companyReturnSessionId");
+    expect(sync).toContain("viewingTimelineSessionId");
+    expect(switchView).toContain("syncCompanyReturnBar");
+  });
 });

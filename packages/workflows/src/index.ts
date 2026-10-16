@@ -7,3 +7,5 @@ export * from "./v2/types.js";
 export * from "./v2/compiler.js";
 export * from "./v2/triggers.js";
 export * from "./v2/store.js";
+export * from "./templates/requirement-research.js";
+export * from "./templates/product-delivery.js";

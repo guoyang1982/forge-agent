@@ -39,6 +39,8 @@ export interface EvalCaseResult {
   passed: boolean;
   durationMs: number;
   costMinor: bigint;
+  /** False means costMinor is a placeholder and actual incurred cost is unknown. */
+  costKnown?: boolean;
   toolCorrect: boolean;
   policyCompliant: boolean;
   traceFixture?: EvalTraceFixture;
@@ -51,7 +53,9 @@ export interface EvalRunMetrics {
   policyComplianceRate: number;
   p50DurationMs: number;
   p95DurationMs: number;
+  /** Sum of known costs only; see unknownCostCount for incomplete accounting. */
   totalCostMinor: bigint;
+  unknownCostCount?: number;
   unstableCaseIds: string[];
 }
 
@@ -65,6 +69,9 @@ export interface EvalRunResult {
 }
 
 export interface EvalCaseExecutionInput {
+  /** Executors must honor cancellation to stop work. The runner cannot forcibly
+   * terminate an executor that ignores this signal or blocks the event loop. */
+  signal: AbortSignal;
   suite: EvalSuite;
   evalCase: EvalCase;
   repeatIndex: number;

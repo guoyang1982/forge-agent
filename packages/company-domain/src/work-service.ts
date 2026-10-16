@@ -1,10 +1,13 @@
-import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import {
   persistWorkArtifactFile,
   type CompanyArtifactOptions,
 } from "./artifact-files.js";
 import type { Clock } from "./clock.js";
+import {
+  buildDemandDraftArtifacts,
+  insertWorkArtifactRow,
+} from "./demand-drafts.js";
 import { newCompanyId } from "./ids.js";
 import { WorkGates } from "./work-gates.js";
 
@@ -108,6 +111,14 @@ export class WorkService {
     goalId: string;
     title: string;
   }): Project {
+    const goal = this.db
+      .prepare(
+        `SELECT id FROM company_goals WHERE company_id = ? AND id = ?`,
+      )
+      .get(input.companyId, input.goalId) as { id: string } | undefined;
+    if (!goal) {
+      throw new Error("goal not found");
+    }
     const project: Project = {
       id: newCompanyId("project"),
       companyId: input.companyId,
@@ -129,6 +140,7 @@ export class WorkService {
 
   createWorkItem(input: {
     companyId: string;
+    goalId?: string;
     projectId?: string;
     type: WorkItemType;
     title: string;
@@ -136,11 +148,12 @@ export class WorkService {
     expectedOutcome: string;
     ownerId: string;
   }): WorkItem {
+    const link = this.resolveGoalProject(input.companyId, input.goalId, input.projectId);
     const item: WorkItem = {
       id: newCompanyId("work"),
       companyId: input.companyId,
-      goalId: null,
-      projectId: input.projectId ?? null,
+      goalId: link.goalId,
+      projectId: link.projectId,
       parentId: null,
       type: input.type,
       title: input.title,
@@ -153,21 +166,7 @@ export class WorkService {
       autonomyLevel: 2,
       version: 1,
     };
-    const artifact: WorkArtifact = {
-      id: newCompanyId("artifact"),
-      companyId: input.companyId,
-      workItemId: item.id,
-      kind: "intent",
-      version: 1,
-      status: "draft",
-      content: input.problem,
-      contentHash: createHash("sha256")
-        .update(input.problem, "utf8")
-        .digest("hex"),
-      workspacePath: null,
-      acceptedAt: null,
-      acceptedBy: null,
-    };
+    const artifacts = buildDemandDraftArtifacts(item);
     const now = this.clock.now();
 
     this.db.transaction(() => {
@@ -183,20 +182,13 @@ export class WorkService {
               @autonomyLevel, @version, @createdAt, @updatedAt)`,
         )
         .run({ ...item, createdAt: now, updatedAt: now });
-      this.db
-        .prepare(
-          `INSERT INTO company_work_artifacts
-            (id, company_id, work_item_id, kind, version, status, content,
-              content_hash, workspace_path, accepted_at, accepted_by,
-              created_at, updated_at)
-          VALUES
-            (@id, @companyId, @workItemId, @kind, @version, @status, @content,
-              @contentHash, @workspacePath, @acceptedAt, @acceptedBy,
-              @createdAt, @updatedAt)`,
-        )
-        .run({ ...artifact, createdAt: now, updatedAt: now });
+      for (const artifact of artifacts) {
+        insertWorkArtifactRow(this.db, artifact, now);
+      }
     })();
-    persistWorkArtifactFile(this.artifactOptions, artifact, this.db);
+    for (const artifact of artifacts) {
+      persistWorkArtifactFile(this.artifactOptions, artifact, this.db);
+    }
 
     return item;
   }
@@ -237,5 +229,48 @@ export class WorkService {
       this.clock,
       this.artifactOptions,
     ).pauseForFix(input);
+  }
+
+  completeDelivery(workItemId: string): WorkItem {
+    return new WorkGates(
+      this.db,
+      this.clock,
+      this.artifactOptions,
+    ).completeDelivery(workItemId);
+  }
+
+  private resolveGoalProject(
+    companyId: string,
+    goalId?: string,
+    projectId?: string,
+  ): { goalId: string | null; projectId: string | null } {
+    if (!projectId && !goalId) {
+      return { goalId: null, projectId: null };
+    }
+    if (projectId) {
+      const project = this.db
+        .prepare(
+          `SELECT id, goal_id AS goalId, state FROM company_projects
+          WHERE company_id = ? AND id = ?`,
+        )
+        .get(companyId, projectId) as { id: string; goalId: string; state: string } | undefined;
+      if (!project) {
+        throw new Error("project not found");
+      }
+      if (project.state === "completed") throw new Error("project is completed");
+      if (goalId && goalId !== project.goalId) {
+        throw new Error("project does not belong to goal");
+      }
+      return { goalId: project.goalId, projectId: project.id };
+    }
+    const goal = this.db
+      .prepare(
+        `SELECT id FROM company_goals WHERE company_id = ? AND id = ?`,
+      )
+      .get(companyId, goalId) as { id: string } | undefined;
+    if (!goal) {
+      throw new Error("goal not found");
+    }
+    return { goalId: goal.id, projectId: null };
   }
 }

@@ -19,7 +19,9 @@ import { WorkspaceLeaseService } from "@forge/workspace";
 import { EventStore, OutboxDispatcher } from "@forge/event-store";
 import type { AgentEvent, EventEnvelope } from "@forge/protocol";
 import { createProductionEventSink } from "./core-event-sink.js";
+import { getCompanyWorkflowCapabilities } from "./company-workflow-capabilities.js";
 import { persistForgeRunResult } from "./forge-run-results.js";
+import { createRequirementResearchExecutors } from "./company-workflow-executors.js";
 
 export interface CoreEventDeliveryFailure {
   event: EventEnvelope;
@@ -104,8 +106,23 @@ export function createProductionExecutionComposition(
       },
       run: options.run,
       persistResult: (result) => persistForgeRunResult(options.db, result),
+      unattendedFromRun: (runId) => {
+        const companyWorkItemId = executionStore.getRun(runId)?.spec.policyContext?.companyWorkItemId;
+        return typeof companyWorkItemId === "string" ? { companyWorkItemId } : undefined;
+      },
     }),
   );
+  for (const executor of createRequirementResearchExecutors({
+    db: options.db,
+    executionStore,
+    run: options.run,
+    emitAgentEvent: (event, links) => {
+      eventSink.emitAgentEvent(event, links);
+      firstPartyEmits.get(links.runId)?.(event);
+    },
+  })) {
+    stepExecutors.register(executor);
+  }
   const governedExecutor = options.governance
     ? new GovernedStepExecutor(
         {
@@ -179,6 +196,7 @@ export function createProductionExecutionComposition(
   );
 
   return {
+    companyWorkflowCapabilities: () => getCompanyWorkflowCapabilities(stepExecutors, { researchOrchestrationReady: true }),
     eventStore,
     outboxDispatcher,
     executionStore,
@@ -200,13 +218,14 @@ export function createProductionExecutionComposition(
   };
 }
 
-function buildProductionGovernedInput(
+export function buildProductionGovernedInput(
   claimed: ClaimedAttempt,
   step: StoredStep,
   run: StoredRun,
   store: ExecutionStore,
 ) {
-  const governance = readRecord(run.spec.policyContext.governance);
+  const governance = readRecord(readRecord(run.spec.policyContext.stepGovernance)?.[step.id])
+    ?? readRecord(run.spec.policyContext.governance);
   const resource = readRecord(governance?.resource);
   if (!governance || !resource) return null;
   const profileId = readString(governance.profileId);

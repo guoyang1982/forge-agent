@@ -58,6 +58,7 @@ export interface ForgeDaemonContext extends DaemonContext {
   artifacts: ArtifactService;
   validations: ValidationService;
   company: CompanyServices;
+  companyWorkflowCapabilities?: () => import("@forge/protocol").CompanyWorkflowCapability[];
   automationGovernance: AutomationGovernanceService;
   wakeExecutor: () => void;
   getRuntime: () => Promise<ForgeRuntime>;

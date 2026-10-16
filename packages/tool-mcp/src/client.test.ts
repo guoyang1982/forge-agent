@@ -111,4 +111,43 @@ describe("McpClient transport recovery", () => {
       client.stop();
     }
   });
+
+  it("calls a remote MCP with the bearer token and reads an SSE tool list", async () => {
+    const token = "remote-access-token";
+    const original = globalThis.fetch;
+    const authorizations: string[] = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      authorizations.push(headers.get("authorization") || "");
+      const body = JSON.parse(String(init?.body)) as { id?: number; method?: string };
+      if (body.method === "initialize") {
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: {} }), {
+          headers: { "content-type": "application/json", "mcp-session-id": "sess-1" },
+        });
+      }
+      if (body.method === "notifications/initialized") return new Response("", { status: 202 });
+      return new Response(
+        `event: message\ndata: ${JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: { tools: [{ name: "generate", description: "生成" }] },
+        })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    }) as typeof fetch;
+    const client = new McpClient({
+      name: "kling",
+      url: "https://klingai.com/mcp",
+      authorization: token,
+    });
+    try {
+      await expect(client.listTools()).resolves.toEqual([
+        { name: "generate", description: "生成" },
+      ]);
+      expect(authorizations.every((value) => value === `Bearer ${token}`)).toBe(true);
+    } finally {
+      client.stop();
+      globalThis.fetch = original;
+    }
+  });
 });

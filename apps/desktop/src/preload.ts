@@ -228,6 +228,21 @@ const api = {
     }>,
   openExternal: (url: string) =>
     ipcRenderer.invoke("forge:open-external", url) as Promise<{ ok?: boolean }>,
+  openCompany: (url: string) =>
+    ipcRenderer.invoke("forge:open-company", url) as Promise<{ ok?: boolean }>,
+  onOpenRun: (handler: (payload: {
+    runId?: string;
+    sessionId?: string;
+    workItemId?: string;
+    cwd?: string;
+  }) => void) => {
+    const wrapped = (
+      _evt: unknown,
+      payload: { runId?: string; sessionId?: string; workItemId?: string; cwd?: string },
+    ) => handler(payload);
+    ipcRenderer.on("forge:open-run", wrapped);
+    return () => ipcRenderer.off("forge:open-run", wrapped);
+  },
   revealPath: (path: string) =>
     ipcRenderer.invoke("forge:reveal-path", path) as Promise<{ ok?: boolean }>,
   readSkillFile: (payload: { path: string }) =>
@@ -550,6 +565,7 @@ const api = {
         enabled: boolean;
         source: string;
         managedInConfig: boolean;
+        url?: string;
       }>;
       configured: Array<{
         name: string;
@@ -558,9 +574,25 @@ const api = {
         enabled: boolean;
         source: string;
         managedInConfig: boolean;
+        url?: string;
       }>;
       unconfiguredCount: number;
     }>,
+  getMcpConfig: () =>
+    ipcRenderer.invoke("forge:get-mcp-config") as Promise<{
+      path: string;
+      text: string;
+      exists: boolean;
+    }>,
+  saveMcpConfig: (payload: { text: string }) =>
+    ipcRenderer.invoke("forge:save-mcp-config", payload) as Promise<{
+      path: string;
+      names: string[];
+    }>,
+  mcpAuthStatus: () =>
+    ipcRenderer.invoke("forge:mcp-auth-status") as Promise<{ names: string[] }>,
+  connectMcp: (payload: { name: string; url: string }) =>
+    ipcRenderer.invoke("forge:connect-mcp", payload) as Promise<{ name: string }>,
   listAutomations: (payload?: { cwd?: string }) =>
     ipcRenderer.invoke("forge:list-automations", payload ?? {}) as Promise<{
       automations: Array<{

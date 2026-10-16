@@ -201,6 +201,41 @@ describe("DurableExecutor", () => {
     expect(store.getRun("run-1")?.state).toBe("succeeded");
   });
 
+  it("runs company work-item forge.agent steps without governance configuration", async () => {
+    const { store, clock } = baseFixture();
+    const registry = new StepExecutorRegistry();
+    let executed = false;
+    registry.register({
+      kind: "forge.agent",
+      async execute() {
+        executed = true;
+        return succeeded("artifact:session:test:abc");
+      },
+    });
+    const executor = new DurableExecutor(store, registry, clock, {
+      requireGovernance: true,
+      governedExecutor: {} as never,
+      buildGovernedInput: () => null,
+    });
+    store.createRun(
+      {
+        ...singleStepRunSpec(),
+        policyContext: { companyWorkItemId: "work_1" },
+        steps: [
+          {
+            ...singleStepRunSpec().steps[0]!,
+            kind: "forge.agent",
+            input: { cwd: "/repo", message: "hi" },
+          },
+        ],
+      },
+      clock.now(),
+    );
+    await executor.tick();
+    expect(executed).toBe(true);
+    expect(store.getRun("run-1")?.state).toBe("succeeded");
+  });
+
   it("does not treat compatibility as a governance bypass", async () => {
     const { store, clock } = baseFixture();
     const registry = new StepExecutorRegistry();

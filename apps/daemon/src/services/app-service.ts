@@ -179,8 +179,9 @@ export function handleListMcp(
     configuredNames.add(s.name);
     configured.push({
       name: s.name,
-      command: s.command,
+      command: s.command ?? "",
       args: s.args ?? [],
+      ...(s.url ? { url: s.url } : {}),
       enabled: s.enabled !== false,
       source: "config",
       managedInConfig: true,
@@ -192,8 +193,9 @@ export function handleListMcp(
     configuredNames.add(s.name);
     configured.push({
       name: s.name,
-      command: s.command,
+      command: s.command ?? "",
       args: s.args ?? [],
+      ...(s.url ? { url: s.url } : {}),
       enabled: s.enabled !== false,
       source: "mcp.json",
       managedInConfig: true,

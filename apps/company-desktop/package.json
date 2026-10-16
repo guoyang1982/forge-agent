@@ -12,17 +12,21 @@
     }
   },
   "scripts": {
-    "build": "tsc && tsc -p tsconfig.preload.json && mv dist/preload.js dist/preload.cjs",
+    "build": "tsc && tsc -p tsconfig.preload.json && node scripts/finalize-preload.mjs && node scripts/bundle-markdown-preview.mjs",
     "test": "vitest run",
+    "bundle:markdown": "node scripts/bundle-markdown-preview.mjs",
     "start": "pnpm run build && pnpm --filter @forge/desktop exec electron ../company-desktop/dist/main.js"
   },
   "dependencies": {
     "@forge/forge-links": "workspace:*",
-    "@forge/protocol": "workspace:*"
+    "@forge/protocol": "workspace:*",
+    "dompurify": "^3.4.12",
+    "marked": "^15.0.7"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
     "electron": "^39.8.5",
+    "esbuild": "^0.25.0",
     "typescript": "^5.8.3",
     "vitest": "^3.0.9"
   }

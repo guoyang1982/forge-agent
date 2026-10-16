@@ -127,7 +127,7 @@ describe("execution module", () => {
         planArtifactId: plan.id,
       },
     ]);
-    expect(linkedItem).toEqual({ state: "waiting_approval" });
+    expect(linkedItem).toEqual({ state: "in_progress" });
   });
 
   it("maps unexpected company gate failures to INTERNAL_ERROR", async () => {
@@ -274,6 +274,28 @@ describe("execution module", () => {
     expect(result.runId).toBe("run-1");
     expect(result.tree.kind).toBe("run");
     expect(result.tree.name).toBe("fix it");
+  });
+
+  it("resolves the workbench session from run events when the spec has none", async () => {
+    const { router, context } = executionRouterFixture();
+    await router.handle("run.create", singleStepRunSpec(), rpcContext());
+    context.eventStore.append({
+      eventId: "agent-session-1",
+      type: "agent.event",
+      subject: { kind: "agent_profile", id: "forge-default" },
+      correlationId: "corr-1",
+      runId: "run-1",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      data: { sessionId: "sess-from-event" },
+    });
+
+    const result = await router.handle(
+      "trace.get",
+      { runId: "run-1" },
+      rpcContext(),
+    );
+
+    expect(result.sessionId).toBe("sess-from-event");
   });
 
   it("recovers interrupted attempts before reclaiming expired workspace leases", async () => {

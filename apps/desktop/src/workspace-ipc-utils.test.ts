@@ -1,8 +1,10 @@
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
 import {
+  collectWorkspaceTurnDiffs,
   gitDiffArgs,
   parseUnifiedDiffByFile,
   resolveRealWorkspaceFile,
@@ -63,5 +65,68 @@ describe("workspace IPC guards", () => {
     expect(() => resolveWorkspaceImageFile(root, "notes.txt", supported)).toThrow(
       "不是支持的图片文件",
     );
+  });
+});
+
+describe("turn-scoped workspace diffs", () => {
+  function runGit(cwd: string, args: string[]) {
+    const res = spawnSync("git", args, { cwd, encoding: "utf-8" });
+    if (res.status !== 0) {
+      throw new Error(`git ${args.join(" ")} failed: ${res.stderr || res.stdout}`);
+    }
+    return res.stdout.trim();
+  }
+
+  async function snapshotWorktree(cwd: string): Promise<string> {
+    const tmpIndex = join(tmpdir(), `forge-turn-diff-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const env = {
+      ...process.env,
+      GIT_INDEX_FILE: tmpIndex,
+      GIT_AUTHOR_NAME: "forge",
+      GIT_AUTHOR_EMAIL: "forge@local",
+      GIT_COMMITTER_NAME: "forge",
+      GIT_COMMITTER_EMAIL: "forge@local",
+    };
+    const git = (args: string[]) => {
+      const res = spawnSync("git", args, { cwd, encoding: "utf-8", env });
+      if (res.status !== 0) throw new Error(res.stderr || res.stdout);
+      return res.stdout.trim();
+    };
+    try {
+      const head = runGit(cwd, ["rev-parse", "HEAD"]);
+      git(["read-tree", head]);
+      git(["add", "-A"]);
+      const tree = git(["write-tree"]);
+      return git(["commit-tree", tree, "-p", head, "-m", "forge checkpoint"]);
+    } finally {
+      rmSync(tmpIndex, { force: true });
+    }
+  }
+
+  it("keeps only files changed after the turn checkpoint", async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-turn-diff-"));
+    runGit(root, ["init", "-b", "main"]);
+    writeFileSync(join(root, "Tracked.java"), "class Tracked {}\n");
+    runGit(root, ["add", "Tracked.java"]);
+    runGit(root, ["-c", "user.name=Forge", "-c", "user.email=forge@example.com", "commit", "-m", "init"]);
+    writeFileSync(join(root, "Tracked.java"), "class Tracked { int before; }\n");
+    writeFileSync(join(root, "AlreadyDirty.java"), "class AlreadyDirty { int before; }\n");
+    runGit(root, ["add", "AlreadyDirty.java"]);
+    runGit(root, ["-c", "user.name=Forge", "-c", "user.email=forge@example.com", "commit", "-m", "seed dirty"]);
+    writeFileSync(join(root, "AlreadyDirty.java"), "class AlreadyDirty { int leftover; }\n");
+    mkdirSync(join(root, "output"));
+    writeFileSync(join(root, "output", "old.html"), "<p>old</p>\n");
+
+    const sha = await snapshotWorktree(root);
+    writeFileSync(join(root, "Tracked.java"), "class Tracked { int before; int after; }\n");
+    writeFileSync(join(root, "Generated.md"), "# this turn\n");
+
+    const scoped = await collectWorkspaceTurnDiffs(root, sha);
+    expect(scoped.ok).toBe(true);
+    expect(scoped.files.map((file) => file.path).sort()).toEqual(["Generated.md", "Tracked.java"]);
+    expect(scoped.files.find((file) => file.path === "Generated.md")?.unifiedDiff).toContain("+# this turn");
+
+    const wholeTree = await collectWorkspaceTurnDiffs(root);
+    expect(wholeTree.files).toEqual([]);
   });
 });

@@ -52,6 +52,18 @@ describe("WorkService", () => {
         "utf8",
       ),
     ).toBe(item.problem);
+    expect(
+      readFileSync(
+        join(artifactRoot, company.id, "work", item.id, "spec.md"),
+        "utf8",
+      ),
+    ).toContain(item.expectedOutcome);
+    expect(
+      readFileSync(
+        join(artifactRoot, company.id, "work", item.id, "plan.md"),
+        "utf8",
+      ),
+    ).toContain("实施计划");
   });
 
   it("does not write files when artifactRoot is omitted", () => {
@@ -84,11 +96,16 @@ describe("WorkService", () => {
     expect(item.state).toBe("draft");
     expect(item.risk).toBe("low");
     expect(item.autonomyLevel).toBe(2);
-    const intent = work
-      .listArtifacts(item.id)
-      .find((artifact) => artifact.kind === "intent");
+    const artifacts = work.listArtifacts(item.id);
+    const intent = artifacts.find((artifact) => artifact.kind === "intent");
+    const spec = artifacts.find((artifact) => artifact.kind === "spec");
+    const plan = artifacts.find((artifact) => artifact.kind === "plan");
     expect(intent?.status).toBe("draft");
     expect(intent?.content).toContain("一键最大化");
+    expect(spec?.status).toBe("draft");
+    expect(spec?.content).toContain(item.expectedOutcome);
+    expect(plan?.status).toBe("draft");
+    expect(plan?.content).toContain(item.title);
     expect(intent?.contentHash).toBe(
       createHash("sha256").update(item.problem, "utf8").digest("hex"),
     );
@@ -120,6 +137,51 @@ describe("WorkService", () => {
       title: "SSH 团队版",
       version: 1,
     });
+  });
+
+  it("hangs a work item on a project and inherits the goal", () => {
+    const { company, employee, work } = openFixture();
+    const goal = work.createGoal({
+      companyId: company.id,
+      title: "提升团队版体验",
+      ownerId: employee.id,
+    });
+    const project = work.createProject({
+      companyId: company.id,
+      goalId: goal.id,
+      title: "SSH 团队版",
+    });
+
+    const item = work.createWorkItem({
+      companyId: company.id,
+      projectId: project.id,
+      type: "implementation",
+      title: "窗格最大化",
+      problem: "一键最大化",
+      expectedOutcome: "可最大化",
+      ownerId: employee.id,
+    });
+
+    expect(item.projectId).toBe(project.id);
+    expect(item.goalId).toBe(goal.id);
+    expect(() =>
+      work.createWorkItem({
+        companyId: company.id,
+        projectId: "project_missing",
+        type: "implementation",
+        title: "x",
+        problem: "p",
+        expectedOutcome: "o",
+        ownerId: employee.id,
+      }),
+    ).toThrow(/project not found/);
+    expect(() =>
+      work.createProject({
+        companyId: company.id,
+        goalId: "goal_missing",
+        title: "孤儿项目",
+      }),
+    ).toThrow(/goal not found/);
   });
 });
 

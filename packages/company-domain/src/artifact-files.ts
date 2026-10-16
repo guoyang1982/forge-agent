@@ -6,18 +6,31 @@ export type WorkArtifactFileKind = "intent" | "spec" | "plan";
 
 export type CompanyArtifactOptions = {
   artifactRoot?: string;
+  workspaceRoot?: string;
 };
 
 export function writeWorkArtifactFile(input: {
-  artifactRoot: string;
+  artifactRoot?: string;
+  workspaceRoot?: string;
   companyId: string;
   workItemId: string;
   kind: WorkArtifactFileKind;
   content: string;
 }): string {
+  if (input.workspaceRoot) {
+    const relative = `.forge/company/${input.workItemId}/${input.kind}.md`;
+    const absolute = join(input.workspaceRoot, relative);
+    mkdirSync(dirname(absolute), { recursive: true });
+    writeFileSync(absolute, input.content, "utf8");
+    return relative;
+  }
+  const artifactRoot = input.artifactRoot;
+  if (!artifactRoot) {
+    throw new Error("artifact root is required");
+  }
   const relative = `${input.companyId}/work/${input.workItemId}/${input.kind}.md`;
   const absolute = join(
-    input.artifactRoot,
+    artifactRoot,
     input.companyId,
     "work",
     input.workItemId,
@@ -39,13 +52,13 @@ export function persistWorkArtifactFile(
   },
   db: Database.Database,
 ): string | null {
-  const artifactRoot = options?.artifactRoot;
-  if (!artifactRoot) {
+  if (!options?.workspaceRoot && !options?.artifactRoot) {
     return null;
   }
 
   const relative = writeWorkArtifactFile({
-    artifactRoot,
+    artifactRoot: options.artifactRoot,
+    workspaceRoot: options.workspaceRoot,
     companyId: artifact.companyId,
     workItemId: artifact.workItemId,
     kind: artifact.kind,

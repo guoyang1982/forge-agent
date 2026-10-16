@@ -57,6 +57,7 @@ describe("buildSystemPrompt automation notifications", () => {
     expect(prompt).toContain("Forge will send the final result to ilink");
     expect(prompt).toContain("Do NOT set up or ask for PushPlus");
     expect(prompt).toContain("Do NOT claim the notification has already been sent");
+    expect(prompt).toContain("inspect/review only");
   });
 
   it("requires a standalone final conclusion separate from mid-turn process narration", () => {

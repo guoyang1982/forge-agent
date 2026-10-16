@@ -1,5 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -12,6 +12,7 @@ import type {
   RuntimeModelSummary,
 } from "@forge/protocol";
 import { expandRunPromptText } from "./acp-prompt.js";
+import { CliPrewarmPool, type WarmCliProcess } from "./cli-prewarm-pool.js";
 import {
   buildCodexApprovalSummary,
   createExternalRuntimePermissionBridge,
@@ -164,6 +165,19 @@ function readCodexItemId(params: Record<string, unknown>): string | null {
 
 function isCodexSkillBudgetWarning(message: string): boolean {
   return /skills context budget/i.test(message);
+}
+
+export function isCodexModelsCacheNoise(text: string): boolean {
+  const cleaned = stripAnsi(text);
+  return (
+    isCodexModelsCacheStderr(cleaned)
+    || /模型缓存字段过期/.test(cleaned)
+    || /supports_reasoning_summaries/i.test(cleaned)
+  );
+}
+
+export function shouldIgnoreCodexWarning(message: string): boolean {
+  return isCodexSkillBudgetWarning(message) || isCodexModelsCacheNoise(message);
 }
 
 function emitStatus(
@@ -486,12 +500,21 @@ function toSandboxPolicy(type: string | undefined): Record<string, unknown> {
   }
 }
 
+export function resolveCodexApprovalPolicy(request: RunRequest): CodexApprovalPolicy {
+  const explicit = request.runtime?.permissionMode;
+  if (typeof explicit === "string" && explicit.trim()) {
+    return normalizeCodexApprovalPolicy(explicit);
+  }
+  if (request.companyWorkItemId || request.automationRun) return "never";
+  return "on-request";
+}
+
 function buildTurnStartParams(options: CodexRuntimeOptions, threadId: string): Record<string, unknown> {
   const runtime = options.request.runtime;
   return {
     threadId,
     input: [toCodexTextInput(expandRunPromptText(options.request, { priorHistory: options.priorHistory }))],
-    approvalPolicy: normalizeCodexApprovalPolicy(runtime?.permissionMode),
+    approvalPolicy: resolveCodexApprovalPolicy(options.request),
     sandboxPolicy: toSandboxPolicy(runtime?.sandboxMode ?? "workspace-write"),
     ...(runtime?.model ? { model: runtime.model } : {}),
     ...(runtime?.effort ? { effort: runtime.effort } : {}),
@@ -507,12 +530,85 @@ function resolveThreadId(response: unknown): string {
   throw new Error("Codex thread/start returned no thread id");
 }
 
+const CODEX_VERSION_RE = /codex-cli\s+(\S+)/i;
+
+/** Compare Codex CLI versions. Prerelease loses when the numeric core matches. */
+export function compareCodexVersions(left: string, right: string): number {
+  const parse = (value: string) => {
+    const core = value.split("-")[0] ?? value;
+    const nums = core.split(".").map((part) => {
+      const digits = part.match(/^\d+/);
+      return digits ? Number(digits[0]) : 0;
+    });
+    return { nums, prerelease: value.includes("-") };
+  };
+  const a = parse(left);
+  const b = parse(right);
+  const length = Math.max(a.nums.length, b.nums.length, 3);
+  for (let i = 0; i < length; i += 1) {
+    const diff = (a.nums[i] ?? 0) - (b.nums[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  if (a.prerelease !== b.prerelease) return a.prerelease ? -1 : 1;
+  return 0;
+}
+
+export function codexBinaryCandidates(home = homedir()): string[] {
+  return [
+    join("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"),
+    join(home, "Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"),
+    join(home, ".codex/plugins/.plugin-appserver/codex-cli/bin/codex"),
+    "codex",
+  ];
+}
+
+export function pickNewestCodexBinary(
+  candidates: Array<{ path: string; version: string | null }>,
+): string | null {
+  let best: { path: string; version: string } | null = null;
+  for (const candidate of candidates) {
+    if (!candidate.version) continue;
+    if (!best || compareCodexVersions(candidate.version, best.version) > 0) {
+      best = { path: candidate.path, version: candidate.version };
+    }
+  }
+  return best?.path ?? null;
+}
+
+function readCodexCliVersion(binary: string): string | null {
+  if (binary !== "codex" && !existsSync(binary)) return null;
+  const probe = spawnSync(binary, ["--version"], {
+    encoding: "utf8",
+    timeout: 5000,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (probe.error || probe.status !== 0) return null;
+  const match = `${probe.stdout ?? ""}\n${probe.stderr ?? ""}`.match(CODEX_VERSION_RE);
+  return match?.[1] ?? null;
+}
+
+let resolvedCodexBinary: string | null | undefined;
+
+/** Prefer the Codex CLI shipped with the ChatGPT app over an older `codex` on PATH. */
+export function resolveCodexBinary(options?: { refresh?: boolean }): string | null {
+  if (!options?.refresh && resolvedCodexBinary !== undefined) return resolvedCodexBinary;
+  const picked = pickNewestCodexBinary(
+    codexBinaryCandidates().map((path) => ({ path, version: readCodexCliVersion(path) })),
+  );
+  resolvedCodexBinary = picked;
+  return picked;
+}
+
+function codexCommand(): string {
+  return resolveCodexBinary() ?? "codex";
+}
+
 function buildThreadStartParams(options: CodexRuntimeOptions): Record<string, unknown> {
   const runtime = options.request.runtime;
   return {
     cwd: options.cwd,
     ...(runtime?.model ? { model: runtime.model } : {}),
-    approvalPolicy: normalizeCodexApprovalPolicy(runtime?.permissionMode),
+    approvalPolicy: resolveCodexApprovalPolicy(options.request),
     ...(runtime?.sandboxMode ? { sandbox: runtime.sandboxMode } : {}),
   };
 }
@@ -521,7 +617,8 @@ async function withCodexRpc<T>(
   cwd: string,
   fn: (rpc: CodexJsonRpcClient) => Promise<T>,
 ): Promise<T> {
-  const child = spawn("codex", ["app-server"], {
+  const binary = codexCommand();
+  const child = spawn(binary, ["app-server"], {
     cwd,
     env: process.env,
     stdio: ["pipe", "pipe", "pipe"],
@@ -548,25 +645,29 @@ function normalizeEffortOptions(value: unknown): string[] {
   return value
     .map((item) => {
       if (typeof item === "string") return item;
-      if (isRecord(item)) return readString(item, ["id", "value", "name"]);
+      if (isRecord(item)) return readString(item, ["id", "value", "name", "effort"]);
       return null;
     })
     .filter((item): item is string => Boolean(item));
 }
 
-function normalizeCodexModel(value: unknown): RuntimeModelSummary | null {
+/** Accept app-server `model/list` objects and the raw `codex debug models` catalog. */
+export function normalizeCodexModel(value: unknown): RuntimeModelSummary | null {
   if (!isRecord(value)) return null;
-  const id = readString(value, ["id"]) ?? readString(value, ["model"]);
-  const model = readString(value, ["model"]) ?? id;
+  if (value.hidden === true || value.visibility === "hide") return null;
+  const id = readString(value, ["id", "slug"]) ?? readString(value, ["model"]);
+  const model = readString(value, ["model", "slug"]) ?? id;
   if (!id || !model) return null;
   return {
     id,
     model,
-    displayName: readString(value, ["displayName"]) ?? model,
+    displayName: readString(value, ["displayName", "display_name"]) ?? model,
     description: readString(value, ["description"]) ?? undefined,
-    defaultReasoningEffort: readString(value, ["defaultReasoningEffort"]),
-    supportedReasoningEfforts: normalizeEffortOptions(value.supportedReasoningEfforts),
-    isDefault: value.isDefault === true,
+    defaultReasoningEffort: readString(value, ["defaultReasoningEffort", "default_reasoning_level"]),
+    supportedReasoningEfforts: normalizeEffortOptions(
+      value.supportedReasoningEfforts ?? value.supported_reasoning_levels,
+    ),
+    isDefault: value.isDefault === true || value.default === true,
   };
 }
 
@@ -657,7 +758,7 @@ function mapCodexNotification(
     const params = isRecord(message.params) ? message.params : {};
     const warning = readString(params, ["message"]);
     if (!warning) return;
-    if (isCodexSkillBudgetWarning(warning)) return;
+    if (shouldIgnoreCodexWarning(warning)) return;
     emit({ type: "warning", sessionId, message: warning });
     return;
   }
@@ -822,6 +923,92 @@ function mapCodexNotification(
   }
 }
 
+interface CodexAppServerHandle extends WarmCliProcess {
+  rpc: CodexJsonRpcClient;
+  child: ChildProcessWithoutNullStreams;
+  threadId?: string;
+}
+
+const codexPool = new CliPrewarmPool<CodexAppServerHandle>();
+
+export function codexWarmFingerprint(options: { cwd: string; request: RunRequest }): string {
+  return JSON.stringify({
+    cwd: options.cwd,
+    model: options.request.runtime?.model ?? "",
+    approval: resolveCodexApprovalPolicy(options.request),
+    sandbox: options.request.runtime?.sandboxMode ?? "workspace-write",
+    binary: codexCommand(),
+  });
+}
+
+function codexProcessRunning(child: ChildProcessWithoutNullStreams): boolean {
+  return child.exitCode === null && !child.killed;
+}
+
+async function openCodexAppServer(cwd: string): Promise<CodexAppServerHandle> {
+  const binary = codexCommand();
+  console.error(`[forge-codex] spawn ${binary} app-server cwd=${cwd}`);
+  const child = spawn(binary, ["app-server"], {
+    cwd,
+    env: process.env,
+    stdio: ["pipe", "pipe", "pipe"],
+  }) as ChildProcessWithoutNullStreams;
+  const rpc = new CodexJsonRpcClient(child);
+  child.stderr.on("data", (chunk: Buffer) => {
+    const text = chunk.toString("utf8").trim();
+    if (text) console.error(`[forge-codex:stderr] ${text}`);
+  });
+  const handle: CodexAppServerHandle = {
+    rpc,
+    child,
+    isRunning: () => codexProcessRunning(child),
+    close: () => {
+      if (!child.killed) child.kill("SIGTERM");
+    },
+  };
+  try {
+    await rpc.request("initialize", {
+      clientInfo: { name: "forge-agent", title: "Forge Agent", version: "0.2.0" },
+      capabilities: { experimentalApi: true, requestAttestation: false },
+    });
+    rpc.notify("initialized");
+    return handle;
+  } catch (error) {
+    handle.close();
+    throw error;
+  }
+}
+
+export async function prewarmCodexAppServer(input: {
+  cwd: string;
+  model?: string;
+  mode?: string;
+  sandboxMode?: string;
+}): Promise<{ ok: boolean; skipped?: string }> {
+  const request: RunRequest = {
+    cwd: input.cwd,
+    message: "",
+    runtime: {
+      provider: "codex",
+      model: input.model,
+      permissionMode: input.mode,
+      sandboxMode: input.sandboxMode,
+    },
+  };
+  return codexPool.prewarm({
+    fingerprint: codexWarmFingerprint({ cwd: input.cwd, request }),
+    create: () => openCodexAppServer(input.cwd),
+  });
+}
+
+export function releaseCodexSession(sessionId: string): void {
+  codexPool.releaseSession(sessionId);
+}
+
+export function releaseAllCodexPrewarm(): number {
+  return codexPool.releaseAll();
+}
+
 export async function runCodexRuntime(options: CodexRuntimeOptions): Promise<RunResult> {
   const cacheRepair = ensureCodexModelsCacheCompatible();
   if (cacheRepair.repaired) {
@@ -829,18 +1016,29 @@ export async function runCodexRuntime(options: CodexRuntimeOptions): Promise<Run
   } else if (cacheRepair.reason) {
     console.error(`[forge-codex] models_cache check skipped: ${cacheRepair.reason}`);
   }
-  console.error(`[forge-codex] spawn codex app-server cwd=${options.cwd}`);
-  const child = spawn("codex", ["app-server"], {
-    cwd: options.cwd,
-    env: process.env,
-    stdio: ["pipe", "pipe", "pipe"],
+  return codexPool.withTurn(options.sessionId, () => runCodexTurn(options));
+}
+
+async function runCodexTurn(options: CodexRuntimeOptions): Promise<RunResult> {
+  const fingerprint = codexWarmFingerprint(options);
+  let parked = false;
+  const acquired = await codexPool.acquire({
+    sessionId: options.sessionId,
+    fingerprint,
+    create: () => openCodexAppServer(options.cwd),
   });
-  const rpc = new CodexJsonRpcClient(child);
+  const { rpc, child } = acquired.handle;
+  if (acquired.reused) {
+    emitStatus(options.emit, options.sessionId, "Codex 复用会话进程");
+  } else if (acquired.adoptedPrewarm) {
+    emitStatus(options.emit, options.sessionId, "Codex 复用预热进程");
+  } else {
+    emitStatus(options.emit, options.sessionId, "Codex 初始化中…");
+  }
   const finalText = { value: "" };
   const streamAcc = { value: "" };
   const streamState = createCodexStreamState();
   let cancelRequested = false;
-  let modelsCacheWarningEmitted = false;
   const permissionBridge = createExternalRuntimePermissionBridge({
     emit: options.emit,
     sessionId: options.sessionId,
@@ -850,7 +1048,7 @@ export async function runCodexRuntime(options: CodexRuntimeOptions): Promise<Run
   });
   const answeredServerRequests = new Set<number>();
 
-  rpc.onServerRequest(async (message) => {
+  const stopServerRequests = rpc.onServerRequest(async (message) => {
     if (!isCodexApprovalMethod(message.method)) return;
     if (answeredServerRequests.has(message.id)) return;
     answeredServerRequests.add(message.id);
@@ -868,19 +1066,11 @@ export async function runCodexRuntime(options: CodexRuntimeOptions): Promise<Run
     }
   });
 
-  child.stderr.on("data", (chunk: Buffer) => {
+  const onStderr = (chunk: Buffer) => {
     const text = chunk.toString("utf8").trim();
     if (!text) return;
-    console.error(`[forge-codex:stderr] ${text}`);
-    if (isCodexModelsCacheStderr(text)) {
-      if (!modelsCacheWarningEmitted) {
-        modelsCacheWarningEmitted = true;
-        options.emit({
-          type: "warning",
-          sessionId: options.sessionId,
-          message: "Codex 模型缓存字段过期（supports_reasoning_summaries），已忽略该错误，不影响本轮完成。",
-        });
-      }
+    if (isCodexModelsCacheNoise(text)) {
+      ensureCodexModelsCacheCompatible();
       return;
     }
     if (!shouldSurfaceCodexStderr(text)) return;
@@ -890,59 +1080,66 @@ export async function runCodexRuntime(options: CodexRuntimeOptions): Promise<Run
       phase: "model",
       message: `Codex: ${stripAnsi(text).slice(0, 240)}`,
     });
-  });
+  };
+  child.stderr.on("data", onStderr);
 
   const abort = () => {
     cancelRequested = true;
     emitStatus(options.emit, options.sessionId, "Codex 正在停止…");
     rpc.notify("turn/cancel");
-    child.kill("SIGTERM");
+    acquired.handle.close();
   };
   options.signal?.addEventListener("abort", abort, { once: true });
+
+  let stopTurnNotifications: (() => void) | undefined;
+  let stopMappedNotifications: (() => void) | undefined;
+  const onChildError = (cause: Error) => {
+    turnFailed(cause instanceof Error ? cause : new Error(String(cause)));
+  };
+  const onChildExit = (code: number | null, signal: NodeJS.Signals | null) => {
+    if (cancelRequested || code === 0) turnFinished();
+    else {
+      turnFailed(
+        new Error(`codex app-server exited before turn completion (${signal ?? code ?? "unknown"})`),
+      );
+    }
+  };
+  let turnFinished: () => void = () => {};
+  let turnFailed: (error: Error) => void = () => {};
 
   try {
     let turnArmed = false;
     const completion = new Promise<void>((resolve, reject) => {
       let settled = false;
-      const settleOk = () => {
+      turnFinished = () => {
         if (settled) return;
         settled = true;
         resolve();
       };
-      const settleErr = (error: Error) => {
+      turnFailed = (error: Error) => {
         if (settled) return;
         settled = true;
         reject(error);
       };
-      child.once("error", (cause) => {
-        settleErr(cause instanceof Error ? cause : new Error(String(cause)));
-      });
-      child.once("exit", (code, signal) => {
-        if (cancelRequested || code === 0) {
-          settleOk();
-          return;
-        }
-        settleErr(
-          new Error(`codex app-server exited before turn completion (${signal ?? code ?? "unknown"})`),
-        );
-      });
-      rpc.onNotification((message) => {
+      child.on("error", onChildError);
+      child.on("exit", onChildExit);
+      stopTurnNotifications = rpc.onNotification((message) => {
         const kind = classifyCodexTurnNotification(message, turnArmed);
         if (kind === "started") {
           turnArmed = true;
           return;
         }
         if (kind === "completed" || kind === "canceled" || kind === "idle") {
-          settleOk();
+          turnFinished();
           return;
         }
         if (kind === "failed") {
           const params = isRecord(message.params) ? message.params : {};
-          settleErr(new Error(readString(params, ["error", "message"]) ?? "Codex turn failed"));
+          turnFailed(new Error(readString(params, ["error", "message"]) ?? "Codex turn failed"));
         }
       });
     });
-    rpc.onNotification((message) =>
+    stopMappedNotifications = rpc.onNotification((message) =>
       mapCodexNotification(
         message,
         options.emit,
@@ -952,24 +1149,35 @@ export async function runCodexRuntime(options: CodexRuntimeOptions): Promise<Run
         streamState,
       ),
     );
-    emitStatus(options.emit, options.sessionId, "Codex 初始化中…");
-    await rpc.request("initialize", {
-      clientInfo: { name: "forge-agent", title: "Forge Agent", version: "0.2.0" },
-      capabilities: { experimentalApi: true, requestAttestation: false },
-    });
-    rpc.notify("initialized");
-    const thread = await rpc.request("thread/start", buildThreadStartParams(options));
-    const threadId = resolveThreadId(thread);
+    const turnOptions = acquired.handle.threadId
+      ? { ...options, priorHistory: undefined }
+      : options;
+    let threadId = acquired.handle.threadId;
+    if (!threadId) {
+      const thread = await rpc.request("thread/start", buildThreadStartParams(turnOptions));
+      threadId = resolveThreadId(thread);
+      acquired.handle.threadId = threadId;
+    }
     emitStatus(options.emit, options.sessionId, "Codex turn 启动中…");
-    await rpc.request("turn/start", buildTurnStartParams(options, threadId));
+    await rpc.request("turn/start", buildTurnStartParams(turnOptions, threadId));
     // Arm even if turn/started notification is skipped/reordered.
     turnArmed = true;
     await completion;
     emitStatus(options.emit, options.sessionId, "Codex turn 完成");
     const answer = String(finalText.value || streamAcc.value || "").trim();
+    if (!cancelRequested && acquired.handle.isRunning()) {
+      codexPool.park(options.sessionId);
+      parked = true;
+    }
     return { sessionId: options.sessionId, finalText: answer };
   } finally {
     options.signal?.removeEventListener("abort", abort);
-    child.kill("SIGTERM");
+    stopServerRequests();
+    stopTurnNotifications?.();
+    stopMappedNotifications?.();
+    child.off("error", onChildError);
+    child.off("exit", onChildExit);
+    child.stderr.off("data", onStderr);
+    if (!parked) codexPool.invalidate(options.sessionId);
   }
 }

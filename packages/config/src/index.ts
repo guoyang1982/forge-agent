@@ -406,7 +406,20 @@ export function resolveMigrationsDir(monorepoRoot: string): string {
   return join(monorepoRoot, "migrations");
 }
 
-export { loadMcpServers } from "./mcp.js";
+export {
+  defaultMcpConfigText,
+  loadMcpServers,
+  parseUserMcpConfig,
+  readUserMcpConfig,
+  requireRemoteMcpUrl,
+  saveUserMcpConfig,
+} from "./mcp.js";
+export {
+  attachMcpAuthorization,
+  authorizeMcpServer,
+  listAuthorizedMcpServers,
+  resourceMetadataUrl,
+} from "./mcp-oauth.js";
 export {
   MODEL_PROVIDERS,
   buildModelPatch,

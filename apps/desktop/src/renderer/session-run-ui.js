@@ -327,6 +327,7 @@
       st.viewingTimelineSessionId = newSessionId || null;
       project.sessionId = newSessionId;
       saveProjects();
+      helpers.syncCompanyReturnBar?.();
       helpers.detachLiveRunSession();
 
       const finish = () => {

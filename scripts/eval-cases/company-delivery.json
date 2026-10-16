@@ -1,0 +1,10 @@
+{
+  "id": "company-delivery",
+  "title": "Multi-workspace product delivery",
+  "assertions": [
+    "implementation streams join before integrated validation",
+    "frontend and backend write independently",
+    "three-layer validation accepted",
+    "release requires high-risk approval then reaches released"
+  ]
+}

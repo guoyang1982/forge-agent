@@ -13,6 +13,7 @@ import type {
 } from "@forge/protocol";
 import { loadConfig } from "@forge/config";
 import { expandRunPromptText } from "./acp-prompt.js";
+import { CliPrewarmPool, type WarmCliProcess } from "./cli-prewarm-pool.js";
 import {
   buildClaudeApprovalSummary,
   createExternalRuntimePermissionBridge,
@@ -40,6 +41,7 @@ interface ClaudeToolCall {
 export interface ClaudeStreamState {
   sawPartialStream: boolean;
   streamedThinking: boolean;
+  streamedText: boolean;
   toolsByCallId: Map<string, ClaudeToolCall>;
   callIdByBlockIndex: Map<number, string>;
 }
@@ -48,6 +50,7 @@ export function createClaudeStreamState(): ClaudeStreamState {
   return {
     sawPartialStream: false,
     streamedThinking: false,
+    streamedText: false,
     toolsByCallId: new Map(),
     callIdByBlockIndex: new Map(),
   };
@@ -68,6 +71,34 @@ function readString(value: unknown, keys: string[]): string | null {
 
 function emitStatus(options: ClaudeRuntimeOptions, message: string): void {
   options.emit({ type: "status", sessionId: options.sessionId, phase: "model", message });
+}
+
+/** Strip ANSI color codes so telemetry and errors can be matched cleanly. */
+export function stripAnsi(text: string): string {
+  return text.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+export function isClaudeTelemetryLine(text: string): boolean {
+  const cleaned = stripAnsi(text);
+  return (
+    /\[claude-code:/i.test(cleaned) ||
+    /unrecognized_model/i.test(cleaned) ||
+    /"query_source"\s*:/i.test(cleaned)
+  );
+}
+
+export function shouldSurfaceClaudeStderr(text: string): boolean {
+  const cleaned = stripAnsi(text).trim();
+  if (!cleaned) return false;
+  if (isClaudeTelemetryLine(cleaned)) return false;
+  return true;
+}
+
+export function shouldTreatClaudeStdoutLineAsAssistant(line: string): boolean {
+  const cleaned = stripAnsi(line).trim();
+  if (!cleaned) return false;
+  if (isClaudeTelemetryLine(cleaned)) return false;
+  return true;
 }
 
 function toClaudeModel(model: string | undefined): string | undefined {
@@ -103,6 +134,7 @@ export function resolveClaudeRuntimePermissionMode(request: RunRequest): string 
   const explicit = toClaudePermissionMode(request.runtime?.permissionMode);
   if (explicit) return explicit;
   if (request.automationRun) return "bypassPermissions";
+  if (request.companyWorkItemId) return "bypassPermissions";
   return undefined;
 }
 
@@ -408,6 +440,7 @@ function handleClaudeStreamEvent(
     const delta = isRecord(event.delta) ? event.delta : {};
     const deltaType = readString(delta, ["type"]);
     if (deltaType === "text_delta") {
+      state.streamedText = true;
       appendAssistantMessage(options, finalText, readString(delta, ["text"]) ?? "");
       return;
     }
@@ -547,7 +580,9 @@ export function applyClaudeNdjsonMessage(
       emitStatus(options, model ? `Claude Code 初始化完成 · ${model}` : "Claude Code 初始化完成");
     } else if (subtype === "status") {
       const status = readString(value, ["status"]);
-      if (status) emitStatus(options, `Claude Code: ${status}`);
+      if (status && shouldSurfaceClaudeStderr(status)) {
+        emitStatus(options, `Claude Code: ${stripAnsi(status)}`);
+      }
     } else if (subtype === "api_retry") {
       const attempt = typeof value.attempt === "number" ? `第 ${value.attempt} 次` : "";
       const error = readString(value, ["error"]) ?? "API 请求失败";
@@ -576,7 +611,7 @@ export function applyClaudeNdjsonMessage(
       if (!isRecord(item)) continue;
       const itemType = readString(item, ["type"]);
       if (itemType === "text") {
-        if (!state.sawPartialStream) {
+        if (!state.streamedText) {
           appendAssistantMessage(options, finalText, readString(item, ["text"]) ?? "");
         }
       } else if (itemType === "tool_use") {
@@ -694,7 +729,206 @@ function resolveClaudeCodeRuntime(
   return { env, models };
 }
 
+interface ClaudeWarmHandle extends WarmCliProcess {
+  child: ChildProcessWithoutNullStreams;
+  lines: ReturnType<typeof createInterface>;
+  stderr: { value: string };
+}
+
+const claudePool = new CliPrewarmPool<ClaudeWarmHandle>();
+
+export function claudeWarmFingerprint(options: {
+  cwd: string;
+  request: RunRequest;
+}): string | null {
+  if (!usesClaudeStdioPermissions(options.request)) return null;
+  return JSON.stringify({
+    cwd: options.cwd,
+    model: toClaudeModel(options.request.runtime?.model) ?? "",
+    permission: resolveClaudeRuntimePermissionMode(options.request) ?? "",
+    effort: options.request.runtime?.effort ?? "",
+  });
+}
+
+function claudeProcessRunning(child: ChildProcess): boolean {
+  return child.exitCode === null && !child.killed;
+}
+
+async function openClaudeStdio(options: ClaudeRuntimeOptions): Promise<ClaudeWarmHandle> {
+  const args = buildClaudeArgs(options.request);
+  const child = spawn("claude", args, {
+    cwd: options.cwd,
+    env: buildClaudeProcessEnv(),
+    stdio: ["pipe", "pipe", "pipe"],
+  }) as ChildProcessWithoutNullStreams;
+  const stderr = { value: "" };
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr.value += chunk.toString("utf8");
+  });
+  const handle: ClaudeWarmHandle = {
+    child,
+    lines: createInterface({ input: child.stdout }),
+    stderr,
+    isRunning: () => claudeProcessRunning(child),
+    close: () => {
+      if (!child.killed) child.kill("SIGTERM");
+    },
+  };
+  return handle;
+}
+
+export async function prewarmClaudeRuntime(input: {
+  cwd: string;
+  model?: string;
+  mode?: string;
+}): Promise<{ ok: boolean; skipped?: string }> {
+  const request: RunRequest = {
+    cwd: input.cwd,
+    message: "",
+    runtime: {
+      provider: "claude-code",
+      model: input.model,
+      permissionMode: input.mode,
+    },
+  };
+  const fingerprint = claudeWarmFingerprint({ cwd: input.cwd, request });
+  if (!fingerprint) return { ok: false, skipped: "one_shot_mode" };
+  return claudePool.prewarm({
+    fingerprint,
+    create: () => openClaudeStdio({
+      cwd: input.cwd,
+      sessionId: "",
+      request,
+      emit: () => {},
+    }),
+  });
+}
+
+export function releaseClaudeSession(sessionId: string): void {
+  claudePool.releaseSession(sessionId);
+}
+
+export function releaseAllClaudePrewarm(): number {
+  return claudePool.releaseAll();
+}
+
 export async function runClaudeRuntime(options: ClaudeRuntimeOptions): Promise<RunResult> {
+  const fingerprint = claudeWarmFingerprint(options);
+  if (!fingerprint) return runClaudeOneShot(options);
+  return claudePool.withTurn(options.sessionId, () => runClaudeWarmTurn(options, fingerprint));
+}
+
+async function runClaudeWarmTurn(
+  options: ClaudeRuntimeOptions,
+  fingerprint: string,
+): Promise<RunResult> {
+  let parked = false;
+  const acquired = await claudePool.acquire({
+    sessionId: options.sessionId,
+    fingerprint,
+    create: () => openClaudeStdio(options),
+  });
+  const handle = acquired.handle;
+  if (acquired.reused) emitStatus(options, "Claude Code 复用会话进程");
+  else if (acquired.adoptedPrewarm) emitStatus(options, "Claude Code 复用预热进程");
+  else emitStatus(options, "Claude Code turn 启动中…");
+
+  const priorHistory = acquired.reused ? undefined : options.priorHistory;
+  const finalText = { value: "" };
+  const streamState = createClaudeStreamState();
+  let sawResult = false;
+  let cancelRequested = false;
+  const permissionBridge = createExternalRuntimePermissionBridge({
+    emit: options.emit,
+    sessionId: options.sessionId,
+    signal: options.signal,
+    kind: "claude-code",
+    providerLabel: "Claude Code",
+  });
+  if (handle.child.stdin.writable) {
+    handle.child.stdin.write(`${buildClaudeUserMessage(options.request, priorHistory)}\n`);
+  }
+  const abort = () => {
+    cancelRequested = true;
+    emitStatus(options, "Claude Code 正在停止…");
+    handle.close();
+  };
+  options.signal?.addEventListener("abort", abort, { once: true });
+
+  const onStderr = (chunk: Buffer) => {
+    const cleaned = stripAnsi(chunk.toString("utf8")).trim();
+    if (cleaned && shouldSurfaceClaudeStderr(cleaned)) {
+      emitStatus(options, `Claude Code: ${cleaned.slice(0, 240)}`);
+    }
+  };
+  handle.child.stderr.on("data", onStderr);
+
+  let onLine: ((line: string) => void) | undefined;
+  const onError = (cause: Error) => {
+    turnFailed(cause instanceof Error ? cause : new Error(String(cause)));
+  };
+  const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+    if (code === 0 || sawResult || cancelRequested) turnFinished();
+    else {
+      turnFailed(new Error(`Claude Code exited (${signal ?? code ?? "unknown"}): ${handle.stderr.value.trim()}`));
+    }
+  };
+  let turnFinished: () => void = () => {};
+  let turnFailed: (error: Error) => void = () => {};
+
+  try {
+    const done = new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        if (onLine) handle.lines.off("line", onLine);
+        fn();
+      };
+      turnFinished = () => finish(resolve);
+      turnFailed = (error: Error) => finish(() => reject(error));
+      onLine = (line: string) => {
+        try {
+          const parsed = JSON.parse(line);
+          applyClaudeNdjsonMessage(
+            parsed,
+            options,
+            finalText,
+            streamState,
+            permissionBridge,
+            handle.child,
+          );
+          if (isRecord(parsed) && parsed.type === "result") {
+            sawResult = true;
+            turnFinished();
+          }
+        } catch {
+          if (shouldTreatClaudeStdoutLineAsAssistant(line)) {
+            appendAssistantMessage(options, finalText, stripAnsi(line));
+          }
+        }
+      };
+      handle.lines.on("line", onLine);
+      handle.child.on("error", onError);
+      handle.child.on("exit", onExit);
+    });
+    await done;
+    if (!cancelRequested && handle.isRunning()) {
+      claudePool.park(options.sessionId);
+      parked = true;
+    }
+    return { sessionId: options.sessionId, finalText: finalText.value };
+  } finally {
+    options.signal?.removeEventListener("abort", abort);
+    if (onLine) handle.lines.off("line", onLine);
+    handle.child.off("error", onError);
+    handle.child.off("exit", onExit);
+    handle.child.stderr.off("data", onStderr);
+    if (!parked) claudePool.invalidate(options.sessionId);
+  }
+}
+
+async function runClaudeOneShot(options: ClaudeRuntimeOptions): Promise<RunResult> {
   const args = buildClaudeArgs(options.request, options.priorHistory);
   const useStdioPermissions = usesClaudeStdioPermissions(options.request);
   emitStatus(options, "Claude Code turn 启动中…");
@@ -734,19 +968,32 @@ export async function runClaudeRuntime(options: ClaudeRuntimeOptions): Promise<R
     if (!child.stdout) throw new Error("Claude Code stdout is not available");
     const lines = createInterface({ input: child.stdout });
     const done = new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const settleOk = () => {
+        if (settled) return;
+        settled = true;
+        if (pipedChild?.stdin.writable) pipedChild.stdin.end();
+        resolve();
+      };
+      const settleErr = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
       child.once("error", (cause) => {
-        reject(cause instanceof Error ? cause : new Error(String(cause)));
+        settleErr(cause instanceof Error ? cause : new Error(String(cause)));
       });
       child.stderr?.on("data", (chunk: Buffer) => {
         const text = chunk.toString("utf8");
         stderr += text;
-        const trimmed = text.trim();
-        if (trimmed) emitStatus(options, `Claude Code: ${trimmed}`);
+        const cleaned = stripAnsi(text).trim();
+        if (cleaned && shouldSurfaceClaudeStderr(cleaned)) {
+          emitStatus(options, `Claude Code: ${cleaned.slice(0, 240)}`);
+        }
       });
       lines.on("line", (line) => {
         try {
           const parsed = JSON.parse(line);
-          if (isRecord(parsed) && parsed.type === "result") sawResult = true;
           applyClaudeNdjsonMessage(
             parsed,
             options,
@@ -755,16 +1002,23 @@ export async function runClaudeRuntime(options: ClaudeRuntimeOptions): Promise<R
             permissionBridge,
             pipedChild ?? undefined,
           );
+          if (isRecord(parsed) && parsed.type === "result") {
+            sawResult = true;
+            if (pipedChild?.stdin.writable) pipedChild.stdin.end();
+            settleOk();
+          }
         } catch {
-          appendAssistantMessage(options, finalText, line);
+          if (shouldTreatClaudeStdoutLineAsAssistant(line)) {
+            appendAssistantMessage(options, finalText, stripAnsi(line));
+          }
         }
       });
       child.once("exit", (code, signal) => {
         if (code === 0 || sawResult) {
-          resolve();
+          settleOk();
           return;
         }
-        reject(new Error(`Claude Code exited (${signal ?? code ?? "unknown"}): ${stderr.trim()}`));
+        settleErr(new Error(`Claude Code exited (${signal ?? code ?? "unknown"}): ${stderr.trim()}`));
       });
     });
     await done;

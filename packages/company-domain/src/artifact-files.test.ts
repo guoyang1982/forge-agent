@@ -25,4 +25,18 @@ describe("writeWorkArtifactFile", () => {
       "给 SSH 客户端出团队版：窗格一键最大化",
     );
   });
+
+  it("writes copies into the assignee workspace", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "forge-ws-copy-"));
+    roots.push(workspaceRoot);
+    const relative = writeWorkArtifactFile({
+      workspaceRoot,
+      companyId: "company_a",
+      workItemId: "work_b",
+      kind: "spec",
+      content: "已接受规格",
+    });
+    expect(relative).toBe(".forge/company/work_b/spec.md");
+    expect(readFileSync(join(workspaceRoot, relative), "utf8")).toBe("已接受规格");
+  });
 });

@@ -65,16 +65,60 @@ function cursorAcpArgsKey(request: RunRequest): string {
   return JSON.stringify(toCursorAcpArgs(request));
 }
 
+/** cursor-agent model ids are tokens (`auto`, `gpt-5.6-sol-high`, `composer-2.5`). */
+const CURSOR_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+
+function stripInvisible(text: string): string {
+  return text.replace(/[\u200b\u200c\u200d\ufeff\u2060]/g, "");
+}
+
+function isCursorModelHeader(line: string): boolean {
+  return /^available models$/i.test(line.trim());
+}
+
+function takeStatusSuffix(name: string): { name: string; isDefault: boolean } {
+  const status = name.match(/\s*\(([^)]+)\)\s*$/);
+  if (!status || status.index == null) return { name, isDefault: false };
+  const parts = status[1].toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  const statusWords = new Set(["current", "default"]);
+  if (!parts.length || !parts.every((part) => statusWords.has(part))) {
+    return { name, isDefault: false };
+  }
+  return { name: name.slice(0, status.index).trim(), isDefault: true };
+}
+
+/**
+ * cursor-agent --list-models (2026.07+) prints:
+ *   Available models
+ *   auto - Auto (current, default)
+ *   gpt-5.6-sol-high - GPT-5.6 Sol 1M High
+ * Older builds printed a bare id, optionally with `(default)`.
+ */
 function normalizeCursorModelLine(line: string): RuntimeModelSummary | null {
-  const trimmed = line.trim();
-  if (!trimmed) return null;
-  const id = trimmed.replace(/\s+\(default\)$/i, "").replace(/\s+\(current\)$/i, "").trim();
-  if (!id) return null;
+  const trimmed = stripInvisible(line).trim();
+  if (!trimmed || isCursorModelHeader(trimmed)) return null;
+
+  const split = trimmed.match(/^(\S+)\s+-\s+(.+)$/);
+  if (!split) {
+    const bare = takeStatusSuffix(trimmed);
+    if (!CURSOR_MODEL_ID.test(bare.name)) return null;
+    return {
+      id: bare.name,
+      model: bare.name,
+      displayName: bare.name,
+      isDefault: bare.isDefault,
+    };
+  }
+
+  const id = split[1] ?? "";
+  if (!CURSOR_MODEL_ID.test(id)) return null;
+  const named = takeStatusSuffix(split[2] ?? "");
+  const displayName = named.name.replace(/[\u0000-\u001f\u007f]/g, "").trim() || id;
   return {
     id,
     model: id,
-    displayName: id,
-    isDefault: /\(default\)/i.test(trimmed),
+    displayName,
+    isDefault: named.isDefault,
   };
 }
 
@@ -82,14 +126,35 @@ function normalizeCursorModelJson(value: unknown): RuntimeModelSummary | null {
   if (typeof value === "string") return normalizeCursorModelLine(value);
   if (!isRecord(value)) return null;
   const id = readString(value, ["id", "model", "name"]);
-  if (!id) return null;
+  if (!id || isCursorModelHeader(id) || !CURSOR_MODEL_ID.test(id)) return null;
+  const displayName = readString(value, ["displayName", "name", "label"]) ?? id;
+  if (isCursorModelHeader(displayName) && displayName === id) return null;
   return {
     id,
     model: readString(value, ["model"]) ?? id,
-    displayName: readString(value, ["displayName", "name", "label"]) ?? id,
+    displayName: isCursorModelHeader(displayName) ? id : displayName,
     description: readString(value, ["description"]) ?? undefined,
     isDefault: value.isDefault === true || value.default === true,
   };
+}
+
+export function parseCursorModelListText(text: string): RuntimeModelSummary[] {
+  const models: RuntimeModelSummary[] = [];
+  const seen = new Set<string>();
+  for (const line of text.split(/\r?\n/)) {
+    const parsed = normalizeCursorModelLine(line);
+    if (!parsed || seen.has(parsed.model)) continue;
+    seen.add(parsed.model);
+    models.push(parsed);
+  }
+  models.sort((a, b) => Number(Boolean(b.isDefault)) - Number(Boolean(a.isDefault)));
+  return models;
+}
+
+function sortDefaultModelFirst(models: RuntimeModelSummary[]): RuntimeModelSummary[] {
+  return [...models].sort(
+    (a, b) => Number(Boolean(b.isDefault)) - Number(Boolean(a.isDefault)),
+  );
 }
 
 async function runCursorCommand(
@@ -137,25 +202,24 @@ export async function listCursorModels(cwd: string): Promise<RuntimeModelListRes
     const parsed = JSON.parse(trimmed) as unknown;
     if (Array.isArray(parsed)) {
       return {
-        models: parsed.map(normalizeCursorModelJson).filter((m): m is RuntimeModelSummary => Boolean(m)),
+        models: sortDefaultModelFirst(
+          parsed.map(normalizeCursorModelJson).filter((m): m is RuntimeModelSummary => Boolean(m)),
+        ),
       };
     }
     if (isRecord(parsed) && Array.isArray(parsed.models)) {
       return {
-        models: parsed.models
-          .map(normalizeCursorModelJson)
-          .filter((m): m is RuntimeModelSummary => Boolean(m)),
+        models: sortDefaultModelFirst(
+          parsed.models
+            .map(normalizeCursorModelJson)
+            .filter((m): m is RuntimeModelSummary => Boolean(m)),
+        ),
       };
     }
   } catch {
-    /* fall through */
+    /* text catalog */
   }
-  return {
-    models: trimmed
-      .split(/\r?\n/)
-      .map(normalizeCursorModelLine)
-      .filter((m): m is RuntimeModelSummary => Boolean(m)),
-  };
+  return { models: parseCursorModelListText(trimmed) };
 }
 
 export async function probeCursorRuntime(cwd: string): Promise<RuntimeProbeResult> {

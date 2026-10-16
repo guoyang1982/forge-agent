@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Forge Company</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=org-p0" />
   </head>
   <body>
     <div class="shell">
@@ -17,132 +17,422 @@
           </div>
         </div>
         <nav aria-label="公司经营导航">
-          <button class="nav on" data-nav="overview" type="button">总览</button>
-          <button class="nav" data-nav="organization" type="button">组织</button>
-          <button class="nav" data-nav="work" type="button">工作中心</button>
-          <button class="nav" data-nav="approvals" type="button">审批</button>
+          <button class="nav on" data-nav="overview" type="button">总览<span>决策与目标</span></button>
+          <button class="nav" data-nav="organization" type="button">组织<span>编制与入职</span></button>
+          <button class="nav" data-nav="work" type="button">工作中心<span>任务与执行</span></button>
+          <button class="nav" data-nav="delivery" type="button">交付<span>结论与产物</span></button>
+          <button class="nav" data-nav="approvals" type="button">审批<span>成果验收</span></button>
         </nav>
         <button id="ceoDrawerBtn" class="ceo-entry" type="button">+ CEO 登记需求</button>
       </aside>
-      <main class="main">
+      <div class="stage">
         <header class="top">
           <div>
-            <p class="eyebrow">COMPANY OS</p>
+            <p class="eyebrow" id="pageEyebrow">OVERVIEW</p>
             <strong id="companyLabel">尚未创建公司</strong>
           </div>
           <div class="top-actions">
-            <span id="globalStatus" class="status">正在连接 Daemon…</span>
+            <span id="globalStatus" class="status">正在连接服务…</span>
+            <button id="refreshBtn" class="ghost refresh" type="button">刷新</button>
             <button id="openWorkbenchBtn" class="ghost" type="button">打开工作台</button>
           </div>
         </header>
+        <div class="canvas">
+          <section id="setupPanel" class="setup card hidden">
+            <div>
+              <p class="eyebrow">FIRST STEP</p>
+              <h1>创建你的数字公司</h1>
+              <p class="muted">创建后，安排员工执行任务，在这里查看成果并验收。</p>
+            </div>
+            <form id="createCompanyForm" class="inline-form">
+              <label>公司名称<input name="name" required placeholder="例如：曜石智能科技" /></label>
+              <button type="submit">创建公司</button>
+            </form>
+          </section>
 
-        <section id="setupPanel" class="setup card hidden">
-          <div>
-            <p class="eyebrow">FIRST STEP</p>
-            <h1>创建你的数字公司</h1>
-            <p class="muted">创建后即可组织员工，并让需求依次通过规格、计划、执行与验收门。</p>
-          </div>
-          <form id="createCompanyForm" class="inline-form">
-            <label>公司名称<input name="name" required placeholder="例如：曜石智能科技" /></label>
-            <button type="submit">创建公司</button>
-          </form>
-        </section>
+          <section class="page page-scroll" data-page="overview">
+            <div class="page-intro"><div><h1>公司总览</h1><p class="muted">先处理待决策事项，再查看团队进展和最新成果。</p></div><button type="button" class="ghost" data-nav="delivery">查看交付成果</button></div>
+            <div class="metrics">
+              <button type="button" class="metric" data-nav="work">
+                <small>进行中</small><b id="metricWork">—</b><span>工作中心</span>
+              </button>
+              <button type="button" class="metric" data-nav="organization">
+                <small>数字员工</small><b id="metricEmployees">—</b><span>组织编制</span>
+              </button>
+              <button type="button" class="metric" data-nav="approvals">
+                <small>待审批</small><b id="metricApprovals">—</b><span class="warn">独立验收</span>
+              </button>
+              <button type="button" class="metric" data-nav="overview">
+                <small>目标</small><b id="metricGoals">—</b><span>先立再拆</span>
+              </button>
+              <button type="button" class="metric" data-nav="work">
+                <small>阻塞</small><b id="metricBlocked">—</b><span>需要接管</span>
+              </button>
+              <div class="metric">
+                <small>预算余额</small><b id="metricBudget">—</b><span>可用额度</span>
+              </div>
+            </div>
+            <div class="overview-grid">
+              <article class="card">
+                <div class="card-title"><h2>需要你的决策</h2><span>验收 / 阻塞</span></div>
+                <div id="decisionList" class="list empty">没有待决策</div>
+              </article>
+              <article class="card">
+                <div class="card-title"><h2>目标进展</h2><span>未完成工作</span></div>
+                <div id="goalHealth" class="list empty">还没有目标</div>
+                <details class="setup-steps">
+                  <summary>立目标 → 建项目 → 绑目录</summary>
+                  <p class="hint">按这个顺序建，后面派活才有写目录。已有目标就不必重复立。</p>
+                  <form id="goalForm" class="form-stack">
+                    <label>1. 立一个目标
+                      <input name="title" required placeholder="例如：本周把团队版可验收" />
+                    </label>
+                    <button type="submit">立目标</button>
+                  </form>
+                  <form id="projectForm" class="form-stack">
+                    <label>2. 挂到目标
+                      <select name="goalId" required>
+                        <option value="">先选目标</option>
+                      </select>
+                    </label>
+                    <label>建一个项目
+                      <input name="title" required placeholder="例如：经营台团队版" />
+                    </label>
+                    <button type="submit">建项目</button>
+                  </form>
+                  <form id="projectWorkspaceForm" class="form-stack">
+                    <label>3. 项目目录组
+                      <select name="projectId" required>
+                        <option value="">先选项目</option>
+                      </select>
+                    </label>
+                    <label>绑定哪些目录
+                      <select name="workspaceIds" multiple size="4"></select>
+                    </label>
+                    <p class="hint">选中的目录会组成这个项目的写目录组。开跑时执行人必须在组里有写权限。</p>
+                    <button type="submit">绑定项目目录组</button>
+                  </form>
+                </details>
+              </article>
+              <article class="card overview-span">
+                <div class="card-title"><h2>最近交付</h2><button type="button" class="ghost" data-nav="delivery">全部成果</button></div>
+                <div id="recentOutputs"></div>
+              </article>
+              <article class="card overview-span">
+                <div class="card-title"><h2>任务进展</h2><span>当前状态</span></div>
+                <div id="pipelineList" class="list empty">暂无工作项</div>
+              </article>
+            </div>
+          </section>
 
-        <section class="page" data-page="overview">
-          <div class="page-head">
-            <div><p class="eyebrow">OVERVIEW</p><h1>经营总览</h1><p class="muted">从需求到验收，每一步都有迹可循。</p></div>
-            <button class="ghost refresh" type="button">刷新</button>
-          </div>
-          <div class="metrics">
-            <article><small>进行中 WorkItem</small><b id="metricWork">—</b><span>活跃工作链</span></article>
-            <article><small>数字员工</small><b id="metricEmployees">—</b><span>组织内员工</span></article>
-            <article><small>待审批</small><b id="metricApprovals">—</b><span class="warn">等待独立决策</span></article>
-          </div>
-          <article class="card"><div class="card-title"><h2>交付流水线</h2><span>当前门</span></div><div id="pipelineList" class="list empty">暂无工作项</div></article>
-        </section>
+          <section class="page hidden page-fill" data-page="organization">
+            <div class="split">
+              <section class="pane">
+                <header class="pane-head">
+                  <div>
+                    <p class="eyebrow">ROSTER</p>
+                    <h2>编制</h2>
+                  </div>
+                  <div class="org-actions">
+                    <span id="orgHeadcount">—</span>
+                    <button type="button" class="ghost" id="ensureCrewBtn">补齐编制</button>
+                    <label class="org-workspace-grant hidden" id="orgWorkspaceGrant">
+                      <select id="orgDefaultWorkspace" aria-label="全员主区"></select>
+                      <button type="button" class="ghost" id="grantWorkspaceBtn">授权主区</button>
+                    </label>
+                  </div>
+                </header>
+                <div id="organizationTree" class="org-tree pane-body list empty">暂无部门</div>
+              </section>
+              <section class="pane inspector">
+                <div id="orgIdle" class="inspector-idle">
+                  <p class="eyebrow">INSPECTOR</p>
+                  <h2>选左侧的人</h2>
+                  <p>选择员工查看能力与工作目录；选择空缺岗位，为团队增加员工。</p>
+                </div>
+                <div class="hidden" data-staff-panel="hire">
+                  <header class="pane-head">
+                    <div>
+                      <p class="eyebrow">HIRE</p>
+                      <h2>入职</h2>
+                    </div>
+                    <span id="hireSeatLabel">选择空缺岗位</span>
+                  </header>
+                  <form id="hireForm" class="form-stack pane-body">
+                    <label>姓名<input name="displayName" required placeholder="例如：乔麦" /></label>
+                    <label class="hire-position-field">岗位<select name="positionId" required></select></label>
+                    <div class="talent-field">
+                      <span class="field-label">人才包</span>
+                      <div class="talent-picker" data-talent-picker="hire">
+                        <input type="hidden" name="talentTemplateId" required />
+                        <button type="button" class="talent-open">
+                          <span class="talent-current">未选择人才包</span>
+                          <span>选择</span>
+                        </button>
+                      </div>
+                    </div>
+                    <label>执行模型
+                      <select name="modelProfileId">
+                        <option value="">公司默认模型</option>
+                      </select>
+                    </label>
+                    <div class="workspace-field">
+                      <span class="field-label">项目目录</span>
+                      <div class="workspace-picker" data-workspace-picker="hire">
+                        <div id="hireWorkspaces" class="workspace-summary"></div>
+                        <button type="button" class="workspace-open">
+                          <span class="workspace-open-current">未授权项目目录</span>
+                          <span>选择</span>
+                        </button>
+                      </div>
+                    </div>
+                    <p class="hint">可使用公司默认模型。入职后，在工作中心安排任务。</p>
+                    <input type="hidden" name="autonomyLevel" value="2" />
+                    <button type="submit">确认入职</button>
+                  </form>
+                </div>
+                <div class="hidden" data-staff-panel="bind">
+                  <header class="pane-head">
+                    <div>
+                      <p class="eyebrow">MEMBER</p>
+                      <h2 id="bindEmployeeName">员工</h2>
+                    </div>
+                    <span id="bindEmployeeMeta">权限</span>
+                  </header>
+                  <form id="bindForm" class="form-stack pane-body" novalidate>
+                    <input type="hidden" name="employeeId" required />
+                    <div id="bindIdentity" class="identity"></div>
+                    <div id="bindBoundSkills" class="bound-skills-host"></div>
+                    <div class="talent-field">
+                      <span class="field-label">人才包</span>
+                      <div class="talent-picker" data-talent-picker="bind">
+                        <input type="hidden" name="talentTemplateId" required />
+                        <button type="button" class="talent-open">
+                          <span class="talent-current">未选择人才包</span>
+                          <span>更换</span>
+                        </button>
+                      </div>
+                    </div>
+                    <details class="employee-details"><summary>工具与经验</summary><div id="bindKit" class="employee-kit"></div></details>
+                    <label>执行模型
+                      <select name="modelProfileId">
+                        <option value="">公司默认模型</option>
+                      </select>
+                    </label>
+                    <div class="workspace-field">
+                      <span class="field-label">项目目录</span>
+                      <div class="workspace-picker" data-workspace-picker="bind">
+                        <div id="bindWorkspaces" class="workspace-summary"></div>
+                        <button type="button" class="workspace-open">
+                          <span class="workspace-open-current">未授权项目目录</span>
+                          <span>选择</span>
+                        </button>
+                      </div>
+                    </div>
+                    <p id="bindError" class="notice hidden"></p>
+                    <button type="submit">保存员工设置</button>
+                  </form>
+                </div>
+              </section>
+            </div>
+          </section>
 
-        <section class="page hidden" data-page="organization">
-          <div class="page-head"><div><p class="eyebrow">ORGANIZATION</p><h1>组织与员工</h1></div><button class="ghost refresh" type="button">刷新</button></div>
-          <div class="two-col">
-            <article class="card"><h2>组织树</h2><div id="organizationTree" class="list empty">暂无员工</div></article>
-            <article class="card"><h2>雇佣数字员工</h2>
-              <form id="hireForm" class="form-stack">
-                <label>姓名<input name="displayName" required placeholder="例如：研发负责人" /></label>
-                <label>岗位<input name="positionId" required placeholder="岗位 ID" /></label>
-                <label>自主等级<input type="hidden" name="autonomyLevel" value="2" /><span class="fixed-field">L2（P0 固定）</span></label>
-                <button type="submit">确认雇佣</button>
-              </form>
-            </article>
-          </div>
-        </section>
+          <section class="page hidden page-fill" data-page="work">
+            <div class="split">
+              <section class="pane">
+                <header class="pane-head">
+                  <div>
+                    <p class="eyebrow">QUEUE</p>
+                    <h2>工作项</h2>
+                  </div>
+                  <label class="queue-toggle"><input id="showAllWorkItems" type="checkbox" /> 显示全部</label>
+                </header>
+                <div id="workInbox" class="pane-body list empty">暂无工作项</div>
+                <details class="new-demand">
+                  <summary>新建另一条需求</summary>
+                  <p class="hint">已有草稿请点上方列表继续。这里会创建一条新任务。</p>
+                  <form id="demandForm" class="form-stack">
+                    <label>标题<input name="title" required /></label>
+                    <label>需求原话<textarea name="problem" required rows="4"></textarea></label>
+                    <label>预期结果<input name="expectedOutcome" required /></label>
+                    <label>挂到目标<select name="goalId"><option value="">不挂目标</option></select></label>
+                    <label>挂到项目<select name="projectId"><option value="">不挂项目</option></select></label>
+                    <label>负责人<select name="ownerId" required></select></label>
+                    <button type="submit">创建任务</button>
+                  </form>
+                </details>
+              </section>
+              <section class="pane inspector">
+                <header class="pane-head">
+                  <div>
+                    <p class="eyebrow">GATE</p>
+                    <h2>继续处理</h2>
+                  </div>
+                  <ol class="mini-steps" id="workLoopSteps"></ol>
+                  <button id="workGoApprovalBtn" class="ghost hidden" type="button" data-nav="approvals">去审批</button>
+                </header>
+                <article id="workBlockReason" class="work-block-reason hidden">
+                  <h3>阻塞原因</h3>
+                  <p id="workBlockGate" class="work-block-gate"></p>
+                  <p id="workBlockText" class="work-block-text"></p>
+                  <p id="workBlockNext" class="hint"></p>
+                  <button id="workBlockFixBtn" class="ghost hidden" type="button">去处理修复单</button>
+                </article>
+                <div class="pane-body work-stage">
+                  <p id="workInboxHint" class="notice">还没有选中工作项。选择左侧任务，查看结果或继续处理。</p>
+                  <article id="workOutputsHost" class="stage-block hidden"></article>
+                  <article id="gateStage" class="stage-block">
+                    <h3>确认需求与计划</h3>
+                    <p class="hint">模型在工作台「设置 → 模型配置」里连接。这里只选起草人；点按钮后要等 30–90 秒，请检查生成的草稿后再确认。</p>
+                    <form id="gateForm" class="form-stack">
+                      <div class="work-selected"><small>当前工作项</small><b id="gateWorkTitle">未选工作项</b></div>
+                      <input type="hidden" name="workItemId" required />
+                      <label>操作者<select name="actorId" required></select></label>
+                      <label>起草人
+                        <select name="drafterId">
+                          <option value="">模型代写</option>
+                        </select>
+                      </label>
+                      <button id="draftArtifactsBtn" type="button">按人才包起草</button>
+                      <label>规格草稿<textarea name="spec" required rows="5"></textarea></label>
+                      <label>计划草稿<textarea name="plan" required rows="5"></textarea></label>
+                      <button type="submit">确认需求与计划</button>
+                    </form>
+                  </article>
+                  <article id="dispatchStage" class="stage-block">
+                    <h3>2. 派活与执行</h3>
+                    <form id="dispatchForm" class="form-stack">
+                      <div class="work-selected"><small>当前工作项</small><b id="dispatchWorkTitle">未选工作项</b></div>
+                      <input type="hidden" name="workItemId" required />
+                      <label>执行人<select name="assigneeId" required></select></label>
+                      <p id="dispatchWorkspaceHint" class="notice">调研派给市场调查员；实现派给执行工程师。执行人必须有可写主区。</p>
+                      <label>操作者<select name="actorId" required></select></label>
+                      <button type="submit">安排执行</button>
+                    </form>
+                  </article>
+                  <article id="fixStage" class="stage-block danger-card">
+                    <h3>暂停与修复</h3>
+                    <form id="fixForm" class="form-stack">
+                      <div class="work-selected"><small>当前工作项</small><b id="fixWorkTitle">未选工作项</b></div>
+                      <input type="hidden" name="workItemId" required />
+                      <label>修复负责人<select name="ownerId" required></select></label>
+                      <label>暂停原因<textarea name="reason" required rows="2"></textarea></label>
+                      <button class="danger" type="submit">暂停并派修复</button>
+                    </form>
+                  </article>
+                  <article id="traceStage" class="stage-block">
+                    <div class="card-title"><h3>当前任务的执行记录</h3><span>时间与状态</span></div>
+                    <div id="traceList" class="list empty">派活并开跑后，这里会列出每次执行对应的工作项、时间和 Run</div>
+                  </article>
+                </div>
+              </section>
+            </div>
+          </section>
 
-        <section class="page hidden" data-page="work">
-          <div class="page-head"><div><p class="eyebrow">WORK CENTER</p><h1>工作中心</h1></div><button class="ghost refresh" type="button">刷新</button></div>
-          <div class="work-grid">
-            <article class="card">
-              <h2>1. 登记需求原话</h2>
-              <form id="demandForm" class="form-stack">
-                <label>标题<input name="title" required /></label>
-                <label>需求原话<textarea name="problem" required rows="4"></textarea></label>
-                <label>预期结果<input name="expectedOutcome" required /></label>
-                <label>负责人 ID<input name="ownerId" required /></label>
-                <button type="submit">创建 WorkItem</button>
-              </form>
-            </article>
-            <article class="card">
-              <h2>2. 规格与计划门</h2>
-              <form id="gateForm" class="form-stack">
-                <label>WorkItem ID<input name="workItemId" required /></label>
-                <label>操作者 ID<input name="actorId" required /></label>
-                <label>规格草稿<textarea name="spec" required rows="3"></textarea></label>
-                <label>计划草稿<textarea name="plan" required rows="3"></textarea></label>
-                <button type="submit">保存并接受 spec / plan</button>
-              </form>
-            </article>
-            <article class="card">
-              <h2>3. 派活与执行</h2>
-              <form id="dispatchForm" class="form-stack">
-                <label>WorkItem ID<input name="workItemId" required /></label>
-                <label>执行人 ID<input name="assigneeId" required /></label>
-                <label>操作者 ID<input name="actorId" required /></label>
-                <button type="submit">派活并请求 Run</button>
-              </form>
-            </article>
-            <article class="card danger-card">
-              <h2>红灯处理</h2>
-              <form id="fixForm" class="form-stack">
-                <label>WorkItem ID<input name="workItemId" required /></label>
-                <label>修复负责人 ID<input name="ownerId" required /></label>
-                <label>暂停原因<textarea name="reason" required rows="2"></textarea></label>
-                <button class="danger" type="submit">暂停并派修复</button>
-              </form>
-            </article>
-          </div>
-          <article class="card trace-card"><div class="card-title"><h2>追溯链</h2><span>IDs / versions / runs</span></div><div id="traceList" class="list empty">执行操作后显示追溯信息</div></article>
-        </section>
+          <section class="page hidden page-scroll" data-page="delivery">
+            <div class="loop-head">
+              <div><h1>交付成果</h1><p class="muted">调研得出了什么，交付了什么，下一步做什么。</p></div>
+              <label class="loop-project">当前项目
+                <select id="deliveryProjectSelect"><option value="">先选项目</option></select>
+              </label>
+            </div>
+            <ol class="loop-steps" id="deliveryLoopSteps" aria-label="交付页内容">
+              <li><button type="button" data-loop="research">调研结论</button></li>
+              <li><button type="button" data-loop="artifacts">交付产物</button></li>
+              <li><button type="button" data-loop="gates">下一步</button></li>
+            </ol>
+            <p id="deliveryNextHint" class="notice">选择项目，查看结论与产物。</p>
+            <div class="delivery-stack">
+              <div id="deliveryFeasibilityHost"></div>
+              <div id="deliveryResearchHost"></div>
+              <div class="delivery-results-grid">
+                <div id="deliveryArtifactsHost"></div>
+                <div id="deliveryGateHost"></div>
+              </div>
+              <div id="deliveryIntakeHost"></div>
+              <div id="deliveryReleaseHost"></div>
+            </div>
+          </section>
 
-        <section class="page hidden" data-page="approvals">
-          <div class="page-head"><div><p class="eyebrow">APPROVALS</p><h1>审批中心</h1></div><button class="ghost refresh" type="button">刷新</button></div>
-          <div class="actor-row"><label>当前审批人 ID <input id="approvalActorId" placeholder="输入后可识别自己的提交" /></label></div>
-          <div id="approvalList" class="list empty">暂无待审批事项</div>
-        </section>
-      </main>
+          <section class="page hidden page-fill" data-page="approvals">
+            <div class="split split-single">
+              <section class="pane">
+                <header class="pane-head">
+                  <div>
+                    <p class="eyebrow">DECISIONS</p>
+                    <h2>待审批</h2>
+                  </div>
+                  <label class="actor-inline">审批人 <select id="approvalActorId"></select></label>
+                </header>
+                <div class="pane-body">
+                  <div id="approvalList" class="list empty">暂无待审批。任务执行完成后，在这里查看成果并验收。<button type="button" class="ghost" data-nav="work">去工作中心</button></div>
+                  <div class="card-title"><h3>审批记录</h3><span>通过 / 驳回</span></div>
+                  <div id="approvalHistory" class="list empty">还没有审批记录。</div>
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>
+      </div>
     </div>
 
     <div id="ceoDrawer" class="drawer-backdrop hidden">
-      <aside class="drawer" aria-label="CEO 登记需求">
-        <div class="card-title"><div><p class="eyebrow">CEO INBOX</p><h2>登记需求草稿</h2></div><button id="closeDrawerBtn" class="icon-btn" type="button">×</button></div>
-        <p class="notice">CEO 只能创建工作项草稿，不能跳过规格、计划和验收门。</p>
+      <aside class="drawer" aria-label="CEO 助手">
+        <div class="card-title"><div><p class="eyebrow">CEO INBOX</p><h2>现在最该处理的事</h2></div><button id="closeDrawerBtn" class="icon-btn" type="button">×</button></div>
+        <div id="ceoBrief" class="employee-kit"><p class="hint">正在读取经营摘要…</p></div>
+        <p class="notice">登记后先保存为草稿，不会过规格、计划，也不会自动执行。可在工作中心继续安排。</p>
         <form id="ceoForm" class="form-stack">
           <label>需求标题<input name="title" required /></label>
           <label>需求原话<textarea name="problem" required rows="6"></textarea></label>
           <label>预期结果<input name="expectedOutcome" required /></label>
-          <label>负责人 ID<input name="ownerId" required /></label>
+          <label>挂到目标<select name="goalId"><option value="">不挂目标</option></select></label>
+          <label>挂到项目<select name="projectId"><option value="">不挂项目</option></select></label>
+          <label>负责人<select name="ownerId" required></select></label>
           <button type="submit">登记为草稿</button>
         </form>
       </aside>
     </div>
+    <div id="talentModal" class="drawer-backdrop talent-modal hidden">
+      <aside class="talent-dialog" role="dialog" aria-labelledby="talentModalTitle">
+        <div class="card-title">
+          <div>
+            <p class="eyebrow">TALENT</p>
+            <h2 id="talentModalTitle">选择人才包</h2>
+          </div>
+          <button id="closeTalentModalBtn" class="icon-btn" type="button">×</button>
+        </div>
+        <p class="talent-current" id="talentModalCurrent">未选择人才包</p>
+        <input class="talent-search" type="search" placeholder="搜索名称、分类或技能" autocomplete="off" />
+        <div class="talent-cats"></div>
+        <div class="talent-results" role="listbox"></div>
+      </aside>
+    </div>
+    <div id="workspaceModal" class="drawer-backdrop talent-modal hidden">
+      <aside class="workspace-dialog" role="dialog" aria-labelledby="workspaceModalTitle">
+        <div class="card-title">
+          <div>
+            <p class="eyebrow">PROJECTS</p>
+            <h2 id="workspaceModalTitle">选择项目目录</h2>
+          </div>
+          <button id="closeWorkspaceModalBtn" class="icon-btn" type="button">×</button>
+        </div>
+        <p class="talent-current" id="workspaceModalCurrent">未授权项目目录</p>
+        <input class="workspace-search" type="search" placeholder="搜索项目名称或路径" autocomplete="off" />
+        <div class="workspace-cats"></div>
+        <div class="workspace-results"></div>
+        <div class="workspace-pager"></div>
+      </aside>
+    </div>
+    <dialog id="outputDialog" class="output-dialog" aria-labelledby="outputTitle">
+      <header class="output-dialog-head"><div><h2 id="outputTitle">交付产物</h2><p id="outputMeta" class="muted"></p></div><button id="closeOutputBtn" type="button" class="ghost" aria-label="关闭产物预览">关闭</button></header>
+      <article id="outputBody" class="report-document" aria-live="polite"></article>
+      <footer id="outputRunLink"></footer>
+    </dialog>
     <div id="toast" class="toast hidden" role="status"></div>
-    <script src="./app.js"></script>
+    <script src="./markdown-preview.bundle.js?v=review-deliverables"></script>
+    <script src="./features/delivery/delivery-ui.js?v=review-deliverables"></script>
+    <script src="./demo-seed.js?v=reject-fix"></script>
+    <script src="./features/drafts/draft-store.js"></script>
+    <script src="./app.js?v=org-p0"></script>
   </body>
 </html>

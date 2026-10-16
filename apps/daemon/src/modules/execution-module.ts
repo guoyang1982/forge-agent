@@ -51,7 +51,7 @@ export function createExecutionModule(): DaemonModule<ForgeDaemonContext> {
   };
 }
 
-async function handleRunCreate(
+export function createLinkedCompanyRun(
   spec: RunSpec,
   context: ForgeDaemonContext,
   correlationId: string,
@@ -61,31 +61,45 @@ async function handleRunCreate(
     typeof spec.policyContext.companyWorkItemId === "string"
       ? spec.policyContext.companyWorkItemId
       : undefined;
-  if (workItemId !== undefined) {
-    let plan;
-    try {
-      plan = context.company.gates.assertImplementationRunAllowed(workItemId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (/plan not accepted/.test(message)) {
-        throw new RpcFaultError(
-          rpcFault("POLICY_DENIED", "plan not accepted", { correlationId }),
-        );
-      }
-      throw error;
-    }
-    const created = context.executionStore.createRun(
-      spec,
-      context.executionClock.now(),
+  if (workItemId === undefined) {
+    throw new RpcFaultError(
+      rpcFault("INVALID_REQUEST", "companyWorkItemId is required", { correlationId }),
     );
-    context.company.gates.linkRun({
-      workItemId,
-      runId: created.id,
-      planArtifactId: plan.id,
-    });
-    context.wakeExecutor();
-    return { runId: created.id, state: created.state };
   }
+  let plan;
+  try {
+    plan = context.company.gates.assertImplementationRunAllowed(workItemId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/plan not accepted/.test(message)) {
+      throw new RpcFaultError(
+        rpcFault("POLICY_DENIED", "plan not accepted", { correlationId }),
+      );
+    }
+    throw error;
+  }
+  const created = context.executionStore.createRun(
+    spec,
+    context.executionClock.now(),
+  );
+  context.company.gates.linkRun({
+    workItemId,
+    runId: created.id,
+    planArtifactId: plan.id,
+  });
+  context.wakeExecutor();
+  return { runId: created.id, state: created.state };
+}
+
+async function handleRunCreate(
+  spec: RunSpec,
+  context: ForgeDaemonContext,
+  correlationId: string,
+) {
+  if (typeof spec.policyContext?.companyWorkItemId === "string") {
+    return createLinkedCompanyRun(spec, context, correlationId);
+  }
+  validateRunSpec(spec, correlationId);
   const created = context.executionStore.createRun(spec, context.executionClock.now());
   context.wakeExecutor();
   return { runId: created.id, state: created.state };
@@ -182,7 +196,7 @@ async function handleTraceGet(
   tree.name = run.spec.objective;
   return {
     runId: run.id,
-    sessionId: sessionIdFromRun(run.spec),
+    sessionId: sessionIdFromRun(run.spec) ?? sessionIdFromTraceEvents(events),
     state: run.state,
     objective: run.spec.objective,
     tree,
@@ -220,7 +234,17 @@ function sessionIdFromRun(spec: RunSpec): string | undefined {
   const input = spec.steps[0]?.input;
   if (!input || typeof input !== "object") return undefined;
   const sessionId = (input as { sessionId?: unknown }).sessionId;
-  return typeof sessionId === "string" ? sessionId : undefined;
+  return typeof sessionId === "string" && sessionId ? sessionId : undefined;
+}
+
+function sessionIdFromTraceEvents(events: Array<{ data?: unknown }>): string | undefined {
+  for (const event of events) {
+    const data = event.data;
+    if (!data || typeof data !== "object") continue;
+    const sessionId = (data as { sessionId?: unknown }).sessionId;
+    if (typeof sessionId === "string" && sessionId) return sessionId;
+  }
+  return undefined;
 }
 
 function validateRunSpec(spec: RunSpec, correlationId: string): void {

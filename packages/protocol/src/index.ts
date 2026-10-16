@@ -121,6 +121,30 @@ export interface RunRequest {
   /** Inbound channel gateway run (WeChat iLink, etc.). */
   channelRun?: ChannelRunContext;
   autoApply?: boolean;
+  /** Unattended Company work-item run — skip interactive write/command confirms. */
+  companyWorkItemId?: string;
+  /**
+   * Bound skill ids for the focused digital employee / talent.
+   * When set, skill matching prefers these ids (see also `strictTalentSkills`).
+   */
+  talentSkillIds?: string[];
+  /**
+   * When true with `talentSkillIds`, only those skills are offered in the catalog.
+   */
+  strictTalentSkills?: boolean;
+  /**
+   * Company digital-employee persona (talent pack system prompt). Injected into
+   * the run's system context so the model acts as that employee; skills still
+   * load on demand from the normal catalog / persona instructions.
+   */
+  personaPrompt?: string;
+  /** Display label for workbench, e.g. "苏衡 · 高级开发工程师". */
+  personaLabel?: string;
+  /**
+   * When true, the caller expected a company digital-employee persona. If
+   * `personaPrompt` is empty the daemon emits a failed `persona_active` event.
+   */
+  personaExpected?: boolean;
   files?: string[];
   attachments?: RunAttachment[];
 }
@@ -431,6 +455,7 @@ export interface McpListItem {
   name: string;
   command: string;
   args: string[];
+  url?: string;
   enabled: boolean;
   source: string;
   managedInConfig: boolean;
@@ -1032,6 +1057,17 @@ export type AgentEvent =
       loadedCount: number;
     }
   | {
+      /** Company digital-employee talent-pack persona (system prompt) injection result. */
+      type: "persona_active";
+      sessionId?: string;
+      loaded: boolean;
+      label?: string;
+      promptChars?: number;
+      /** Short preview of the injected persona for the workbench detail panel. */
+      preview?: string;
+      reason?: string;
+    }
+  | {
       type: "skill_used";
       sessionId?: string;
       skillId: string;
@@ -1444,7 +1480,8 @@ export interface ForgeConfig {
   mcp?: {
     servers: Array<{
       name: string;
-      command: string;
+      command?: string;
+      url?: string;
       args?: string[];
       env?: Record<string, string>;
       enabled?: boolean;

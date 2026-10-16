@@ -5,6 +5,10 @@ import {
   type CompanyArtifactOptions,
 } from "./artifact-files.js";
 import type { Clock } from "./clock.js";
+import {
+  buildDemandDraftArtifacts,
+  insertWorkArtifactRow,
+} from "./demand-drafts.js";
 import { newCompanyId } from "./ids.js";
 import type {
   WorkArtifact,
@@ -189,8 +193,10 @@ export class WorkGates {
 
       if (placeholder) {
         this.db
-          .prepare("UPDATE company_run_links SET run_id = ? WHERE id = ?")
-          .run(input.runId, placeholder.id);
+          .prepare(
+            "UPDATE company_run_links SET run_id = ?, created_at = ? WHERE id = ?",
+          )
+          .run(input.runId, this.clock.now(), placeholder.id);
       } else {
         this.db
           .prepare(
@@ -213,12 +219,180 @@ export class WorkGates {
         this.db
           .prepare(
             `UPDATE company_work_items
-            SET state = 'waiting_approval', updated_at = ?
+            SET state = 'in_progress', updated_at = ?
             WHERE id = ?`,
           )
           .run(this.clock.now(), input.workItemId);
       }
     })();
+  }
+
+  onRunTerminal(input: {
+    runId: string;
+    outcome: "succeeded" | "failed";
+  }): void {
+    const link = this.db
+      .prepare(
+        `SELECT work_item_id AS workItemId
+        FROM company_run_links
+        WHERE run_id = ?
+        ORDER BY created_at, id
+        LIMIT 1`,
+      )
+      .get(input.runId) as { workItemId: string } | undefined;
+    if (!link) return;
+    const latest = this.db
+      .prepare(
+        `SELECT run_id AS runId
+        FROM company_run_links
+        WHERE work_item_id = ? AND TRIM(run_id) <> ''
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      )
+      .get(link.workItemId) as { runId: string } | undefined;
+    if (!latest || latest.runId !== input.runId) return;
+    if (input.outcome === "succeeded" && this.hasBlockingFailedValidation(input.runId)) {
+      this.failRun(link.workItemId, input.runId);
+      return;
+    }
+    const nextState =
+      input.outcome === "succeeded" ? "waiting_approval" : "blocked";
+    this.db
+      .prepare(
+        `UPDATE company_work_items
+        SET state = ?, updated_at = ?
+        WHERE id = ? AND state = 'in_progress'`,
+      )
+      .run(nextState, this.clock.now(), link.workItemId);
+    this.recordSelfCheck(input.runId, input.outcome === "succeeded" ? "passed" : "failed");
+    if (input.outcome === "succeeded") {
+      this.recordProcessCheck(input.runId);
+    }
+    if (input.outcome === "failed") {
+      this.openFixForRun(link.workItemId, input.runId);
+    }
+  }
+
+  private failRun(workItemId: string, runId: string): void {
+    this.db
+      .prepare(
+        `UPDATE company_work_items
+        SET state = 'blocked', updated_at = ?
+        WHERE id = ?`,
+      )
+      .run(this.clock.now(), workItemId);
+    this.recordSelfCheck(runId, "failed");
+    this.openFixForRun(workItemId, runId);
+  }
+
+  private openFixForRun(workItemId: string, runId: string): void {
+    const item = this.getWorkItem(workItemId);
+    this.pauseForFix({
+      workItemId: item.id,
+      reason: `Run ${runId} 失败`,
+      ownerId: item.assigneeId || item.ownerId,
+    });
+  }
+
+  private hasBlockingFailedValidation(runId: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS ok FROM core_validations
+        WHERE run_id = ? AND status = 'failed' AND severity = 'blocking'
+        LIMIT 1`,
+      )
+      .get(runId) as { ok: number } | undefined;
+    return Boolean(row);
+  }
+
+  private recordSelfCheck(runId: string, status: "passed" | "failed"): void {
+    const existing = this.db
+      .prepare(
+        `SELECT id FROM core_validations
+        WHERE run_id = ? AND validator_id = 'company.self_check'
+        LIMIT 1`,
+      )
+      .get(runId) as { id: string } | undefined;
+    if (existing) return;
+    this.db
+      .prepare(
+        `INSERT INTO core_validations (
+          id, run_id, validator_id, layer, status, severity,
+          evidence_ids_json, summary, details_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        newCompanyId("validation"),
+        runId,
+        "company.self_check",
+        "result",
+        status,
+        status === "failed" ? "blocking" : "info",
+        "[]",
+        status === "passed" ? "执行自检通过" : "执行自检未通过",
+        "{}",
+        this.clock.now(),
+      );
+  }
+
+  recordAcceptance(runId: string, summary = "独立验收通过"): void {
+    const existing = this.db
+      .prepare(
+        `SELECT id FROM core_validations
+        WHERE run_id = ? AND validator_id = 'company.acceptance'
+        LIMIT 1`,
+      )
+      .get(runId) as { id: string } | undefined;
+    if (existing) return;
+    this.db
+      .prepare(
+        `INSERT INTO core_validations (
+          id, run_id, validator_id, layer, status, severity,
+          evidence_ids_json, summary, details_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        newCompanyId("validation"),
+        runId,
+        "company.acceptance",
+        "answer",
+        "passed",
+        "info",
+        "[]",
+        summary,
+        "{}",
+        this.clock.now(),
+      );
+  }
+
+  private recordProcessCheck(runId: string): void {
+    const existing = this.db
+      .prepare(
+        `SELECT id FROM core_validations
+        WHERE run_id = ? AND validator_id = 'company.plan_alignment'
+        LIMIT 1`,
+      )
+      .get(runId) as { id: string } | undefined;
+    if (existing) return;
+    this.db
+      .prepare(
+        `INSERT INTO core_validations (
+          id, run_id, validator_id, layer, status, severity,
+          evidence_ids_json, summary, details_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        newCompanyId("validation"),
+        runId,
+        "company.plan_alignment",
+        "process",
+        "passed",
+        "info",
+        "[]",
+        "引用已接受计划",
+        "{}",
+        this.clock.now(),
+      );
   }
 
   pauseForFix(input: {
@@ -237,6 +411,9 @@ export class WorkGates {
         )
         .run(now, parent.id);
 
+      const openFix = this.findOpenFixChild(parent.id);
+      if (openFix) return { item: openFix, artifacts: [] };
+
       return this.insertWorkItemWithIntent({
         companyId: parent.companyId,
         projectId: parent.projectId,
@@ -249,8 +426,45 @@ export class WorkGates {
         now,
       });
     })();
-    persistWorkArtifactFile(this.artifactOptions, result.artifact, this.db);
+    for (const artifact of result.artifacts) {
+      persistWorkArtifactFile(this.artifactOptions, artifact, this.db);
+    }
+    if (result.artifacts.length > 0 && result.item.parentId) {
+      this.inheritAcceptedDrafts(
+        result.item.parentId,
+        result.item.id,
+        input.reason,
+        input.ownerId,
+      );
+    }
     return result.item;
+  }
+
+  completeDelivery(workItemId: string): WorkItem {
+    return this.db.transaction(() => {
+      const item = this.getWorkItem(workItemId);
+      const now = this.clock.now();
+      this.db
+        .prepare(
+          `UPDATE company_work_items
+          SET state = 'completed', updated_at = ?
+          WHERE id = ?`,
+        )
+        .run(now, item.id);
+      if (item.parentId) {
+        const parent = this.getWorkItem(item.parentId);
+        if (parent.state === "blocked" || parent.state === "rejected") {
+          this.db
+            .prepare(
+              `UPDATE company_work_items
+              SET state = 'completed', updated_at = ?
+              WHERE id = ?`,
+            )
+            .run(now, parent.id);
+        }
+      }
+      return this.getWorkItem(workItemId);
+    })();
   }
 
   getArtifact(id: string): WorkArtifact {
@@ -268,6 +482,50 @@ export class WorkGates {
       throw new Error("artifact not found");
     }
     return artifact;
+  }
+
+  private inheritAcceptedDrafts(
+    parentId: string,
+    childId: string,
+    reason: string,
+    actorId: string,
+  ): void {
+    for (const kind of ["spec", "plan"] as const) {
+      const accepted = this.db
+        .prepare(
+          `SELECT content
+          FROM company_work_artifacts
+          WHERE work_item_id = ? AND kind = ? AND status = 'accepted'
+          ORDER BY version DESC
+          LIMIT 1`,
+        )
+        .get(parentId, kind) as { content: string } | undefined;
+      if (!accepted?.content) continue;
+      const label = kind === "spec" ? "规格" : "计划";
+      this.upsertDraft({
+        workItemId: childId,
+        kind,
+        content: [`# 修复说明`, reason, ``, `# 原${label}`, accepted.content].join("\n"),
+        actorId,
+      });
+    }
+  }
+
+  private findOpenFixChild(parentId: string): WorkItem | undefined {
+    return this.db
+      .prepare(
+        `SELECT id, company_id AS companyId, goal_id AS goalId,
+          project_id AS projectId, parent_id AS parentId, type, title, problem,
+          expected_outcome AS expectedOutcome, owner_id AS ownerId,
+          assignee_id AS assigneeId, state, risk,
+          autonomy_level AS autonomyLevel, version
+        FROM company_work_items
+        WHERE parent_id = ? AND type = 'fix'
+          AND state NOT IN ('completed', 'cancelled', 'accepted')
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      )
+      .get(parentId) as WorkItem | undefined;
   }
 
   private requireAccepted(
@@ -321,7 +579,7 @@ export class WorkGates {
     expectedOutcome: string;
     ownerId: string;
     now: string;
-  }): { item: WorkItem; artifact: WorkArtifact } {
+  }): { item: WorkItem; artifacts: WorkArtifact[] } {
     const item: WorkItem = {
       id: newCompanyId("work"),
       companyId: input.companyId,
@@ -339,21 +597,7 @@ export class WorkGates {
       autonomyLevel: 2,
       version: 1,
     };
-    const artifact: WorkArtifact = {
-      id: newCompanyId("artifact"),
-      companyId: item.companyId,
-      workItemId: item.id,
-      kind: "intent",
-      version: 1,
-      status: "draft",
-      content: input.problem,
-      contentHash: createHash("sha256")
-        .update(input.problem, "utf8")
-        .digest("hex"),
-      workspacePath: null,
-      acceptedAt: null,
-      acceptedBy: null,
-    };
+    const artifacts = buildDemandDraftArtifacts(item);
 
     this.db
       .prepare(
@@ -367,18 +611,9 @@ export class WorkGates {
             @autonomyLevel, @version, @createdAt, @updatedAt)`,
       )
       .run({ ...item, createdAt: input.now, updatedAt: input.now });
-    this.db
-      .prepare(
-        `INSERT INTO company_work_artifacts
-          (id, company_id, work_item_id, kind, version, status, content,
-            content_hash, workspace_path, accepted_at, accepted_by,
-            created_at, updated_at)
-        VALUES
-          (@id, @companyId, @workItemId, @kind, @version, @status, @content,
-            @contentHash, @workspacePath, @acceptedAt, @acceptedBy,
-            @createdAt, @updatedAt)`,
-      )
-      .run({ ...artifact, createdAt: input.now, updatedAt: input.now });
-    return { item, artifact };
+    for (const artifact of artifacts) {
+      insertWorkArtifactRow(this.db, artifact, input.now);
+    }
+    return { item, artifacts };
   }
 }

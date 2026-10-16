@@ -238,6 +238,325 @@ describe("WorkGates", () => {
     expect(intent?.content).toBe(reason);
   });
 
+  it("copies accepted spec and plan onto the fix child as drafts", () => {
+    const { gates, item, employee, work } = openFixture();
+    const spec = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "spec",
+      content: "范围：最大化",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: spec.id, actorId: employee.id });
+    const plan = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "plan",
+      content: "先改窗格再补快捷键",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: plan.id, actorId: employee.id });
+    const reason = "快捷键冲突，需改绑定";
+
+    const child = gates.pauseForFix({
+      workItemId: item.id,
+      reason,
+      ownerId: employee.id,
+    });
+    const artifacts = work.listArtifacts(child.id);
+    const childSpec = artifacts.find((artifact) => artifact.kind === "spec");
+    const childPlan = artifacts.find((artifact) => artifact.kind === "plan");
+
+    expect(childSpec).toMatchObject({ status: "draft" });
+    expect(childPlan).toMatchObject({ status: "draft" });
+    expect(childSpec?.content).toContain("范围：最大化");
+    expect(childSpec?.content).toContain(reason);
+    expect(childPlan?.content).toContain("先改窗格再补快捷键");
+    expect(childPlan?.content).toContain(reason);
+  });
+
+  it("marks the work item in_progress when a run id is linked", () => {
+    const { gates, item, employee, db } = openFixture();
+    const spec = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "spec",
+      content: "范围",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: spec.id, actorId: employee.id });
+    const plan = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "plan",
+      content: "实现",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: plan.id, actorId: employee.id });
+
+    gates.linkRun({
+      workItemId: item.id,
+      runId: "run_live_1",
+      planArtifactId: plan.id,
+    });
+
+    expect(
+      db.prepare("SELECT state FROM company_work_items WHERE id = ?").get(item.id),
+    ).toEqual({ state: "in_progress" });
+  });
+
+  it("moves a linked run to waiting_approval on success and blocked on failure", () => {
+    const { gates, item, employee, db } = openFixture();
+    const spec = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "spec",
+      content: "范围",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: spec.id, actorId: employee.id });
+    const plan = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "plan",
+      content: "实现",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: plan.id, actorId: employee.id });
+    gates.linkRun({
+      workItemId: item.id,
+      runId: "run_live_1",
+      planArtifactId: plan.id,
+    });
+
+    gates.onRunTerminal({ runId: "run_live_1", outcome: "succeeded" });
+    expect(
+      db.prepare("SELECT state FROM company_work_items WHERE id = ?").get(item.id),
+    ).toEqual({ state: "waiting_approval" });
+    expect(
+      db.prepare(
+        `SELECT validator_id AS validatorId, status
+        FROM core_validations WHERE run_id = ? AND validator_id = 'company.self_check'`,
+      ).get("run_live_1"),
+    ).toEqual({ validatorId: "company.self_check", status: "passed" });
+  });
+
+  it("opens a fix when a succeeded run already has a blocking failed validation", () => {
+    const { gates, item, employee, db } = openFixture();
+    const spec = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "spec",
+      content: "范围",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: spec.id, actorId: employee.id });
+    const plan = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "plan",
+      content: "实现",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: plan.id, actorId: employee.id });
+    gates.linkRun({
+      workItemId: item.id,
+      runId: "run_bad_check",
+      planArtifactId: plan.id,
+    });
+    db.prepare(
+      `INSERT INTO core_validations (
+        id, run_id, validator_id, layer, status, severity,
+        evidence_ids_json, summary, details_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "validation_blocking_fail",
+      "run_bad_check",
+      "company.tests",
+      "result",
+      "failed",
+      "blocking",
+      "[]",
+      "测试未过",
+      "{}",
+      "2026-09-09T00:00:00.000Z",
+    );
+
+    gates.onRunTerminal({ runId: "run_bad_check", outcome: "succeeded" });
+
+    expect(
+      db.prepare("SELECT state FROM company_work_items WHERE id = ?").get(item.id),
+    ).toEqual({ state: "blocked" });
+    expect(
+      db.prepare(
+        "SELECT title FROM company_work_items WHERE parent_id = ?",
+      ).get(item.id),
+    ).toEqual({ title: `Fix: ${item.title}` });
+  });
+
+  it("moves a linked run to blocked on failure", () => {
+    const { gates, item, employee, db } = openFixture();
+    const spec = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "spec",
+      content: "范围",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: spec.id, actorId: employee.id });
+    const plan = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "plan",
+      content: "实现",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: plan.id, actorId: employee.id });
+    gates.linkRun({
+      workItemId: item.id,
+      runId: "run_fail_1",
+      planArtifactId: plan.id,
+    });
+
+    gates.onRunTerminal({ runId: "run_fail_1", outcome: "failed" });
+    expect(
+      db.prepare("SELECT state FROM company_work_items WHERE id = ?").get(item.id),
+    ).toEqual({ state: "blocked" });
+    expect(
+      db.prepare(
+        `SELECT title, type, parent_id AS parentId, state
+        FROM company_work_items WHERE parent_id = ?`,
+      ).get(item.id),
+    ).toEqual({
+      title: `Fix: ${item.title}`,
+      type: "fix",
+      parentId: item.id,
+      state: "draft",
+    });
+  });
+
+  it("reuses an open fix child instead of opening another", () => {
+    const { gates, item, employee, db } = openFixture();
+    const first = gates.pauseForFix({
+      workItemId: item.id,
+      reason: "第一次失败",
+      ownerId: employee.id,
+    });
+    const second = gates.pauseForFix({
+      workItemId: item.id,
+      reason: "再次暂停",
+      ownerId: employee.id,
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(
+      (db.prepare(
+        "SELECT COUNT(*) AS count FROM company_work_items WHERE parent_id = ?",
+      ).get(item.id) as { count: number }).count,
+    ).toBe(1);
+  });
+
+  it("completes an approved item and its blocked parent", () => {
+    const { gates, item, employee, db } = openFixture();
+    const child = gates.pauseForFix({
+      workItemId: item.id,
+      reason: "验收未过",
+      ownerId: employee.id,
+    });
+
+    const closed = gates.completeDelivery(child.id);
+
+    expect(closed).toMatchObject({
+      id: child.id,
+      state: "completed",
+      parentId: item.id,
+    });
+    expect(
+      db.prepare("SELECT state FROM company_work_items WHERE id = ?").get(item.id),
+    ).toEqual({ state: "completed" });
+  });
+
+  it("ignores a stale terminal event after a newer run is linked", () => {
+    const { gates, item, employee, db } = openFixture();
+    const spec = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "spec",
+      content: "范围",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: spec.id, actorId: employee.id });
+    const plan = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "plan",
+      content: "实现",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: plan.id, actorId: employee.id });
+    gates.linkRun({
+      workItemId: item.id,
+      runId: "run_a",
+      planArtifactId: plan.id,
+    });
+
+    gates.onRunTerminal({ runId: "run_a", outcome: "failed" });
+    expect(
+      db.prepare("SELECT state FROM company_work_items WHERE id = ?").get(item.id),
+    ).toEqual({ state: "blocked" });
+
+    db.prepare(
+      "UPDATE company_run_links SET created_at = ? WHERE run_id = ?",
+    ).run("2026-09-08T00:00:00.000Z", "run_a");
+    gates.linkRun({
+      workItemId: item.id,
+      runId: "run_b",
+      planArtifactId: plan.id,
+    });
+    expect(
+      db.prepare("SELECT state FROM company_work_items WHERE id = ?").get(item.id),
+    ).toEqual({ state: "in_progress" });
+
+    gates.onRunTerminal({ runId: "run_a", outcome: "failed" });
+    expect(
+      db.prepare("SELECT state FROM company_work_items WHERE id = ?").get(item.id),
+    ).toEqual({ state: "in_progress" });
+  });
+
+  it("treats a filled placeholder as newer than older completed links", () => {
+    const { gates, item, employee, db } = openFixture();
+    const spec = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "spec",
+      content: "范围",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: spec.id, actorId: employee.id });
+    const plan = gates.upsertDraft({
+      workItemId: item.id,
+      kind: "plan",
+      content: "实现",
+      actorId: employee.id,
+    });
+    gates.acceptArtifact({ artifactId: plan.id, actorId: employee.id });
+    gates.linkRun({
+      workItemId: item.id,
+      runId: "run_old",
+      planArtifactId: plan.id,
+    });
+    gates.onRunTerminal({ runId: "run_old", outcome: "failed" });
+    db.prepare(
+      `INSERT INTO company_run_links
+        (id, company_id, work_item_id, run_id, plan_artifact_id, created_at)
+      VALUES (?, ?, ?, '', ?, ?)`,
+    ).run(
+      "run_link_placeholder",
+      item.companyId,
+      item.id,
+      plan.id,
+      "2026-09-01T00:00:00.000Z",
+    );
+
+    gates.linkRun({
+      workItemId: item.id,
+      runId: "run_new",
+      planArtifactId: plan.id,
+    });
+    gates.onRunTerminal({ runId: "run_new", outcome: "succeeded" });
+
+    expect(
+      db.prepare("SELECT state FROM company_work_items WHERE id = ?").get(item.id),
+    ).toEqual({ state: "waiting_approval" });
+  });
+
   it("writes the fix child intent after pauseForFix", () => {
     const { gates, item, employee, work, artifactRoot, companyId } = openFixture(
       { artifactRoot: true },

@@ -8,6 +8,7 @@ import {
   isCodexApprovalMethod,
   listCodexModes,
   normalizeCodexApprovalPolicy,
+  resolveCodexApprovalPolicy,
 } from "./codex-runtime.js";
 
 describe("normalizeCodexApprovalPolicy", () => {
@@ -24,6 +25,29 @@ describe("normalizeCodexApprovalPolicy", () => {
     expect(normalizeCodexApprovalPolicy("ask")).toBe("on-request");
     expect(normalizeCodexApprovalPolicy("")).toBe("on-request");
     expect(normalizeCodexApprovalPolicy(undefined)).toBe("on-request");
+  });
+
+  it("never prompts for unattended company or automation runs", () => {
+    expect(
+      resolveCodexApprovalPolicy({
+        cwd: "/tmp",
+        message: "实现已接受的计划",
+        companyWorkItemId: "work_1",
+      }),
+    ).toBe("never");
+    expect(
+      resolveCodexApprovalPolicy({
+        cwd: "/tmp",
+        message: "写个新的小游戏",
+        automationRun: { name: "执行一次" },
+      }),
+    ).toBe("never");
+    expect(
+      resolveCodexApprovalPolicy({
+        cwd: "/tmp",
+        message: "hi",
+      }),
+    ).toBe("on-request");
   });
 
   it("exposes Codex modes for runtime.list with clarifying labels", () => {

@@ -48,7 +48,8 @@ function listEnabledForgeMcpServers(cwd: string): McpServerConfig[] {
   return servers;
 }
 
-export function toAcpMcpServer(server: McpServerConfig): Record<string, unknown> {
+export function toAcpMcpServer(server: McpServerConfig): Record<string, unknown> | null {
+  if (!server.command) return null;
   const command =
     server.cwd &&
     !isAbsolute(server.command) &&
@@ -65,5 +66,8 @@ export function toAcpMcpServer(server: McpServerConfig): Record<string, unknown>
 }
 
 export function loadForgeAcpMcpServers(cwd: string): unknown[] {
-  return listEnabledForgeMcpServers(cwd).map(toAcpMcpServer);
+  return listEnabledForgeMcpServers(cwd).flatMap((server) => {
+    const mapped = toAcpMcpServer(server);
+    return mapped ? [mapped] : [];
+  });
 }

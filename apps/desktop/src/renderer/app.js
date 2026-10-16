@@ -12,6 +12,8 @@ function requireBridge() {
 
 let notifyUserHideTimer = null;
 let openProjectMenuId = null;
+let companyReturnWorkItemId = "";
+let companyReturnSessionId = "";
 
 const VALID_THEME_MODES = new Set(["system", "dark", "light"]);
 
@@ -491,6 +493,8 @@ const state = {
   runPatchesBySession: new Map(),
   /** sessionId -> pre-run workspace checkpoint sha (git diff baseline for this turn) */
   runCheckpointShaBySession: new Map(),
+  /** Historical journal replay must not diff the live worktree. */
+  replayingPersistedEvents: false,
   /** pendingToolLine key -> poll timer for git-diff path discovery during ACP edits */
   workspaceDiffPollTimers: new Map(),
   /** sessionId -> Map<eventDetailId, detail> survives timeline innerHTML restore */
@@ -526,6 +530,10 @@ const state = {
   externalSessionRefreshTimer: null,
   externalSessionRefreshInFlight: false,
   activeNav: "chat",
+  connectorDetailId: "",
+  connectorChoiceQuery: "",
+  connectorCustomOpen: false,
+  connectorMcpDraft: null,
   chatEmpty: true,
   expandedProjectIds: new Set(),
   pinnedSessionIds: new Set(),
@@ -560,6 +568,8 @@ const state = {
   /** Flat stream host while the run is active (`null` after fold/unwrap). */
   runActivityStreamEl: null,
   runActivityStats: null,
+  /** Latest company digital-employee persona_active for this turn (工作台人设状态). */
+  lastPersonaActive: null,
   runActivityTimer: null,
   /** sessionId -> wall-clock start of the current turn; survives view detach/reattach. */
   runActivityStartedAtBySession: new Map(),
@@ -737,6 +747,7 @@ function snapshotDomTimelineChild(node, sessionId) {
       iconKey: node.dataset.iconKey || "command",
       label: labelEl?.textContent || "",
       status: node.classList.contains("is-running") ? "running" : "done",
+      path: node.dataset.codexActivityPath || "",
       adds: Number(statsText.match(/\+(\d+)/)?.[1] || 0),
       dels: Number(statsText.match(/-(\d+)/)?.[1] || 0),
       forgeDetail: node.dataset.forgeDetail || "",
@@ -891,16 +902,9 @@ function countRunActivityContentUnits(host) {
   ).length;
 }
 
-function estimateRunActivityContentChars(host) {
-  if (!host) return 0;
-  return String(host.textContent || "").replace(/\s+/g, " ").trim().length;
-}
-
-/** Fold long process output into 已处理; keep short runs flat in the dialog. */
+/** After the run, fold thinking and tool output into 已处理. A reply with none stays flat. */
 function shouldCollapseRunActivityContent(host) {
-  const units = countRunActivityContentUnits(host);
-  const chars = estimateRunActivityContentChars(host);
-  return units >= 4 || chars >= 800;
+  return countRunActivityContentUnits(host) > 0;
 }
 
 function collectLiveRunActivityStreamNodes(activity, mount = getTimelineMount()) {
@@ -1972,6 +1976,8 @@ function structuredTimelineCacheUsable(sessionId, running = false) {
 }
 
 function renderStructuredEventLine(entry, container, sessionId) {
+  const existing = !entry.isUserPrompt && findRepeatedSetupEvent(container, entry.text, entry.forgeDetail || "");
+  if (existing) return existing;
   const line = document.createElement("div");
   line.className = `event ${entry.className || ""}`.trim();
   line.textContent = entry.text || "";
@@ -2289,7 +2295,7 @@ function buildRunGeneratedImagesHtml(files) {
     </div>`;
 }
 
-function mergeConclusionImageFiles(files, finalText) {
+function mergeConclusionImageFiles(files) {
   const merged = [];
   const seen = new Set();
   const push = (path) => {
@@ -2301,7 +2307,8 @@ function mergeConclusionImageFiles(files, finalText) {
     merged.push(norm);
   };
   (files || []).forEach(push);
-  extractImagePathsFromText(finalText).forEach(push);
+  // A reference in an answer is not evidence that this run changed the file.
+  // Use the turn's recorded files for both live and restored conclusions.
   return merged;
 }
 
@@ -2312,13 +2319,17 @@ function buildRunConclusionMarkup(finalText, files, patchSource) {
     : `<p class="run-conclusion-empty">（助手未返回文字结论，请查看上方回复）</p>`;
   const filesHtml = buildRunConclusionFilesHtml(displayFiles, patchSource);
   const imagesHtml = buildRunGeneratedImagesHtml(displayFiles);
+  const copyBtn = finalText
+    ? `<button type="button" class="conclusion-copy-btn" data-copy-action="conclusion" title="复制全文">复制</button>`
+    : "";
+  // A bare answer is the message itself. The 结论 label is only useful once
+  // a file section needs a heading to sit beside.
+  const heading = displayFiles.length || !finalText
+    ? `<div class="run-conclusion-heading">结论${copyBtn}</div>`
+    : `<div class="run-conclusion-heading run-conclusion-heading-quiet">${copyBtn}</div>`;
   return `
     <div class="run-conclusion-inner">
-      <div class="run-conclusion-heading">结论${
-        finalText
-          ? `<button type="button" class="conclusion-copy-btn" data-copy-action="conclusion" title="复制结论全文">复制</button>`
-          : ""
-      }</div>
+      ${heading}
       ${conclusionHtml}
       ${
         displayFiles.length
@@ -2378,6 +2389,60 @@ function renderStructuredPlanCardEntry(entry, mount) {
   return card;
 }
 
+function collectEditedPathsFromDetail(detail, push) {
+  if (!detail || typeof detail !== "object") return;
+  if (detail.patch?.path && detail.patch.applied !== false) push(detail.patch.path);
+  if (!Array.isArray(detail.changes)) return;
+  for (const change of detail.changes) {
+    if (!change?.path) continue;
+    if (change.unifiedDiff || change.kind === "add" || change.kind === "update" || change.kind === "delete") {
+      push(change.path);
+    }
+  }
+}
+
+function collectEditedPathsFromTimelineEntry(entry, push) {
+  if (!entry || typeof entry !== "object") return;
+  if (entry.type === "run_activity" || entry.type === "subagent") {
+    for (const child of entry.children || []) collectEditedPathsFromTimelineEntry(child, push);
+    return;
+  }
+  if (entry.path && (entry.iconKey === "file" || entry.type === "codex_activity" && entry.iconKey === "file")) {
+    push(entry.path);
+  }
+  if (entry.patch?.path) push(entry.patch.path);
+  if (!entry.forgeDetail) return;
+  try {
+    collectEditedPathsFromDetail(JSON.parse(entry.forgeDetail), push);
+  } catch {
+    /* malformed detail */
+  }
+}
+
+/** Files this turn's own edit events touched. Ignores a later worktree diff. */
+function filesTouchedBeforeConclusion(sessionId, conclusion) {
+  const timelineState = getNormalTimelineState(sessionId, false);
+  if (!timelineState) return null;
+  const entries = ensureTimelineEntries(timelineState);
+  const idx = entries.indexOf(conclusion);
+  if (idx < 0) return null;
+  const found = [];
+  const seen = new Set();
+  const push = (raw) => {
+    const norm = normalizeWorkspaceRelPath(getActiveProject()?.cwd, raw) || String(raw || "").trim();
+    if (!norm || seen.has(norm)) return;
+    seen.add(norm);
+    found.push(norm);
+  };
+  for (let i = idx - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry?.type === "conclusion") break;
+    if (entry?.type === "event" && entry.isUserPrompt) break;
+    collectEditedPathsFromTimelineEntry(entry, push);
+  }
+  return found;
+}
+
 function renderStructuredConclusionEntry(sessionId, mount, entry) {
   const rawText = String(
     entry?.text || state.runFinalTextBySession.get(sessionId) || "",
@@ -2395,12 +2460,40 @@ function renderStructuredConclusionEntry(sessionId, mount, entry) {
     activity,
   );
   const patchMap = state.runPatchesBySession.get(sessionId);
-  // Prefer the turn-scoped snapshot so later turns don't rewrite older conclusions.
-  const files = Array.isArray(entry?.files)
-    ? entry.files
-    : patchMap
-      ? [...patchMap.keys()]
-      : [];
+  const idle = Boolean(sessionId) && !state.runningSessions.has(sessionId);
+  // A restored conclusion must not keep a git diff taken against today's
+  // worktree. That diff includes files later sessions created.
+  const turnFiles = idle ? filesTouchedBeforeConclusion(sessionId, entry) : null;
+  const files = Array.isArray(turnFiles)
+    ? turnFiles
+    : Array.isArray(entry?.files)
+      ? entry.files
+      : patchMap
+        ? [...patchMap.keys()]
+        : [];
+  if (Array.isArray(turnFiles)) {
+    entry.files = turnFiles;
+    const timelineEntries = ensureTimelineEntries(getNormalTimelineState(sessionId, false));
+    const lastConclusion = [...timelineEntries].reverse().find((item) => item.type === "conclusion");
+    if (lastConclusion === entry) {
+      const next = new Map();
+      for (const path of turnFiles) {
+        next.set(
+          path,
+          state.runPatches.get(path) || {
+            filePath: path,
+            title: `File · ${path}`,
+            meta: "已编辑",
+            source: "tool",
+            content: "",
+          },
+        );
+      }
+      state.runPatches = next;
+      saveRunPatchesForSession(sessionId);
+      refreshContextPanelIfOpen();
+    }
+  }
   if (!mount) return null;
   const wrap = document.createElement("div");
   populateRunConclusionElement(wrap, finalText, files, patchMap || state.runPatches);
@@ -2413,6 +2506,7 @@ function renderStructuredCodexActivityEntry(entry, container) {
   wrap.className = `codex-activity-chip${entry.status === "running" ? " is-running" : " is-done"}`;
   wrap.dataset.codexActivityId = entry.callId || "";
   wrap.dataset.timelineNodeId = entry.id;
+  if (entry.path) wrap.dataset.codexActivityPath = entry.path;
   if (entry.forgeDetail) {
     wrap.dataset.forgeDetail = entry.forgeDetail;
     wrap.classList.add("clickable");
@@ -2430,7 +2524,8 @@ function renderStructuredCodexActivityEntry(entry, container) {
     }
   }
   wrap.dataset.codexStats = `${Number(entry.adds || 0)}:${Number(entry.dels || 0)}`;
-  wrap.innerHTML = `<span class="codex-activity-icon" aria-hidden="true">${codexActivityIconMarkup(iconKey)}</span><span class="codex-activity-label">${escapeHtml(entry.label || "")}</span>${stats}${expand}`;
+  const stateMark = entry.status === "running" ? '<span class="codex-activity-state">运行中</span>' : "";
+  wrap.innerHTML = `<span class="codex-activity-icon" aria-hidden="true">${codexActivityIconMarkup(iconKey)}</span>${stateMark}<span class="codex-activity-label">${escapeHtml(entry.label || "")}</span>${stats}${expand}`;
   container.appendChild(wrap);
   return wrap;
 }
@@ -2730,6 +2825,7 @@ function initSessionRuns() {
     refreshLiveTimelineIfViewing,
     isViewSwitchCurrent,
     captureOutgoingTimeline,
+    syncCompanyReturnBar,
     abortPendingProjectDraft,
     renderNetworkPermissionBanner,
     sessionBelongsToActiveProject,
@@ -2995,6 +3091,7 @@ function resetRunActivityState() {
   state.runActivityFoldBody = null;
   state.runActivityStreamEl = null;
   state.runActivityStats = null;
+  state.lastPersonaActive = null;
   state.stepToolGroupEl = null;
   state.stepToolGroupBody = null;
   state.stepToolGroupCount = 0;
@@ -3433,6 +3530,30 @@ async function pollCodexProvisionalFile(record) {
   if (!record.stopped) scheduleCodexProvisionalFilePoll(record);
 }
 
+/** Status pill text: verb plus a file or command name, never the script body. */
+function shortLiveActivityLabel(label) {
+  const text = String(label || "").replace(/\s+/g, " ").trim();
+  if (!text) return "处理中…";
+  const head = text.match(/^(正在[\u4e00-\u9fff]{1,8}|已[\u4e00-\u9fff]{1,8})/);
+  const verb = head?.[1] || "";
+  const rest = (verb ? text.slice(verb.length) : text).trim().replace(/["'`]/g, " ");
+  const file = rest.match(/(?:^|[\s/])([\w.-]+\.[A-Za-z0-9]{1,8})(?![\w.-])/);
+  let hint = file?.[1]?.split("/").pop() || "";
+  if (!hint) {
+    hint =
+      rest.split(/\s+/).find(
+        (part) =>
+          part &&
+          part !== "-lc" &&
+          part !== "-c" &&
+          !/^(?:\/bin\/)?(?:zsh|bash|sh)$/.test(part),
+      ) || "";
+  }
+  if (hint.length > 32) hint = `${hint.slice(0, 32)}…`;
+  if (verb && hint) return `${verb} ${hint}`;
+  return verb || hint || "处理中…";
+}
+
 function renderCodexActivityChip(payload) {
   ensureRunActivity();
   const body = state.runActivityBody;
@@ -3482,6 +3603,7 @@ function renderCodexActivityChip(payload) {
     for (const change of fileChanges) {
       if (!change?.path) continue;
       const recorded = recordRunModifiedFile(change.path, {
+        source: "tool",
         patch: change.unifiedDiff
           ? { path: change.path, unifiedDiff: change.unifiedDiff, applied: payload.status === "done" }
           : undefined,
@@ -3493,8 +3615,15 @@ function renderCodexActivityChip(payload) {
         aggregateEntry = recorded;
       }
     }
-  } else if (relPath && payload.status === "done") {
+  } else if (
+    relPath &&
+    payload.status === "done" &&
+    (payload.icon === "file" || payload.patch?.unifiedDiff)
+  ) {
+    // Reads, searches, and shell chips also carry a path. Only an edit
+    // belongs in 修改的文件.
     aggregateEntry = recordRunModifiedFile(relPath, {
+      source: "tool",
       patch: payload.patch,
       statKey: callId,
       adds: payload.adds,
@@ -3539,7 +3668,11 @@ function renderCodexActivityChip(payload) {
   const expand = commandDetail
     ? '<span class="codex-activity-expand" aria-hidden="true">⌄</span>'
     : "";
-  line.innerHTML = `<span class="codex-activity-icon" aria-hidden="true">${codexActivityIconMarkup(payload.icon)}</span><span class="codex-activity-label">${escapeHtml(payload.label || "")}</span>${stats}${expand}`;
+  const stateMark = running ? '<span class="codex-activity-state">运行中</span>' : "";
+  line.innerHTML = `<span class="codex-activity-icon" aria-hidden="true">${codexActivityIconMarkup(payload.icon)}</span>${stateMark}<span class="codex-activity-label">${escapeHtml(payload.label || "")}</span>${stats}${expand}`;
+  if (running && state.stepToolGroupEl?.isConnected && state.stepToolGroupEl.contains(line)) {
+    state.stepToolGroupEl.open = true;
+  }
   if (commandDetail) {
     line.dataset.forgeDetail = commandDetail;
     line.classList.add("clickable", "has-command-detail");
@@ -3596,8 +3729,17 @@ function renderCodexActivityChip(payload) {
       line.classList.add("clickable");
     }
   }
-  if (state.runActivityStats && payload.label) {
-    state.runActivityStats.lastStatus = String(payload.label);
+  if (state.runActivityStats) {
+    const stillRunning = Boolean(
+      state.runActivityBody?.querySelector(
+        ".codex-activity-chip.is-running, .event.tool-event.is-running",
+      ),
+    );
+    if (running) {
+      state.runActivityStats.lastStatus = shortLiveActivityLabel(payload.label);
+    } else if (!stillRunning) {
+      state.runActivityStats.lastStatus = "处理中…";
+    }
     updateRunActivitySummary();
   }
   updateStepToolGroupSummary();
@@ -3869,6 +4011,9 @@ function beginSessionTurn(sessionId, startedAtMs = Date.now()) {
     // turn's intro when the model reuses similar preamble wording.
     state.codexCommentarySeenBySession.delete(sessionId);
     // Each turn owns its own modified-file / generated-image list.
+    // Drop the previous turn's snapshot too, so a diff poll can't attribute
+    // that turn's files to this one before the new checkpoint arrives.
+    state.runCheckpointShaBySession.delete(sessionId);
     state.runPatchesBySession.set(sessionId, new Map());
   }
   state.runConclusionRendered = false;
@@ -3965,6 +4110,9 @@ function shouldHoistNodeIntoRunActivity(node) {
   if (node.classList?.contains("run-activity-stream")) return false;
   if (node.classList?.contains("plan-card")) return false;
   if (node.classList?.contains("user-prompt")) return false;
+  if (node.classList?.contains("persona-status-banner")) return false;
+  if (node.classList?.contains("event") && node.classList.contains("persona-ok")) return false;
+  if (node.classList?.contains("event") && node.classList.contains("persona-fail")) return false;
   if (node.classList?.contains("event") && node.classList.contains("status")) return false;
   if (node.classList?.contains("event") && node.classList.contains("skill-hit")) return false;
   return (
@@ -4811,6 +4959,7 @@ function ensureRunActivity(options = {}) {
   state.currentStepBody = state.runActivityBody;
   startRunActivityTimer();
   updateRunActivitySummary({ live: "处理中…" });
+  updateRunActivityPersonaChip();
   if (sid) recordRunActivityShellEntry(sid, shellEntryId);
   normalizeTimelineTurnOrder();
   hoistOrphanNodesIntoRunActivity();
@@ -5279,25 +5428,15 @@ function finalizeRunActivity(options = {}) {
       contentHost?.classList?.contains("run-activity-stream") ? contentHost : null;
     if (!state.runActivityStats) state.runActivityStats = createRunActivityStats();
 
-    const shouldFold = shouldCollapseRunActivityContent(contentHost);
-    if (shouldFold) {
-      foldLiveRunActivityContent(details);
-      if (!runActivityHasExpandedContent(details)) details.open = false;
-      updateRunActivitySummary({
-        finalized: true,
-        completedAtMs: options.completedAtMs,
-        omitDuration: Boolean(options.omitDuration),
-      });
-    } else {
-      // Short runs stay as ordinary dialog output — drop the empty 已处理 chip.
-      updateRunActivitySummary({
-        finalized: true,
-        completedAtMs: options.completedAtMs,
-        omitDuration: Boolean(options.omitDuration),
-      });
-      unwrapLiveRunActivityContent(details);
-      continue;
-    }
+    // Keep one closed 已处理 per turn. Dropping a short turn's shell made
+    // earlier turns in the same session lose their chip.
+    foldLiveRunActivityContent(details);
+    if (!runActivityHasExpandedContent(details)) details.open = false;
+    updateRunActivitySummary({
+      finalized: true,
+      completedAtMs: options.completedAtMs,
+      omitDuration: Boolean(options.omitDuration),
+    });
   }
 
   stopRunActivityTimer();
@@ -5391,6 +5530,9 @@ function recordRunModifiedFile(path, options = {}) {
     ...existing,
     filePath: relPath,
     title: existing.title || `File · ${relPath}`,
+    // Tool edits stay attributed to the turn even if a later git reconcile
+    // doesn't see them (untracked or ignored). Git-only rows can be replaced.
+    source: existing.source === "tool" ? "tool" : options.source || existing.source || "tool",
     meta: options.meta || existing.meta || (isImageFilePath(relPath) ? "已生成图片" : "已编辑"),
     content: existing.content || "",
     ...(patch ? { patch } : {}),
@@ -5457,6 +5599,7 @@ function clearAllWorkspaceTurnDiffPolls() {
 }
 
 function scheduleWorkspaceTurnDiffPoll(pendingKey) {
+  if (state.replayingPersistedEvents) return;
   if (state.workspaceDiffPollTimers.has(pendingKey)) return;
   // Pin the session at schedule time: by the time a tick fires the user may
   // be viewing another session, and route/live would resolve to that one.
@@ -5507,6 +5650,7 @@ function scheduleWorkspaceTurnDiffPoll(pendingKey) {
 }
 
 function scheduleCodexChipDiffPoll(callId) {
+  if (state.replayingPersistedEvents) return;
   const pollKey = `chip:${callId}`;
   if (state.workspaceDiffPollTimers.has(pollKey)) return;
   const sid = state.eventRouteSessionId || state.liveRunSessionId || "";
@@ -5558,47 +5702,136 @@ function refreshPendingToolLineFromArgs(name, args, callId, talentOverride) {
   if (pending.line?.isConnected) pending.line.textContent = lineText;
   const liveLabel = lineText.replace(/^⏺\s*/, "");
   if (state.runActivityStats) state.runActivityStats.lastStatus = liveLabel;
-  if (path) {
-    recordRunModifiedFile(path, {});
+  if (path && isFileEditRuntimeTool(name)) {
+    recordRunModifiedFile(path, { source: "tool" });
     clearWorkspaceTurnDiffPoll(key);
   }
   updateRunActivitySummary();
   return true;
 }
 
-/** Merge git diff (vs turn checkpoint or HEAD) into runPatches — covers Codex/Cursor/ACP edits. */
+/** Merge this turn's git diff into runPatches — covers Codex/Cursor/ACP edits. */
 async function reconcileRunPatchesFromWorkspace(sessionId) {
+  // Restoring history replays an old checkpoint. Diffing it against the
+  // worktree now would list every file created by later sessions.
+  if (state.replayingPersistedEvents) return;
   const active = getActiveProject();
   const bridge = getBridge();
   if (!active?.cwd || typeof bridge?.getWorkspaceTurnDiffs !== "function") return;
   const baseSha = state.runCheckpointShaBySession.get(sessionId) || "";
+  // No pre-turn snapshot yet. Diffing HEAD would list every dirty file in the
+  // worktree, including changes this session never touched.
+  if (!baseSha) return;
   try {
     const res = await bridge.getWorkspaceTurnDiffs({
       cwd: active.cwd,
-      baseSha: baseSha || undefined,
+      baseSha,
     });
+    if ((state.runCheckpointShaBySession.get(sessionId) || "") !== baseSha) return;
     if (!res?.ok || !Array.isArray(res.files)) return;
     // The await above may resolve after a session switch: pin every write to
     // the requested session so it can't land in another session's loaded map.
-    const patchMap = isRunPatchSessionLoaded(sessionId)
-      ? state.runPatches
-      : state.runPatchesBySession.get(sessionId);
+    const attached = isRunPatchSessionLoaded(sessionId);
+    const patchMap = attached ? state.runPatches : ensureSavedRunPatchMap(sessionId);
+    const seen = new Set();
     for (const file of res.files) {
       if (!file?.path) continue;
       const relPath = normalizeWorkspaceRelPath(active.cwd, file.path);
       if (!relPath) continue;
-      const existing = patchMap?.get(relPath);
+      seen.add(relPath);
+      const existing = patchMap.get(relPath);
       if (existing?.patch?.unifiedDiff && !file.unifiedDiff) continue;
       recordRunModifiedFile(relPath, {
         sessionId: sessionId || undefined,
+        source: "workspace-diff",
+        meta: file.unifiedDiff ? undefined : "已生成",
         patch: file.unifiedDiff
           ? { path: relPath, unifiedDiff: file.unifiedDiff, applied: true }
           : undefined,
       });
     }
+    let pruned = false;
+    for (const [path, entry] of [...patchMap.entries()]) {
+      if (entry?.source === "workspace-diff" && !seen.has(path)) {
+        patchMap.delete(path);
+        pruned = true;
+      }
+    }
+    if (!attached) return;
+    if (pruned || seen.size) {
+      updateRunFilesChangedBar();
+      refreshContextPanelIfOpen();
+      syncVisibleConclusionFiles(sessionId);
+      if (sessionId) saveRunPatchesForSession(sessionId);
+    }
   } catch {
     /* non-git workspace or git unavailable */
   }
+}
+
+function latestRunConclusionElement(mount = getTimelineMount()) {
+  const nodes = mount?.querySelectorAll?.(":scope > .run-conclusion");
+  return nodes?.length ? nodes[nodes.length - 1] : null;
+}
+
+function replaceConclusionFileSections(wrap, displayFiles, patchSource) {
+  const inner = wrap.querySelector(".run-conclusion-inner");
+  if (!inner) return;
+  for (const heading of [...inner.querySelectorAll(":scope > .run-conclusion-heading")]) {
+    const text = heading.textContent || "";
+    if (
+      !text.includes("修改的文件") &&
+      !text.includes("个文件已修改") &&
+      !text.includes("生成的图片")
+    ) {
+      continue;
+    }
+    const next = heading.nextElementSibling;
+    if (
+      next?.classList?.contains("modified-files-list") ||
+      next?.classList?.contains("generated-images-list")
+    ) {
+      next.remove();
+    }
+    heading.remove();
+  }
+  if (!displayFiles.length) return;
+  const quiet = inner.querySelector(":scope > .run-conclusion-heading-quiet");
+  if (quiet) {
+    quiet.classList.remove("run-conclusion-heading-quiet");
+    quiet.prepend(document.createTextNode("结论"));
+  }
+  const filesHtml = buildRunConclusionFilesHtml(displayFiles, patchSource);
+  const imagesHtml = buildRunGeneratedImagesHtml(displayFiles);
+  inner.insertAdjacentHTML(
+    "beforeend",
+    `<div class="run-conclusion-heading">修改的文件</div>
+      <div class="modified-files-list">${filesHtml}</div>
+      ${imagesHtml}`,
+  );
+  hydrateGeneratedImages(wrap);
+}
+
+/** Keep the just-finished conclusion aligned with this turn's patch map. */
+function syncVisibleConclusionFiles(sessionId) {
+  if (!sessionId || !state.runConclusionRendered || !isRunPatchSessionLoaded(sessionId)) return;
+  const files = [...state.runPatches.keys()];
+  const timelineState = getNormalTimelineState(sessionId, false);
+  const entries = timelineState ? ensureTimelineEntries(timelineState) : [];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i].type !== "conclusion") continue;
+    entries[i].files = files;
+    touchTimelineState(sessionId);
+    break;
+  }
+  const wrap = latestRunConclusionElement();
+  if (!wrap) return;
+  const finalText = state.runFinalTextBySession.get(sessionId) || state.runFinalText || "";
+  replaceConclusionFileSections(
+    wrap,
+    mergeConclusionImageFiles(files, finalText),
+    state.runPatches,
+  );
 }
 
 /** Cursor-style strip: clickable modified files while the run is still in progress. */
@@ -6723,10 +6956,102 @@ function renderPlanCard(items, title = "任务清单") {
   if (sid) recordPlanCardEntry(sid, title, items);
 }
 
+/**
+ * Company digital-employee persona injection result — pinned on the root
+ * timeline (never folded into run-activity) so 工作台 clearly shows 是否使用 / 是否成功.
+ */
+function renderPersonaActiveBanner(ev) {
+  const label = ev.label || "数字员工";
+  const loaded = Boolean(ev.loaded);
+  const chars =
+    Number.isFinite(ev.promptChars) && ev.promptChars > 0
+      ? `（${ev.promptChars} 字）`
+      : "";
+  const text = loaded
+    ? `人设状态：已使用 · 成功生效 · ${label}${chars}`
+    : `人设状态：未使用 · 失败 · ${label}${ev.reason ? ` — ${ev.reason}` : ""}`;
+  const cls = loaded ? "persona-ok" : "persona-fail";
+  const detail = {
+    title: loaded ? `✓ 人设已使用并成功 · ${label}` : `✗ 人设未使用 · ${label}`,
+    meta: loaded ? "已写入 system 上下文 · 使用成功" : "使用失败",
+    content: loaded
+      ? ev.preview
+        ? `${ev.preview}${
+            ev.promptChars && ev.promptChars > String(ev.preview).length ? "…" : ""
+          }`
+        : "人才包 system_prompt 已注入本轮，模型按该数字员工身份执行。"
+      : ev.reason || "员工档案缺少 system_prompt，本轮未注入人才包人设。",
+  };
+  state.lastPersonaActive = {
+    loaded,
+    label,
+    promptChars: ev.promptChars || 0,
+    reason: ev.reason || "",
+  };
+  // Pin to root timeline — do not bury inside the collapsible run-activity stream.
+  const prevOverride = state.pushEventMountOverride;
+  const root = getTimelineMount();
+  // Replayed events may arrive after the cached row was restored. Deduplicate
+  // only inside this root's latest turn, never across prompts or sessions.
+  let existing = null;
+  for (const candidate of Array.from(root?.children || []).reverse()) {
+    if (candidate.classList.contains("user-prompt")) break;
+    if (candidate.textContent === text) {
+      existing = candidate;
+      break;
+    }
+  }
+  state.pushEventMountOverride = root || null;
+  try {
+    const line = existing || pushEvent(text, `${cls} persona-status-banner`, detail);
+    if (line?.classList) {
+      line.classList.add(cls, "persona-status-banner");
+      line.dataset.personaLoaded = loaded ? "1" : "0";
+      if (existing?.dataset.timelineNodeId) {
+        updateTimelineEventEntry(getActiveEventSessionId(), existing.dataset.timelineNodeId, {
+          className: `${cls} persona-status-banner`,
+        });
+      }
+    }
+  } finally {
+    state.pushEventMountOverride = prevOverride;
+  }
+  updateRunActivityPersonaChip();
+}
+
+function updateRunActivityPersonaChip() {
+  const details = state.runActivityEl;
+  const persona = state.lastPersonaActive;
+  if (!details || !persona) return;
+  let chip = details.querySelector(".run-activity-persona");
+  if (!chip) {
+    const summary = details.querySelector(".run-activity-summary");
+    if (!summary) return;
+    chip = document.createElement("span");
+    chip.className = "run-activity-persona";
+    summary.appendChild(chip);
+  }
+  chip.classList.toggle("is-ok", persona.loaded);
+  chip.classList.toggle("is-fail", !persona.loaded);
+  chip.textContent = persona.loaded
+    ? `人设✓ ${persona.label}`
+    : `人设✗ ${persona.label || "未注入"}`;
+  chip.title = persona.loaded
+    ? `数字人人设已使用并成功生效${persona.promptChars ? `（${persona.promptChars} 字）` : ""}`
+    : persona.reason || "数字人人设未注入";
+}
+
 function renderIntentPlanCard(ev) {
   const constraints = Array.isArray(ev.constraints) ? ev.constraints : [];
   const uncertainties = Array.isArray(ev.uncertainties) ? ev.uncertainties : [];
+  const persona = state.lastPersonaActive;
+  const personaLine = persona
+    ? persona.loaded
+      ? `人设：已使用并成功 · ${persona.label}${persona.promptChars ? `（${persona.promptChars} 字）` : ""}`
+      : `人设：未使用 · 失败${persona.reason ? ` — ${persona.reason}` : ""}`
+    : "";
   const lines = [
+    personaLine,
     `目标：${ev.summary || "执行用户请求"}`,
     `流程：${formatIntentRunKind(ev.runKind)} · ${ev.source === "model" ? "模型判断" : "规则兜底"}`,
     ev.executionReason ? `原因：${ev.executionReason}` : "",
@@ -7375,10 +7700,13 @@ function renderRunConclusion(finalText, explicitSessionId, options = {}) {
   flushStreamText();
   const streamedText = String(state.streamTextRaw || "").trim();
   const finalCandidate = String(finalText || state.runFinalText || "").trim();
-  finishStreamTextSegment({
-    skipPersist: Boolean(finalCandidate && isDuplicateConclusionCopy(streamedText, finalCandidate)),
-  });
   const hadToolSteps = (state.runActivityStats?.tools ?? 0) > 0;
+  finishStreamTextSegment({
+    skipPersist: Boolean(
+      (finalCandidate && isDuplicateConclusionCopy(streamedText, finalCandidate)) ||
+        (!hadToolSteps && streamedText),
+    ),
+  });
   const concludingActivity = resolveTurnRunActivityForConclusion(getTimelineMount());
   let text = finalCandidate;
   // Intermediate step narration is persisted inside 已处理 at each segment boundary.
@@ -7418,31 +7746,6 @@ function renderRunConclusion(finalText, explicitSessionId, options = {}) {
   if (sid) {
     const patches = state.runPatchesBySession.get(sid);
     if (patches?.size) state.runPatches = new Map(patches);
-  }
-
-  if (!state.runPatches.size && hadToolSteps) {
-    void reconcileRunPatchesFromWorkspace(sid).then(() => {
-      // Session-pinned read: after the await the global map may belong to a
-      // different session — never render or snapshot someone else's files.
-      const attached = isRunPatchSessionLoaded(sid);
-      const patchMap = attached
-        ? state.runPatches
-        : state.runPatchesBySession.get(sid);
-      if (!patchMap?.size) return;
-      const updatedFiles = [...patchMap.keys()];
-      const wrap = container?.querySelector(".run-conclusion");
-      if (!wrap) return;
-      const existingFilesSection = wrap.querySelector(".modified-files-list");
-      if (existingFilesSection) return;
-      const inner = wrap.querySelector(".run-conclusion-inner");
-      if (!inner) return;
-      const filesHtml = buildRunConclusionFilesHtml(updatedFiles, patchMap);
-      if (!filesHtml) return;
-      inner.insertAdjacentHTML("beforeend",
-        `<div class="run-conclusion-heading">${updatedFiles.length} 个文件已修改</div>
-         <div class="modified-files-list">${filesHtml}</div>`);
-      if (sid && attached) saveRunPatchesForSession(sid);
-    });
   }
 
   const files = [...state.runPatches.keys()];
@@ -9367,6 +9670,8 @@ function showChatEmpty(show) {
   const panel = $("centerPanel");
   if (panel) panel.classList.toggle("chat-empty-mode", show && state.activeNav === "chat");
   if (state.activeNav !== "chat") return;
+  const title = $("centerTitle");
+  if (title) title.textContent = show ? "新对话" : "对话与运行事件";
   $("chatEmpty").classList.toggle("hidden", !show);
   $("timeline").classList.toggle("hidden", show);
   if (show) {
@@ -10127,15 +10432,39 @@ function scheduleAcpPrewarm() {
   }, 400);
 }
 
+function selectedWarmRuntime(prefs) {
+  const provider = $("runtimeSelect")?.value || prefs.defaultProvider || "forge";
+  if (provider === "cursor") {
+    return {
+      provider,
+      model: prefs.cursor?.model || state.selectedCursorModel || "",
+      mode: prefs.cursor?.mode || state.selectedCursorMode || "default",
+    };
+  }
+  if (provider === "codex") {
+    return {
+      provider,
+      model: prefs.codex?.model || state.selectedCodexModel || "",
+      mode: "",
+    };
+  }
+  if (provider === "claude-code") {
+    return {
+      provider,
+      model: prefs.claude?.model || state.selectedClaudeModel || "",
+      mode: "",
+    };
+  }
+  return null;
+}
+
 async function runAcpPrewarm() {
   const prefs = loadRuntimePrefs();
-  const provider =
-    $("runtimeSelect")?.value || prefs.defaultProvider || "forge";
-  if (provider !== "cursor") return;
+  const selected = selectedWarmRuntime(prefs);
+  if (!selected) return;
+  const { provider, model, mode } = selected;
   const cwd = getActiveProject()?.cwd;
   if (!cwd) return;
-  const model = prefs.cursor?.model || state.selectedCursorModel || "";
-  const mode = prefs.cursor?.mode || state.selectedCursorMode || "default";
   const key = `${provider}:${cwd}:${model}:${mode}`;
   if (state.acpPrewarmInFlight && state.acpPrewarmKey === key) return;
   if (state.acpPrewarmKey === key) return;
@@ -10145,7 +10474,7 @@ async function runAcpPrewarm() {
   state.acpPrewarmKey = key;
   try {
     await bridge.prewarmAcpSession({
-      provider: "cursor",
+      provider,
       cwd,
       model: model || undefined,
       mode: mode || undefined,
@@ -10181,12 +10510,10 @@ function applyRuntimePrefsToComposer() {
   state.selectedCodexModel = prefs.codex?.model || state.selectedCodexModel || "";
   state.selectedClaudeModel = prefs.claude?.model || state.selectedClaudeModel || "sonnet";
   renderRuntimeModelSelect();
-  if (prefs.defaultProvider === "cursor") {
-    void loadCursorModelsForActiveProject();
-    scheduleAcpPrewarm();
-  }
+  if (prefs.defaultProvider === "cursor") void loadCursorModelsForActiveProject();
   if (prefs.defaultProvider === "codex") void loadCodexModelsForActiveProject();
   if (prefs.defaultProvider === "claude-code") void loadClaudeModelsForActiveProject();
+  if (selectedWarmRuntime(prefs)) scheduleAcpPrewarm();
 }
 
 /** Reflect the current session/run runtime in the composer bar without saving it as the user default. */
@@ -10207,12 +10534,10 @@ function applyComposerRuntime(provider, model) {
     if (next === "claude-code") state.selectedClaudeModel = modelId;
   }
   renderRuntimeModelSelect();
-  if (next === "cursor") {
-    void loadCursorModelsForActiveProject();
-    scheduleAcpPrewarm();
-  }
+  if (next === "cursor") void loadCursorModelsForActiveProject();
   if (next === "codex") void loadCodexModelsForActiveProject();
   if (next === "claude-code") void loadClaudeModelsForActiveProject();
+  if (next === "cursor" || next === "codex" || next === "claude-code") scheduleAcpPrewarm();
 }
 
 function syncComposerToSessionRuntime(sessionId) {
@@ -10970,7 +11295,11 @@ function deepFindPathInObject(value, depth = 0) {
 function recordGeneratedImagePathsFromText(text) {
   for (const path of extractImagePathsFromText(text)) {
     if (!isPlausibleWorkspaceImagePath(path)) continue;
-    recordRunModifiedFile(path, { meta: "已生成图片" });
+    // Read/search output can list images belonging to any session. Text may
+    // label an existing edit, but must never create or strengthen ownership.
+    const existing = state.runPatches.get(path);
+    if (!existing) continue;
+    recordRunModifiedFile(path, { meta: "已生成图片", source: existing.source });
   }
 }
 
@@ -11679,7 +12008,11 @@ function updateStepToolGroupSummary(details = state.stepToolGroupEl, count = sta
   const n =
     count ||
     details.querySelectorAll(".step-tool-group-body .tool-event, .step-tool-group-body .codex-activity-chip").length;
-  summary.textContent = n > 0 ? `工具操作 · ${n}` : "工具操作";
+  const running = Boolean(
+    details.querySelector(".tool-event.is-running, .codex-activity-chip.is-running"),
+  );
+  const base = n > 0 ? `工具操作 · ${n}` : "工具操作";
+  summary.textContent = running ? `${base} · 运行中` : base;
 }
 
 function beginStepToolGroup() {
@@ -12417,6 +12750,8 @@ function renderPersistedSessionEvents(sessionId, records, daemonStatus, options 
   const previousLive = state.liveRunSessionId;
   state.eventRouteSessionId = sessionId;
   state.liveRunSessionId = sessionId;
+  state.replayingPersistedEvents = true;
+  let keepCheckpoint = false;
   try {
     for (const record of persistedRecords) {
       const event = record.event;
@@ -12454,15 +12789,18 @@ function renderPersistedSessionEvents(sessionId, records, daemonStatus, options 
     } else {
       clearStructuredTimelineForRestore(sessionId);
     }
-    sessionRuns.markSessionRunning(
-      sessionId,
-      window.ForgeSessionRunUi.reconciledPersistedSessionIsRunning(
-        records,
-        daemonStatus,
-      ),
+    keepCheckpoint = window.ForgeSessionRunUi.reconciledPersistedSessionIsRunning(
+      records,
+      daemonStatus,
     );
+    sessionRuns.markSessionRunning(sessionId, keepCheckpoint);
     return true;
   } finally {
+    state.replayingPersistedEvents = false;
+    if (!keepCheckpoint) {
+      clearAllWorkspaceTurnDiffPolls();
+      state.runCheckpointShaBySession.delete(sessionId);
+    }
     state.eventRouteSessionId = previousRoute;
     state.liveRunSessionId = previousLive;
   }
@@ -12646,7 +12984,21 @@ async function restoreSessionTimeline(sessionId, switchGen, options = {}) {
   }
 }
 
+/** Setup notices are idempotent within one turn and one agent's container. */
+function findRepeatedSetupEvent(container, text, serializedDetail = "") {
+  if (text !== "模型理解" && !/^Skill 目录 \d+ 个|^预加载 Skill: /.test(text)) return null;
+  for (const line of Array.from(container?.children || []).reverse()) {
+    if (line.classList.contains("user-prompt")) break;
+    if (line.textContent === text && (line.dataset.forgeDetail || "") === serializedDetail) {
+      return line;
+    }
+  }
+  return null;
+}
+
 function pushEventIn(container, text, cls = "", detail) {
+  const existing = findRepeatedSetupEvent(container, text, detail ? serializeEventDetail(detail) : "");
+  if (existing) return existing;
   const line = document.createElement("div");
   line.className = `event ${cls}`.trim();
   line.textContent = text;
@@ -13137,6 +13489,13 @@ function renderForgeProfileSelect(cfg) {
   sel.value = profiles.includes(current) ? current : profiles[0] ?? "";
 }
 
+function listedModelId(models, selected) {
+  const ids = models.map((m) => String(m.model || m.id || "")).filter(Boolean);
+  if (selected && ids.includes(selected)) return selected;
+  const fallback = models.find((m) => m.isDefault) || models[0];
+  return fallback ? String(fallback.model || fallback.id || "") : "";
+}
+
 function renderCodexModelSelect() {
   const sel = $("profileSelect");
   if (!sel) return;
@@ -13164,14 +13523,13 @@ function renderCodexModelSelect() {
     if (m.description) opt.title = m.description;
     sel.appendChild(opt);
   });
-  const preferred =
-    state.selectedCodexModel ||
-    state.codexModels.find((m) => m.isDefault)?.model ||
-    state.codexModels[0]?.model ||
-    state.codexModels[0]?.id ||
-    "";
-  sel.value = preferred;
+  const preferred = listedModelId(state.codexModels, state.selectedCodexModel);
+  if ([...sel.options].some((opt) => opt.value === preferred)) sel.value = preferred;
   state.selectedCodexModel = sel.value;
+  const saved = loadRuntimePrefs().codex?.model || "";
+  if (saved && saved !== state.selectedCodexModel && !state.codexModels.some((m) => (m.model || m.id) === saved)) {
+    saveRuntimePrefs({ codex: { model: state.selectedCodexModel } });
+  }
 }
 
 function renderClaudeModelSelect() {
@@ -13221,14 +13579,13 @@ function renderCursorModelSelect() {
     opt.textContent = m.displayName || m.model || m.id;
     sel.appendChild(opt);
   });
-  const preferred =
-    state.selectedCursorModel ||
-    state.cursorModels.find((m) => m.isDefault)?.model ||
-    state.cursorModels[0]?.model ||
-    state.cursorModels[0]?.id ||
-    "";
-  sel.value = preferred;
+  const preferred = listedModelId(state.cursorModels, state.selectedCursorModel);
+  if ([...sel.options].some((opt) => opt.value === preferred)) sel.value = preferred;
   state.selectedCursorModel = sel.value;
+  const saved = loadRuntimePrefs().cursor?.model || "";
+  if (saved && saved !== state.selectedCursorModel && !state.cursorModels.some((m) => (m.model || m.id) === saved)) {
+    saveRuntimePrefs({ cursor: { model: state.selectedCursorModel } });
+  }
 }
 
 function renderCursorModeSelect() {
@@ -15836,28 +16193,78 @@ function bindPluginCardActions(root) {
   });
 }
 
-function renderMcpListItem(m) {
-  const args = (m.args ?? []).join(" ");
-  const pluginProvided = String(m.source || "").startsWith("plugin:");
-  const isExample = m.source === "mcp.json.example";
-  const status = pluginProvided
-    ? "由已启用插件自动加载，无需写入 mcp.servers"
-    : isExample
-      ? "配置示例，仅供参考，不会自动加载"
-      : m.managedInConfig
-        ? "已在当前配置启用/管理"
-        : "已发现，但尚未启用";
-  return `<div class="event">
-    <strong>${escapeHtml(m.name)}</strong><br/>
-    <span class="tiny">${escapeHtml(m.command)} ${escapeHtml(args)}</span><br/>
-    <span class="tiny">来源：${escapeHtml(m.source)}</span><br/>
-    <span class="tiny">${escapeHtml(status)} · ${m.enabled ? "启用" : "禁用"}</span>
+function connectorKindLabel(kind) {
+  if (kind === "mcp-local") return "本地 MCP";
+  if (kind === "mcp-remote") return "远程 MCP";
+  if (kind === "api-key") return "API 密钥";
+  if (kind === "browser") return "浏览器登录";
+  if (kind === "cli") return "命令行";
+  return "仅技能";
+}
+
+function renderConnectorCard(entry) {
+  const connected = entry.health === "connected";
+  return `<button type="button" class="connector-card" data-connector-id="${escapeHtml(entry.id)}">
+    <span class="connector-card-mark ${connected ? "is-connected" : ""}" aria-hidden="true">${escapeHtml(entry.name.slice(0, 2).toUpperCase())}</span>
+    <span class="connector-card-body">
+      <span class="connector-card-name">${escapeHtml(entry.name)}${connected ? '<span class="connector-status is-connected">已连接</span>' : entry.health === "needs_auth" ? '<span class="connector-status">待授权</span>' : ""}</span>
+      <span class="connector-card-desc">${escapeHtml(entry.description)}</span>
+      <span class="tiny">${escapeHtml(connectorKindLabel(entry.kind))} · ${escapeHtml(entry.source === "plugin" ? "插件自动加载" : entry.source === "example" ? "配置示例" : "手动配置")}</span>
+    </span>
+  </button>`;
+}
+
+function renderConnectorChoices(query, catalog) {
+  const found = ForgeConnectorCatalog.connectionChoices(query, catalog);
+  const rows = found.choices
+    .map(
+      (choice, index) => `<button type="button" class="connector-choice" data-connector-choice="${escapeHtml(choice.id)}" data-connector-target="${escapeHtml(choice.connectorId || "")}">
+        <span class="connector-choice-key">${String.fromCharCode(65 + index)}</span>
+        <span>${escapeHtml(choice.label)}</span>
+      </button>`,
+    )
+    .join("");
+  return `<section class="connector-choice-card">
+    <h3>选择接入方式 · ${escapeHtml(query || "这个应用")}</h3>
+    ${rows}
+    <p class="tiny">密钥不会写入对话。浏览器登录需由你在官网完成授权。</p>
+  </section>`;
+}
+
+function renderConnectorDetail(entry, catalog) {
+  const connected = entry.health === "connected";
+  const examples = (entry.examples || [])
+    .map(
+      (line) => `<button type="button" class="connector-example" data-connector-example="${escapeHtml(line)}">${escapeHtml(line)}</button>`,
+    )
+    .join("");
+  const command = [entry.command, ...(entry.args || [])].filter(Boolean).join(" ");
+  return `<div class="connector-page connector-detail-page">
+    <button type="button" class="btn secondary btn-sm connector-back" data-connector-back>← 返回连接器</button>
+    <article class="connector-sheet">
+      <div class="connector-detail-head">
+        <span class="connector-card-mark" aria-hidden="true">${escapeHtml(entry.name.slice(0, 2).toUpperCase())}</span>
+        <div class="connector-detail-info">
+          <h2>${escapeHtml(entry.name)}</h2>
+          <p>${escapeHtml(entry.description)}</p>
+        </div>
+        <button type="button" class="btn primary" data-connector-connect="${escapeHtml(entry.id)}" ${connected ? "disabled" : ""}>${connected ? "已连接" : "连接"}</button>
+      </div>
+      <div class="connector-detail-meta">
+        <span class="connector-status ${connected ? "is-connected" : ""}">${connected ? "已连接" : entry.health === "needs_auth" ? "待授权" : "未连接"}</span>
+        <span>${escapeHtml(connectorKindLabel(entry.kind))}</span>
+        ${entry.statusNote ? `<p>${escapeHtml(entry.statusNote)}</p>` : ""}
+        ${command ? `<code>${escapeHtml(command)}</code>` : ""}
+      </div>
+      ${examples ? `<section class="connector-detail-section"><h3>试试这样用</h3><div class="connector-examples">${examples}</div></section>` : ""}
+      ${connected ? "" : `<details class="connector-alternatives"><summary>其他接入方式</summary>${renderConnectorChoices(entry.name, catalog)}</details>`}
+    </article>
   </div>`;
 }
 
 async function renderMcpView() {
   const root = $("resourceView");
-  root.innerHTML = `<div class="event status">正在加载 MCP 列表…</div>`;
+  root.innerHTML = `<div class="event status">正在加载连接器…</div>`;
   const cwd = getActiveProject()?.cwd;
   if (!cwd) {
     root.innerHTML = `<div class="event warn">请先为项目设置有效工作目录。</div>`;
@@ -15867,37 +16274,195 @@ async function renderMcpView() {
     const res = await requireBridge().listMcp(cwd);
     const installed = Array.isArray(res?.installed) ? res.installed : [];
     const configured = Array.isArray(res?.configured) ? res.configured : [];
-    const pluginProvided = installed.filter((m) =>
-      String(m.source || "").startsWith("plugin:"),
-    );
-    const examples = installed.filter(
-      (m) => !String(m.source || "").startsWith("plugin:"),
-    );
-    root.innerHTML = `
-      <div class="event"><strong>插件自动加载</strong></div>
-      ${
-        pluginProvided.length
-          ? pluginProvided.map(renderMcpListItem).join("")
-          : `<div class="event">当前没有由已启用插件提供的 MCP。</div>`
+    const catalog = ForgeConnectorCatalog.buildConnectorCatalog({ installed, configured });
+    try {
+      const auth = await requireBridge().mcpAuthStatus();
+      const names = new Set(Array.isArray(auth?.names) ? auth.names : []);
+      for (const entry of catalog) {
+        if (entry.kind === "mcp-remote" && names.has(entry.name)) {
+          entry.health = "connected";
+          entry.statusNote = "已用账号授权";
+        }
       }
-      ${
-        examples.length
-          ? `<div class="event"><strong>配置示例</strong></div>${examples.map(renderMcpListItem).join("")}`
-          : ""
+    } catch {
+      /* Older preload builds only list the catalog. */
+    }
+    state.connectorCatalog = catalog;
+    const pluginProvided = catalog.filter((entry) => entry.source === "plugin");
+    const manual = catalog.filter((entry) => entry.source === "manual");
+    if (state.connectorCustomOpen) {
+      if (!state.connectorMcpDraft) {
+        state.connectorMcpDraft = await requireBridge().getMcpConfig();
       }
-      <div class="event"><strong>当前手动配置</strong></div>
-      ${
-        configured.length
-          ? configured.map(renderMcpListItem).join("")
-          : pluginProvided.length
-            ? `<div class="event status">当前没有额外手动配置；上方插件 MCP 已自动生效，无需重复写入设置 JSON。</div>`
-            : `<div class="event">当前没有手动配置 MCP 服务器。</div>`
-      }
-    `;
+      root.innerHTML = renderConnectorCustomEditor(state.connectorMcpDraft);
+      bindConnectorPage(root, catalog);
+      return;
+    }
+    const selected = catalog.find((entry) => entry.id === state.connectorDetailId);
+    if (selected) {
+      root.innerHTML = renderConnectorDetail(selected, catalog);
+    } else {
+      root.innerHTML = `<div class="connector-page">
+        <div class="connector-page-head">
+          <div>
+            <h2>连接器</h2>
+            <p class="tiny">连接常用应用，让 AI 在对话中使用你的工具和资料。已启用插件提供的连接器会自动显示。</p>
+          </div>
+          <button type="button" class="btn secondary" data-connector-custom>＋ 自定义连接器</button>
+        </div>
+        <div class="connector-grid">
+          ${catalog.length ? catalog.map(renderConnectorCard).join("") : `<div class="event">当前没有连接器。</div>`}
+        </div>
+        ${
+          manual.length
+            ? ""
+            : pluginProvided.length
+              ? `<div class="event status">当前没有额外手动配置；上方插件 MCP 已自动生效，无需重复写入设置 JSON。</div>`
+              : `<div class="event">当前没有手动配置 MCP 服务器。</div>`
+        }
+        <details class="connector-add">
+          <summary>没有找到需要的应用？<span>查看其他接入方式</span></summary>
+          ${renderConnectorChoices(state.connectorChoiceQuery || "新应用", catalog)}
+        </details>
+      </div>`;
+    }
+    bindConnectorPage(root, catalog);
   } catch (e) {
-    root.innerHTML = `<div class="event err">加载 MCP 失败: ${escapeHtml(String(e))}</div>
+    root.innerHTML = `<div class="event err">加载连接器失败: ${escapeHtml(String(e))}</div>
       <button type="button" class="btn secondary resource-retry-btn" data-retry="mcp">重试</button>`;
     bindResourceRetry(root);
+  }
+}
+
+function renderConnectorCustomEditor(config) {
+  const path = config?.path || "";
+  const text = config?.text || "{\n  \"servers\": []\n}\n";
+  return `<div class="connector-page">
+    <div class="connector-editor-head">
+      <button type="button" class="btn secondary btn-sm" data-connector-custom-back>返回</button>
+      <div>
+        <h2>MCP 服务管理</h2>
+        <p class="tiny">安装 MCP 服务，为 AI 扩展更多工具能力。本地服务写 command，远程服务写 url，例如 https://klingai.com/mcp。插件自动加载的不写在这里。</p>
+      </div>
+    </div>
+    <p class="tiny">配置文件路径：${escapeHtml(path)}</p>
+    <textarea id="connectorMcpEditor" class="connector-mcp-editor" spellcheck="false">${escapeHtml(text)}</textarea>
+    <p class="event err hidden" data-connector-custom-error></p>
+    <div class="connector-editor-actions">
+      <button type="button" class="btn secondary" data-connector-custom-back>取消</button>
+      <button type="button" class="btn primary" data-connector-custom-save>保存</button>
+    </div>
+  </div>`;
+}
+
+function bindConnectorPage(root, catalog) {
+  root.querySelectorAll("[data-connector-id]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.connectorDetailId = btn.getAttribute("data-connector-id") || "";
+      void renderMcpView();
+    });
+  });
+  root.querySelector("[data-connector-back]")?.addEventListener("click", () => {
+    state.connectorDetailId = "";
+    void renderMcpView();
+  });
+  root.querySelector("[data-connector-custom]")?.addEventListener("click", () => {
+    state.connectorDetailId = "";
+    state.connectorCustomOpen = true;
+    state.connectorMcpDraft = null;
+    void renderMcpView();
+  });
+  root.querySelectorAll("[data-connector-custom-back]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.connectorCustomOpen = false;
+      state.connectorMcpDraft = null;
+      void renderMcpView();
+    });
+  });
+  root.querySelector("[data-connector-custom-save]")?.addEventListener("click", () => {
+    void saveConnectorCustomConfig(root);
+  });
+  root.querySelectorAll("[data-connector-example]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const text = btn.getAttribute("data-connector-example") || "";
+      const input = $("messageInput");
+      if (input && text) input.value = text;
+      setNav("chat");
+      input?.focus();
+    });
+  });
+  root.querySelectorAll("[data-connector-connect]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-connector-connect") || "";
+      const entry = catalog.find((item) => item.id === id);
+      if (!entry) return;
+      if (entry.url) {
+        void connectRemoteConnector(entry);
+        return;
+      }
+      if (entry.health === "connected") {
+        notifyUser(`连接器 ${entry.name} 已连接`, "done");
+        return;
+      }
+      if (entry.source === "example") {
+        notifyUser("这是配置示例，不会自动加载。", "warn");
+        return;
+      }
+      notifyUser(`连接 ${entry.name} 需要在对方页面完成授权。密钥不会写入对话。`, "warn");
+    });
+  });
+  root.querySelectorAll("[data-connector-choice]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const choice = btn.getAttribute("data-connector-choice");
+      const target = btn.getAttribute("data-connector-target") || "";
+      if (choice === "existing" && target) {
+        state.connectorDetailId = target;
+        void renderMcpView();
+        return;
+      }
+      if (choice === "api-key") {
+        notifyUser("API 密钥只作为凭证引用保存，不会出现在对话里。远程授权还没接到这个按钮上。", "warn");
+        return;
+      }
+      notifyUser("浏览器登录要在官网由你完成一次授权，完成前不会标成已连接。", "warn");
+    });
+  });
+}
+
+async function connectRemoteConnector(entry) {
+  try {
+    notifyUser(`正在打开 ${entry.name} 的授权页面`, "info");
+    await requireBridge().connectMcp({ name: entry.name, url: entry.url });
+    notifyUser(`连接器 ${entry.name} 已连接`, "done");
+    state.connectorDetailId = "";
+    void renderMcpView();
+  } catch (err) {
+    const message = String(err?.message || err).replace(/^Error:\s*/, "").slice(0, 180);
+    notifyUser(message, "err");
+  }
+}
+
+async function saveConnectorCustomConfig(root) {
+  const editor = root.querySelector("#connectorMcpEditor");
+  const error = root.querySelector("[data-connector-custom-error]");
+  const text = editor?.value || "";
+  if (error) {
+    error.textContent = "";
+    error.classList.add("hidden");
+  }
+  try {
+    const saved = await requireBridge().saveMcpConfig({ text });
+    const count = Array.isArray(saved?.names) ? saved.names.length : 0;
+    notifyUser(count ? `已保存 ${count} 个自定义连接器` : "已清空自定义连接器", "done");
+    state.connectorCustomOpen = false;
+    state.connectorMcpDraft = null;
+    void renderMcpView();
+  } catch (err) {
+    const message = String(err?.message || err).replace(/^Error:\s*/, "").slice(0, 240);
+    if (error) {
+      error.textContent = message;
+      error.classList.remove("hidden");
+    }
   }
 }
 
@@ -16951,14 +17516,25 @@ function renderAutomationRunList(runs, automation) {
 }
 
 function renderAutomationCardDetail(automation, runs) {
+  const cron = automation?.trigger?.type === "cron" ? automation.trigger.cron : "";
+  const timezone =
+    automation?.trigger?.type === "cron"
+      ? automation.trigger.timezone || "Asia/Shanghai"
+      : "Asia/Shanghai";
   return `<div class="automation-card-detail">
     <div class="automation-detail-grid">
       <div class="automation-detail-block">
         <span class="automation-detail-label">提示词</span>
-        <pre class="automation-detail-prompt">${escapeHtml(automation.prompt || "")}</pre>
+        <textarea class="automation-prompt-input modal-input" data-automation-id="${escapeHtml(automation.id)}" rows="8">${escapeHtml(automation.prompt || "")}</textarea>
       </div>
       <div class="automation-detail-meta">
-        <div><span class="automation-detail-label">触发</span><code>${escapeHtml(formatAutomationTrigger(automation))}</code></div>
+        <div>
+          <span class="automation-detail-label">触发</span>
+          <div class="automation-trigger-edit">
+            <input type="text" class="automation-cron-input modal-input" data-automation-id="${escapeHtml(automation.id)}" value="${escapeHtml(cron)}" placeholder="Cron，留空=仅手动" />
+            <input type="text" class="automation-timezone-input modal-input" data-automation-id="${escapeHtml(automation.id)}" value="${escapeHtml(timezone)}" placeholder="时区" />
+          </div>
+        </div>
         <div><span class="automation-detail-label">目录</span><code>${escapeHtml(automation.cwd || "")}</code></div>
         <div>
           <span class="automation-detail-label">Runtime</span>
@@ -17046,6 +17622,44 @@ function bindAutomationSessionLinks(root) {
   });
 }
 
+async function saveAutomationPrompt(id, prompt, options = {}) {
+  await requireBridge().updateAutomation({
+    id,
+    patch: { prompt, ...(options.name !== undefined ? { name: options.name } : {}) },
+  });
+}
+
+function promptPatchName(auto, previousPrompt, nextPrompt) {
+  const name = String(auto?.name || "");
+  if (!name || !nextPrompt || name === nextPrompt) return undefined;
+  if (name === previousPrompt) return nextPrompt;
+  if (nextPrompt.startsWith(name)) return nextPrompt;
+  return undefined;
+}
+
+async function flushAutomationCardEdits(id, auto, root) {
+  if (!id) return;
+  const promptEl = root?.querySelector(
+    `.automation-prompt-input[data-automation-id="${cssEscape(id)}"]`,
+  );
+  const prompt = promptEl ? promptEl.value : auto?.prompt || "";
+  const previousPrompt = auto?.prompt || "";
+  const name = promptPatchName(auto, previousPrompt, prompt);
+  if (prompt === previousPrompt && !name) return;
+  await saveAutomationPrompt(id, prompt, { name });
+  if (auto) {
+    auto.prompt = prompt;
+    if (name) auto.name = name;
+  }
+}
+
+async function saveAutomationSchedule(id, cron, timezone) {
+  await requireBridge().updateAutomation({
+    id,
+    patch: { cron: String(cron || "").trim(), timezone: String(timezone || "").trim() || "Asia/Shanghai" },
+  });
+}
+
 function bindAutomationsView(root, automations, lastRunById) {
   root.querySelector("#automationOpenPermissionsBtn")?.addEventListener("click", () => {
     openSettingsTab("permissions");
@@ -17076,7 +17690,7 @@ function bindAutomationsView(root, automations, lastRunById) {
   });
   root.querySelectorAll(".automation-card-main").forEach((row) => {
     row.addEventListener("click", async (e) => {
-      if (e.target.closest("button, input, label, select, .automation-card-actions")) return;
+      if (e.target.closest("button, input, label, select, textarea, .automation-card-actions")) return;
       const id = row.getAttribute("data-automation-id");
       if (!id) return;
       state.automationExpandedId =
@@ -17144,6 +17758,68 @@ function bindAutomationsView(root, automations, lastRunById) {
     });
   });
 
+  root.querySelectorAll(".automation-prompt-input").forEach((input) => {
+    const id = input.getAttribute("data-automation-id");
+    const auto = automations.find((a) => a.id === id);
+    input.addEventListener("click", (e) => e.stopPropagation());
+    input.addEventListener("blur", async () => {
+      if (!id) return;
+      const prompt = input.value;
+      const previousPrompt = auto?.prompt || "";
+      if (prompt === previousPrompt) return;
+      try {
+        const name = promptPatchName(auto, previousPrompt, prompt);
+        await saveAutomationPrompt(id, prompt, { name });
+        if (auto) {
+          auto.prompt = prompt;
+          if (name) auto.name = name;
+        }
+        notifyUser("已更新提示词", "done");
+        if (name) {
+          const title = root.querySelector(
+            `.automation-card[data-automation-id="${cssEscape(id)}"] .automation-card-title-row strong`,
+          );
+          if (title) title.textContent = name;
+        }
+      } catch (err) {
+        input.value = previousPrompt;
+        notifyUser(`更新提示词失败: ${String(err)}`, "err");
+      }
+    });
+  });
+
+  const bindScheduleSave = (input) => {
+    const id = input.getAttribute("data-automation-id");
+    const auto = automations.find((a) => a.id === id);
+    input.addEventListener("click", (e) => e.stopPropagation());
+    input.addEventListener("blur", async () => {
+      if (!id) return;
+      const cronInput = root.querySelector(
+        `.automation-cron-input[data-automation-id="${cssEscape(id)}"]`,
+      );
+      const tzInput = root.querySelector(
+        `.automation-timezone-input[data-automation-id="${cssEscape(id)}"]`,
+      );
+      const cron = cronInput?.value?.trim() || "";
+      const timezone = tzInput?.value?.trim() || "Asia/Shanghai";
+      const prevCron = auto?.trigger?.type === "cron" ? auto.trigger.cron : "";
+      const prevTz =
+        auto?.trigger?.type === "cron" ? auto.trigger.timezone || "Asia/Shanghai" : "Asia/Shanghai";
+      if (cron === prevCron && (cron ? timezone === prevTz : true)) return;
+      try {
+        await saveAutomationSchedule(id, cron, timezone);
+        notifyUser(cron ? `已更新触发: ${cron}` : "已改为仅手动触发", "done");
+        await renderAutomationsView();
+      } catch (err) {
+        if (cronInput) cronInput.value = prevCron;
+        if (tzInput) tzInput.value = prevTz;
+        notifyUser(`更新触发失败: ${String(err)}`, "err");
+      }
+    });
+  };
+  root.querySelectorAll(".automation-cron-input").forEach(bindScheduleSave);
+  root.querySelectorAll(".automation-timezone-input").forEach(bindScheduleSave);
+
   root.querySelectorAll(".automation-toggle").forEach((input) => {
     input.addEventListener("change", async () => {
       const id = input.getAttribute("data-automation-id");
@@ -17180,6 +17856,7 @@ function bindAutomationsView(root, automations, lastRunById) {
       if (auto?.runtime) applyComposerRuntime(auto.runtime, auto.model);
       btn.disabled = true;
       try {
+        await flushAutomationCardEdits(id, auto, root);
         const res = await requireBridge().runAutomation({
           id,
           trigger: "manual",
@@ -19190,6 +19867,8 @@ function bindActions() {
   async function switchSelectedProfile() {
     if ($("profileSelect")?.dataset.runtime === "codex") {
       state.selectedCodexModel = $("profileSelect")?.value || "";
+      state.acpPrewarmKey = "";
+      scheduleAcpPrewarm();
       notifyUser(
         state.selectedCodexModel
           ? `Codex 模型: ${state.selectedCodexModel}`
@@ -19200,6 +19879,8 @@ function bindActions() {
     }
     if ($("profileSelect")?.dataset.runtime === "claude-code") {
       state.selectedClaudeModel = $("profileSelect")?.value || "sonnet";
+      state.acpPrewarmKey = "";
+      scheduleAcpPrewarm();
       notifyUser(`Claude Code 模型: ${state.selectedClaudeModel}`, "done");
       return;
     }
@@ -19241,8 +19922,9 @@ function bindActions() {
     saveRuntimePrefs({ defaultProvider: runtime });
     renderRuntimeModelSelect();
     if (runtime === "codex") void loadCodexModelsForActiveProject();
-    if (runtime === "cursor") {
-      void loadCursorModelsForActiveProject();
+    if (runtime === "claude-code") void loadClaudeModelsForActiveProject();
+    if (runtime === "cursor") void loadCursorModelsForActiveProject();
+    if (runtime === "cursor" || runtime === "codex" || runtime === "claude-code") {
       scheduleAcpPrewarm();
     }
     notifyUser(
@@ -19897,6 +20579,7 @@ function handleForgeAgentEvent(ev) {
 
     if (ev.type === "session_start") {
       rememberSessionCwd(ev.sessionId, ev.cwd);
+      if (ev.sessionId) state.runCheckpointShaBySession.delete(ev.sessionId);
       if (ev.runId) state.runIdBySession.set(ev.sessionId, ev.runId);
       state.planCardTitle = "任务清单";
       state.dispatchPlanLocked = false;
@@ -19935,6 +20618,7 @@ function handleForgeAgentEvent(ev) {
           state.runConclusionBySession.delete(ev.sessionId);
           state.conclusionDomRenderedThisTurn.delete(ev.sessionId);
           state.runPatches.clear();
+          state.runCheckpointShaBySession.delete(ev.sessionId);
           state.runPatchesBySession.set(ev.sessionId, new Map());
           resetRunActivityState();
           renderUserPromptOnce(ev.preview);
@@ -20041,6 +20725,11 @@ function handleLiveAgentEventBody(ev, opts = {}) {
           "status",
         );
       }
+      return;
+    }
+    if (ev.type === "persona_active") {
+      finishStreamTextSegment();
+      renderPersonaActiveBanner(ev);
       return;
     }
     if (ev.type === "skill_used") {
@@ -20322,7 +21011,12 @@ function handleLiveAgentEventBody(ev, opts = {}) {
       return updateStatusLine(ev);
     }
     if (ev.type === "warning") {
-      if (/skills context budget/i.test(String(ev.message || ""))) return;
+      if (
+        /skills context budget/i.test(String(ev.message || "")) ||
+        /supports_reasoning_summaries|模型缓存字段过期/i.test(String(ev.message || ""))
+      ) {
+        return;
+      }
       finishStreamTextSegment();
       return pushEvent(`⚠ ${ev.message}`, "warn");
     }
@@ -20371,6 +21065,58 @@ function handleLiveAgentEventBody(ev, opts = {}) {
     }
 }
 
+function showCompanyReturn(workItemId, sessionId) {
+  companyReturnWorkItemId = String(workItemId || "").trim();
+  companyReturnSessionId = String(sessionId || "").trim();
+  syncCompanyReturnBar();
+}
+
+function syncCompanyReturnBar() {
+  const bar = document.getElementById("companyReturnBar");
+  if (!bar) return;
+  const viewing = String(state.viewingTimelineSessionId || "").trim();
+  bar.classList.toggle(
+    "hidden",
+    !(companyReturnWorkItemId && companyReturnSessionId && viewing === companyReturnSessionId),
+  );
+}
+
+function bindCompanyReturn() {
+  document.getElementById("companyReturnBtn")?.addEventListener("click", () => {
+    if (!companyReturnWorkItemId) return;
+    void getBridge()?.openCompany?.(`forge://company/work/${companyReturnWorkItemId}`);
+  });
+  getBridge()?.onOpenRun?.((payload) => {
+    void openCompanyLinkedSession(payload);
+  });
+}
+
+async function openCompanyLinkedSession(payload) {
+  let sessionId = String(payload?.sessionId || "").trim();
+  let cwd = String(payload?.cwd || "").trim();
+  if (!sessionId && payload?.runId) {
+    for (const [sid, rid] of state.runIdBySession) {
+      if (rid === payload.runId) {
+        sessionId = sid;
+        break;
+      }
+    }
+  }
+  if (payload?.workItemId) showCompanyReturn(payload.workItemId, sessionId);
+  if (!sessionId) return;
+  if (sessionRuns?.isViewingSession?.(sessionId)) {
+    syncCompanyReturnBar();
+    return;
+  }
+  if (!cwd) {
+    cwd =
+      state.sessionCwdById.get(sessionId) ||
+      state.sessionsAll.find((s) => s.id === sessionId)?.cwd ||
+      "";
+  }
+  openSearchedSession(sessionId, cwd);
+}
+
 async function bootstrap() {
   showBootstrapBanner(null);
   initSessionRuns();
@@ -20396,6 +21142,7 @@ async function bootstrap() {
   }
 
   bindActions();
+  bindCompanyReturn();
   bindSlashPalette();
   bindFileMention();
   bindSessionSearch();

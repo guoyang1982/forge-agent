@@ -644,13 +644,15 @@ const NAME_POOLS: Record<string, string[]> = {
   default: ["Nova", "Lumi", "Ash", "Coco", "Mika", "阿杰", "老周"],
 };
 
+/** Prefer skill ids that ship with Forge / common plugins so company strict mode can load them. */
 const CATEGORY_SKILLS: Record<string, string[]> = {
   engineering: ["patch-edit", "add-unit-test", "run-ci-local"],
   design: ["frontend-design"],
-  marketing: ["document-generate"],
-  product: ["spec", "brainstorming"],
-  security: ["code-review"],
+  marketing: ["docx", "pdf", "readme-update"],
+  product: ["brainstorming", "writing-plans"],
+  security: ["code-review", "security-report"],
   testing: ["add-unit-test", "run-ci-local"],
+  support: ["explain-code", "find-skills"],
 };
 
 const CATEGORY_TOOLS: Record<string, string[]> = {
@@ -1801,8 +1803,20 @@ function escapeXml(value: string): string {
 function inferSkills(category: string, id: string): string[] {
   const byCategory = CATEGORY_SKILLS[category] ?? [];
   if (id.includes("code-review")) return ["code-review", "explain-code"];
-  if (id.includes("technical-writer")) return ["document-generate", "readme-update"];
+  if (id.includes("technical-writer")) return ["readme-update", "docx"];
   if (id.includes("frontend")) return ["frontend-design", "patch-edit", "run-ci-local"];
+  if (id.includes("legal") || id.includes("compliance")) {
+    return ["security-report", "audit-report", "create-policy"];
+  }
+  if (id.includes("support-responder") || id.includes("customer-service")) {
+    return ["explain-code", "find-skills"];
+  }
+  if (id.includes("trend-researcher") || id.includes("behavioral")) {
+    return ["brainstorming", "writing-plans"];
+  }
+  if (id.includes("growth-hacker") || id.includes("marketing")) {
+    return ["docx", "pdf", "readme-update"];
+  }
   return byCategory;
 }
 

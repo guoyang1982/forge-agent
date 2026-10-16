@@ -181,6 +181,46 @@ describe("merged tool line rendering", () => {
     expect(source).toContain("enrichBareEditLiveLabel");
   });
 
+  it("scopes modified files to this turn instead of the whole worktree", () => {
+    const source = appSource();
+    const reconcile =
+      source.match(/async function reconcileRunPatchesFromWorkspace[\s\S]*?\n}\n/)?.[0] ?? "";
+    const baseIdx = reconcile.indexOf("const baseSha");
+    const fetchIdx = reconcile.indexOf("bridge.getWorkspaceTurnDiffs");
+    expect(baseIdx).toBeGreaterThan(-1);
+    expect(fetchIdx).toBeGreaterThan(baseIdx);
+    expect(reconcile.slice(baseIdx, fetchIdx)).toContain("if (!baseSha) return");
+    expect(reconcile).not.toContain("baseSha || undefined");
+    expect(reconcile).toContain('source: "workspace-diff"');
+    expect(reconcile).toContain('entry?.source === "workspace-diff"');
+    expect(reconcile.indexOf("replayingPersistedEvents")).toBeGreaterThan(-1);
+    expect(reconcile.indexOf("replayingPersistedEvents")).toBeLessThan(
+      reconcile.indexOf("getWorkspaceTurnDiffs"),
+    );
+
+    const replay =
+      source.match(/function renderPersistedSessionEvents[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(replay).toContain("state.replayingPersistedEvents = true");
+    expect(replay).toContain("state.replayingPersistedEvents = false");
+    expect(replay).toContain("runCheckpointShaBySession.delete(sessionId)");
+
+    const conclusion =
+      source.match(/function renderStructuredConclusionEntry[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(conclusion).toContain("filesTouchedBeforeConclusion");
+    expect(conclusion).toContain("!state.runningSessions.has(sessionId)");
+
+    const begin = source.match(/function beginSessionTurn[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(begin).toContain("runCheckpointShaBySession.delete(sessionId)");
+
+    const chip = source.match(/function renderCodexActivityChip[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(chip).not.toContain('} else if (relPath && payload.status === "done")');
+    expect(chip).toContain('payload.icon === "file"');
+
+    const refresh =
+      source.match(/function refreshPendingToolLineFromArgs[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(refresh).toContain("isFileEditRuntimeTool(name)");
+  });
+
   it("keeps the file-name tail when truncating long paths", () => {
     const { truncateToolSummary } = loadToolHelpers();
     const longPath = `src/${"deep/".repeat(30)}Target.java`;

@@ -182,6 +182,28 @@ describe("AutomationStore", () => {
     expect(cleared?.model).toBeUndefined();
   });
 
+  it("updates prompt and cron schedule in place", () => {
+    const store = new AutomationStore(bootDb());
+    const created = store.create({
+      name: "Game",
+      prompt: "执行一次 写个新的小游戏",
+      cwd: "/tmp/proj",
+      cron: "*/5 * * * *",
+      timezone: "Asia/Shanghai",
+    });
+
+    const updated = store.update(created.id, {
+      prompt: "写一个横版跳跃小游戏",
+      trigger: { type: "cron", cron: "0 * * * *", timezone: "Asia/Shanghai" },
+    });
+    expect(updated?.prompt).toBe("写一个横版跳跃小游戏");
+    expect(updated?.trigger).toEqual({
+      type: "cron",
+      cron: "0 * * * *",
+      timezone: "Asia/Shanghai",
+    });
+  });
+
   it("lists enabled cron automations", () => {
     const store = new AutomationStore(bootDb());
     store.create({
