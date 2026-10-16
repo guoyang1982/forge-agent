@@ -44,7 +44,10 @@ describe("loadMcpServers", () => {
       servers: Array<{ env?: Record<string, string> }>;
     };
     expect(stored.servers[0]?.env?.API_TOKEN).toBe("super-secret-value");
-    expect(statSync(saved.path).mode & 0o777).toBe(0o600);
+    // Windows does not expose POSIX owner/group permission bits.
+    if (process.platform !== "win32") {
+      expect(statSync(saved.path).mode & 0o777).toBe(0o600);
+    }
     expect(loadMcpServers(dir)).toHaveLength(1);
   });
 

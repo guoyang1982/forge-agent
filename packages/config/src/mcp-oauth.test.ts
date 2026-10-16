@@ -71,7 +71,10 @@ describe("mcp oauth", () => {
     expect(result).toEqual({ name: "kling" });
     expect(JSON.stringify(result)).not.toContain(accessToken);
     expect(listAuthorizedMcpServers(dir)).toEqual(["kling"]);
-    expect(statSync(join(dir, "mcp-auth.json")).mode & 0o777).toBe(0o600);
+    // Windows does not expose POSIX owner/group permission bits.
+    if (process.platform !== "win32") {
+      expect(statSync(join(dir, "mcp-auth.json")).mode & 0o777).toBe(0o600);
+    }
   });
 
   it("accepts an authorization server on another https host", async () => {
