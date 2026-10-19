@@ -43,36 +43,11 @@ describe("Core v1 database upgrade", () => {
           .prepare("SELECT version FROM schema_migrations ORDER BY version")
           .pluck()
           .all(),
-      ).toEqual([
-        "001_init.sql",
-        "002_memory_project_id.sql",
-        "003_automations.sql",
-        "004_channels.sql",
-        "005_workspace_checkpoints.sql",
-        "006_session_dispatch_plans.sql",
-        "007_session_events.sql",
-        "008_mobile_devices.sql",
-        "009_core_execution.sql",
-        "010_core_events.sql",
-        "011_core_workspaces.sql",
-        "012_core_policy_approvals.sql",
-        "013_core_usage_budget.sql",
-        "014_core_evidence.sql",
-        "015_core_agent_profiles.sql",
-        "016_core_assets_workflows.sql",
-        "017_core_knowledge_memory.sql",
-        "018_core_connectors.sql",
-        "019_automation_durable_links.sql",
-        "020_execution_idempotency_state.sql",
-        "021_automation_recovery.sql",
-        "022_outbox_delivery_leases.sql",
-        "023_workspace_canonical_root_unique.sql",
-        "024_core_remediation.sql",
-        "025_connector_approval_binding.sql",
-        "026_connector_outcome_reconciliation.sql",
-        "027_tenant_organization_scope.sql",
-        "028_connector_proposal_preview.sql",
-      ]);
+      ).toEqual(
+        readdirSync(migrationsDir)
+          .filter((file) => file.endsWith(".sql"))
+          .sort(),
+      );
     } finally {
       store?.close();
     }

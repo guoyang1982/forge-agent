@@ -194,3 +194,17 @@ function deliveryFixture() {
     evidenceIds: ["e1"],
   };
 }
+
+it("freezes artifact binding before asynchronous validators execute", async () => {
+  const fx = evidenceFixture();
+  const artifact = await fx.artifacts.register({ id: "frozen", producerRunId: "run-1", mediaType: "text/plain", content: Buffer.from("before") });
+  const registry = new ValidatorRegistry();
+  registry.register({ id: "mutation", layer: "result", validate: async () => {
+    fx.store.db.prepare("UPDATE core_artifacts SET sha256 = 'changed' WHERE id = 'frozen'").run();
+    return { status: "passed", layer: "result", severity: "info", evidenceIds: [], summary: "old bytes passed" };
+  } });
+  const result = await new ValidationService(fx.store.db, registry).validateDelivery({ ...deliveryFixture(), artifactIds: ["frozen"] });
+  const row = fx.store.db.prepare("SELECT details_json FROM core_validations WHERE id = ?").get(result.validationIds[0]) as { details_json: string };
+  expect(JSON.parse(row.details_json).inputBinding.artifactHashes.frozen).toBe(artifact.sha256);
+  expect(result.accepted).toBe(false);
+});

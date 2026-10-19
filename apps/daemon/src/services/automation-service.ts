@@ -43,6 +43,8 @@ import type {
   ExecutionStore,
   RunState,
 } from "@forge/execution";
+import { isTerminalRunState } from "@forge/execution";
+import { WorkspaceLeaseService } from "@forge/workspace";
 import {
   compileWorkflowRun,
   hashWorkflowDefinition,
@@ -114,6 +116,8 @@ function draftPatchToStorePatch(
   if (patch.description !== undefined) result.description = patch.description;
   if (patch.cwd !== undefined) result.cwd = patch.cwd;
   if (patch.prompt !== undefined) result.prompt = patch.prompt;
+  if (patch.model !== undefined) result.model = patch.model;
+  if (patch.runtime !== undefined) result.runtime = patch.runtime;
   if (patch.enabled !== undefined) result.enabled = patch.enabled;
   if (patch.notify !== undefined) result.notify = patch.notify;
 
@@ -443,6 +447,7 @@ export async function executeAutomation(
       preview,
     })!;
   } catch (e) {
+    releaseFailedDurableOccurrence(deps, run);
     return deps.store.finishRun(run.id, {
       status: "failed",
       error: String(e),
@@ -515,7 +520,13 @@ async function executeDurableOccurrence(
       return { state: "pending" };
     }
     if (durableRun?.state !== "succeeded") {
-      throw new Error(`durable automation run failed: ${durableRun?.state ?? "missing"}`);
+      throw new Error(
+        durableRunFailureMessage(
+          deps.durable.db,
+          existing.runId,
+          durableRun?.state ?? "missing",
+        ),
+      );
     }
     return {
       state: "succeeded",
@@ -558,6 +569,7 @@ async function executeDurableOccurrence(
     steps: compiled.steps.map((step) => ({
       ...step,
       input: automationRunInput(auto, sessionId),
+      timeoutMs: Math.max(step.timeoutMs ?? 0, 3_600_000),
       idempotencyKey: `automation-occurrence:${triggerRef}`,
     })),
   };
@@ -583,7 +595,9 @@ async function executeDurableOccurrence(
     return { state: "pending" };
   }
   if (durableRun.state !== "succeeded") {
-    throw new Error(`durable automation run failed: ${durableRun.state}`);
+    throw new Error(
+      durableRunFailureMessage(deps.durable.db, spec.id, durableRun.state),
+    );
   }
   return {
     state: "succeeded",
@@ -602,25 +616,42 @@ export async function reconcileAutomationRuns(deps: {
   durable: Pick<DurableAutomationDeps, "db" | "executionStore">;
 }): Promise<number> {
   const workflows = WorkflowStore.forDatabase(deps.durable.db);
-  let reconciled = 0;
+  let reconciled = reconcileZombieWorkflowInstances(deps, workflows);
   for (const projection of deps.store.listRunningDurableRuns()) {
     if (!projection.durableRunId || !projection.workflowInstanceId) continue;
     const durableRun = deps.durable.executionStore.getRun(projection.durableRunId);
     if (!durableRun) continue;
+    if (
+      (durableRun.state === "queued" ||
+        durableRun.state === "running" ||
+        durableRun.state === "waiting") &&
+      hasInterruptedNonIdempotentWait(deps.durable.db, projection.durableRunId)
+    ) {
+      deps.durable.executionStore.cancelRun(
+        projection.durableRunId,
+        "daemon restarted during agent step",
+        new Date().toISOString(),
+      );
+      new WorkspaceLeaseService(deps.durable.db).releaseByRunId(
+        projection.durableRunId,
+        "daemon restarted during agent step",
+      );
+    }
+    const current = deps.durable.executionStore.getRun(projection.durableRunId) ?? durableRun;
     workflows.updateInstanceState(
       projection.workflowInstanceId,
-      workflowStateFromRun(durableRun.state),
+      workflowStateFromRun(current.state),
     );
     if (
-      durableRun.state === "queued" ||
-      durableRun.state === "running" ||
-      durableRun.state === "waiting"
+      current.state === "queued" ||
+      current.state === "running" ||
+      current.state === "waiting"
     ) {
       continue;
     }
 
     const automation = deps.store.get(projection.automationId);
-    if (durableRun.state === "succeeded" && automation) {
+    if (current.state === "succeeded" && automation) {
       const result = durableAutomationResult(
         deps.durable.db,
         deps.durable.executionStore,
@@ -638,14 +669,157 @@ export async function reconcileAutomationRuns(deps: {
       }
       deps.store.finishRun(projection.id, { status: "success", preview });
     } else {
+      const interrupted = hasInterruptedNonIdempotentWait(
+        deps.durable.db,
+        projection.durableRunId,
+      );
       deps.store.finishRun(projection.id, {
         status: "failed",
-        error: `durable automation run failed: ${durableRun.state}`,
+        error: interrupted
+          ? "daemon 重启打断了正在执行的步骤"
+          : durableRunFailureMessage(
+              deps.durable.db,
+              projection.durableRunId,
+              current.state,
+            ),
       });
     }
     reconciled += 1;
   }
   return reconciled;
+}
+
+function reconcileZombieWorkflowInstances(
+  deps: {
+    store: AutomationStore;
+    durable: Pick<DurableAutomationDeps, "db" | "executionStore">;
+  },
+  workflows: WorkflowStore,
+): number {
+  const rows = deps.durable.db
+    .prepare(
+      `SELECT DISTINCT i.id AS instanceId, i.run_id AS runId, r.status AS runStatus
+       FROM core_workflow_instances i
+       INNER JOIN automation_runs r
+         ON r.workflow_instance_id = i.id
+         OR (i.run_id IS NOT NULL AND r.durable_run_id = i.run_id)
+       WHERE i.state IN ('pending', 'running', 'waiting')
+         AND r.status IN ('failed', 'success', 'skipped')`,
+    )
+    .all() as Array<{ instanceId: string; runId: string | null; runStatus: string }>;
+  const now = new Date().toISOString();
+  let released = 0;
+  for (const row of rows) {
+    const state =
+      row.runStatus === "success"
+        ? "succeeded"
+        : row.runStatus === "skipped"
+          ? "cancelled"
+          : "failed";
+    workflows.updateInstanceState(row.instanceId, state);
+    if (row.runId && state !== "succeeded") {
+      const durable = deps.durable.executionStore.getRun(row.runId);
+      if (durable && !isTerminalRunState(durable.state)) {
+        deps.durable.executionStore.cancelRun(
+          row.runId,
+          "automation projection already finished",
+          now,
+        );
+      }
+    }
+    released += 1;
+  }
+  return released;
+}
+
+function releaseFailedDurableOccurrence(
+  deps: ExecuteAutomationDeps,
+  run: AutomationRunRecord,
+): void {
+  const row = deps.durable.db
+    .prepare(
+      `SELECT workflow_instance_id AS workflowInstanceId, durable_run_id AS durableRunId
+       FROM automation_runs
+       WHERE id = ?`,
+    )
+    .get(run.id) as
+    | { workflowInstanceId: string | null; durableRunId: string | null }
+    | undefined;
+  const instanceId = row?.workflowInstanceId || run.workflowInstanceId;
+  const durableRunId = row?.durableRunId || run.durableRunId;
+  if (!instanceId && !durableRunId) return;
+  const workflows = WorkflowStore.forDatabase(deps.durable.db);
+  if (instanceId) {
+    try {
+      workflows.updateInstanceState(instanceId, "failed");
+    } catch {
+      /* instance may not exist yet */
+    }
+  }
+  if (durableRunId) {
+    const durable = deps.durable.executionStore.getRun(durableRunId);
+    if (durable && !isTerminalRunState(durable.state)) {
+      deps.durable.executionStore.cancelRun(
+        durableRunId,
+        "automation run failed",
+        deps.durable.clock.now(),
+      );
+    }
+    new WorkspaceLeaseService(deps.durable.db).releaseByRunId(
+      durableRunId,
+      "automation run failed",
+    );
+  }
+}
+
+function hasInterruptedNonIdempotentWait(db: Database, runId: string): boolean {
+  const row = db
+    .prepare(
+      `SELECT payload_json AS payload
+       FROM core_step_waits
+       WHERE run_id = ?
+         AND wait_kind = 'manual_review'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    )
+    .get(runId) as { payload?: string } | undefined;
+  if (!row?.payload) return false;
+  try {
+    const parsed = JSON.parse(row.payload) as { reason?: string };
+    return parsed.reason === "interrupted_non_idempotent";
+  } catch {
+    return row.payload.includes("interrupted_non_idempotent");
+  }
+}
+
+function durableRunFailureMessage(
+  db: Database,
+  runId: string,
+  state: string,
+): string {
+  const row = db
+    .prepare(
+      `SELECT error_json AS errorJson
+       FROM core_attempts
+       WHERE run_id = ? AND state = 'failed'
+       ORDER BY attempt_number DESC
+       LIMIT 1`,
+    )
+    .get(runId) as { errorJson?: string } | undefined;
+  let detail = "";
+  try {
+    const parsed = row?.errorJson ? (JSON.parse(row.errorJson) as { code?: string; message?: string }) : null;
+    if (parsed?.code === "CORE_CANCELLED") {
+      detail = "：步骤超时被取消";
+    } else if (parsed?.code) {
+      detail = `：${parsed.code}`;
+    } else if (parsed?.message) {
+      detail = `：${parsed.message}`;
+    }
+  } catch {
+    /* keep state-only message */
+  }
+  return `durable automation run failed: ${state}${detail}`;
 }
 
 function durableAutomationResult(

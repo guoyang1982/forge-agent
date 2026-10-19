@@ -1,4 +1,4 @@
-import { createServer, type Server, type Socket } from "node:net";
+import { createServer, connect as netConnect, type Server, type Socket } from "node:net";
 import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import type {
   AgentEvent,
@@ -78,8 +78,17 @@ export class DaemonServer {
     private handler: RpcHandler,
   ) {}
 
-  start(): Promise<void> {
+  async start(): Promise<void> {
+    // Never steal a live daemon's socket — that leaves two processes on one
+    // SQLite DB (SQLITE_BUSY) while only the thief answers pings.
     if (existsSync(this.socketPath)) {
+      if (await isUnixSocketAcceptingConnections(this.socketPath)) {
+        const err = new Error(
+          `listen EADDRINUSE: address already in use ${this.socketPath}`,
+        ) as NodeJS.ErrnoException;
+        err.code = "EADDRINUSE";
+        throw err;
+      }
       unlinkSyncSafe(this.socketPath);
     }
 
@@ -223,6 +232,24 @@ function requestCorrelationId(req: RequestWithCorrelation): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** True when something accepts TCP/Unix connections on the path (live daemon). */
+function isUnixSocketAcceptingConnections(socketPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = netConnect(socketPath);
+    let settled = false;
+    const done = (alive: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(alive);
+    };
+    const timer = setTimeout(() => done(false), 800);
+    socket.on("connect", () => done(true));
+    socket.on("error", () => done(false));
+  });
 }
 
 function unlinkSyncSafe(p: string): void {

@@ -16,14 +16,16 @@
     "pack:dir": "node scripts/prepare-electron-bundle.mjs && electron-builder --project ../../.electron-staging/app --dir",
     "pack:mac": "node scripts/prepare-electron-bundle.mjs && electron-builder --project ../../.electron-staging/app --mac",
     "pack:win": "node scripts/prepare-electron-bundle.mjs && electron-builder --project ../../.electron-staging/app --win",
-    "dev": "pnpm --filter @forge/protocol build && pnpm --filter @forge/agent-core build && pnpm --filter @forge/automation build && pnpm --filter @forge/workspace build && pnpm --filter @forge/document-extract build && pnpm --filter @forge/marketplace build && pnpm --filter @forge/plugin-registry build && pnpm --filter @forge/extension-hub build && pnpm --filter @forge/daemon build && npm run build && node scripts/start-forge-electron.mjs"
+    "dev": "pnpm --filter @forge/protocol build && pnpm --filter @forge/agent-core build && pnpm --filter @forge/automation build && pnpm --filter @forge/workspace build && pnpm --filter @forge/document-extract build && pnpm --filter @forge/marketplace build && pnpm --filter @forge/plugin-registry build && pnpm --filter @forge/extension-hub build && pnpm --filter @forge/daemon build && pnpm --filter @forge/channel-gateway build && pnpm --filter @forge/forge-links build && pnpm --filter @forge/company-desktop build && npm run build && node scripts/start-forge-electron.mjs"
   },
   "dependencies": {
     "@forge/browser-core": "workspace:*",
     "@forge/bus": "workspace:*",
+    "@forge/company-desktop": "workspace:*",
     "@forge/config": "workspace:*",
     "@forge/daemon-client": "workspace:*",
     "@forge/document-extract": "workspace:*",
+    "@forge/forge-links": "workspace:*",
     "@forge/hooks": "workspace:*",
     "@forge/platform": "workspace:*",
     "@forge/plugin-registry": "workspace:*",

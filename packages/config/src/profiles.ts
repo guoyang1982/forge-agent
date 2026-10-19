@@ -45,6 +45,28 @@ function firstEnabledProfileKey(
   return Object.keys(profiles).find((k) => isProfileEnabled(profiles[k]));
 }
 
+export function applyRequestedModel(
+  cfg: ForgeConfig,
+  requested?: string,
+): ForgeConfig {
+  const name = requested?.trim();
+  if (!name || name === "forge-default") return cfg;
+  const profiles = cfg.profiles ?? {};
+  if (isProfileEnabled(profiles[name])) {
+    return applyActiveProfile({ ...cfg, activeProfile: name });
+  }
+  const match = Object.entries(profiles).find(
+    ([, profile]) => isProfileEnabled(profile) && profile.name === name,
+  );
+  if (match) {
+    return applyActiveProfile({ ...cfg, activeProfile: match[0] });
+  }
+  return {
+    ...cfg,
+    model: { ...cfg.model, name },
+  };
+}
+
 export function applyActiveProfile(cfg: ForgeConfig): ForgeConfig {
   const profiles = cfg.profiles ?? {};
   let key = process.env.FORGE_ACTIVE_PROFILE || cfg.activeProfile;

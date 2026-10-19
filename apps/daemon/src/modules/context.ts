@@ -1,6 +1,12 @@
 import type { AgentProfileStore } from "@forge/agent-profile";
 import type { AutomationStore } from "@forge/automation";
 import type { ChannelStore } from "@forge/channel";
+import type {
+  CompanyService,
+  OrganizationService,
+  WorkGates,
+  WorkService,
+} from "@forge/company-domain";
 import type { ArtifactService, ValidationService } from "@forge/evidence";
 import type {
   DurableExecutor,
@@ -21,6 +27,13 @@ import type { CancelService } from "../services/cancel-service.js";
 import type { ChannelGatewayHost } from "../services/channel-gateway-host.js";
 import type { FirstPartyRunCoordinator } from "../services/first-party-run.js";
 import type { DaemonContext } from "../host/types.js";
+
+export type CompanyServices = {
+  companies: CompanyService;
+  org: OrganizationService;
+  work: WorkService;
+  gates: WorkGates;
+};
 
 export interface ForgeDaemonContext extends DaemonContext {
   dataDir: string;
@@ -44,6 +57,8 @@ export interface ForgeDaemonContext extends DaemonContext {
   agentProfiles: AgentProfileStore;
   artifacts: ArtifactService;
   validations: ValidationService;
+  company: CompanyServices;
+  companyWorkflowCapabilities?: () => import("@forge/protocol").CompanyWorkflowCapability[];
   automationGovernance: AutomationGovernanceService;
   wakeExecutor: () => void;
   getRuntime: () => Promise<ForgeRuntime>;

@@ -86,6 +86,25 @@ describe("parseAutomationDraftFromJson", () => {
     });
   });
 
+  it("keeps an optional runtime from LLM JSON", () => {
+    const result = parseAutomationDraftFromJson(
+      `{"draft":{"name":"AI digest","cron":"0 * * * *","prompt":"Collect AI news","runtime":"cursor","model":"composer"}}`,
+      "/ws",
+    );
+    expect(result?.draft).toMatchObject({
+      runtime: "cursor",
+      model: "composer",
+    });
+  });
+
+  it("keeps an optional model from LLM JSON", () => {
+    const result = parseAutomationDraftFromJson(
+      `{"draft":{"name":"AI digest","cron":"0 * * * *","prompt":"Collect AI news","model":"deepseek-v4-flash"}}`,
+      "/ws",
+    );
+    expect(result?.draft?.model).toBe("deepseek-v4-flash");
+  });
+
   it("returns questions when LLM asks for clarification", () => {
     const result = parseAutomationDraftFromJson(
       '{"questions":["请说明每天几点运行？"]}',

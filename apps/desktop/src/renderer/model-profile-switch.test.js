@@ -13,4 +13,16 @@ describe("model profile quick switch", () => {
     expect(source).toContain('$("profileSelect").addEventListener("change"');
     expect(source).toContain("switchSelectedProfile");
   });
+
+  it("shows a visible save result on the model profiles button", () => {
+    const source = appSource();
+    const handler =
+      source.match(
+        /\$\("saveModelProfilesBtn"\)\?\.addEventListener\("click"[\s\S]*?\n  \}\);/,
+      )?.[0] ?? "";
+
+    expect(handler).toContain('notifyUser("已保存模型配置", "done")');
+    expect(handler).toContain("btn.textContent = \"已保存\"");
+    expect(handler).toContain('notifyUser(`模型配置错误: ${String(e)}`, "err")');
+  });
 });

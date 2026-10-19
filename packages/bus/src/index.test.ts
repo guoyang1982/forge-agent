@@ -215,6 +215,19 @@ describe("DaemonServer fault serialization", () => {
       client.close();
     }
   });
+
+  it("refuses to steal a live daemon socket (prevents dual SQLite owners)", async () => {
+    const { socketPath } = await startTestServer();
+    const thief = new DaemonServer(socketPath, async () => ({ ok: true }));
+    await expect(thief.start()).rejects.toMatchObject({ code: "EADDRINUSE" });
+    // Original still answers — socket was not unlinked out from under it.
+    const client = await connectDaemon(socketPath);
+    try {
+      await expect(client.request("system.ping", {})).resolves.toBeTruthy();
+    } finally {
+      client.close();
+    }
+  });
 });
 
 async function startTestServer(): Promise<{

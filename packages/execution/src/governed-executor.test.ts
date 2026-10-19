@@ -67,6 +67,25 @@ describe("GovernedStepExecutor", () => {
     expect(fx.calls).toContain("workspace.release");
   });
 
+  it("enters a durable wait when the inner step asks to wait", async () => {
+    const fx = governedFixture({
+      step: async () => ({
+        state: "waiting",
+        waitRef: "company-stage-gate:research:p1",
+        payload: { gate: "research", projectId: "p1" },
+      }),
+    });
+    const outcome = await fx.executor.execute(fx.input, fx.signal);
+    expect(outcome).toMatchObject({
+      state: "waiting",
+      waitReason: { kind: "manual_review", reason: "company-stage-gate:research:p1" },
+    });
+    expect(fx.store.getStep(fx.input.runId, fx.input.stepId)?.state).toBe("waiting");
+    expect(fx.store.getActiveWait(fx.input.runId, fx.input.stepId)).toBeTruthy();
+    // Leases must not be held across a (potentially long) human gate wait.
+    expect(fx.calls).toContain("workspace.release");
+  });
+
   it("uses a resumed approved approval instead of opening another approval wait", async () => {
     const fx = governedFixture({ decision: "require_approval" });
     const approvalId = fx.approveMatchingRequest();

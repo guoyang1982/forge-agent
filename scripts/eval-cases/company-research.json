@@ -1,0 +1,10 @@
+{
+  "id": "company-research",
+  "title": "Research-only delivery stop",
+  "assertions": [
+    "research brief is ready",
+    "facts have evidence ids",
+    "stopped research gate nextAction is close_research_project",
+    "no implementation work items"
+  ]
+}

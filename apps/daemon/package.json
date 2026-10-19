@@ -20,6 +20,7 @@
     "@forge/channel-core": "workspace:*",
     "@forge/channel-ilink": "workspace:*",
     "@forge/bus": "workspace:*",
+    "@forge/company-domain": "workspace:*",
     "@forge/config": "workspace:*",
     "@forge/context": "workspace:*",
     "@forge/event-store": "workspace:*",

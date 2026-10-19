@@ -29,6 +29,12 @@ export class ValidationService {
     results: ValidationResult[];
     validationIds: string[];
   }> {
+    const inputBinding = {
+      artifactIds: [...new Set(input.artifactIds)].sort(),
+      checkpointId: input.context?.checkpointId,
+      checkpointHash: input.context?.checkpointHash,
+      artifactHashes: this.artifactHashes(input.artifactIds),
+    };
     const validators = this.applicableValidators(input);
     const results: ValidationResult[] = [];
     const validationIds: string[] = [];
@@ -36,10 +42,11 @@ export class ValidationService {
     for (const validator of validators) {
       const result = await validator.validate(input);
       results.push(result);
-      validationIds.push(this.persistResult(input, validator.id, result));
+      validationIds.push(this.persistResult(input, validator.id, result, inputBinding));
     }
 
     const accepted =
+      JSON.stringify(inputBinding.artifactHashes) === JSON.stringify(this.artifactHashes(input.artifactIds)) &&
       validators.length > 0 &&
       !results.some(
         (result) => result.status === "failed" && result.severity === "blocking",
@@ -99,6 +106,7 @@ export class ValidationService {
     input: ValidationInput,
     validatorId: string,
     result: ValidationResult,
+    inputBinding: Record<string, unknown>,
   ): string {
     const id = randomUUID();
     this.db
@@ -118,10 +126,24 @@ export class ValidationService {
         result.severity,
         JSON.stringify(result.evidenceIds),
         result.summary,
-        JSON.stringify(result.details ?? {}),
+        JSON.stringify({ ...result.details, inputBinding }),
         new Date().toISOString(),
       );
     return id;
+  }
+
+  private artifactHashes(ids: string[]): Record<string, string> {
+    const hasCompanyArtifacts = Boolean(this.db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'company_work_artifacts'",
+    ).get());
+    return Object.fromEntries(ids.map((id) => {
+      const core = this.db.prepare("SELECT sha256 AS hash FROM core_artifacts WHERE id = ?")
+        .get(id) as { hash: string } | undefined;
+      const company = !core && hasCompanyArtifacts ? this.db.prepare(
+        "SELECT content_hash AS hash FROM company_work_artifacts WHERE id = ?",
+      ).get(id) as { hash: string } | undefined : undefined;
+      return [id, core?.hash ?? company?.hash ?? "missing"];
+    }));
   }
 
   private applicableValidators(input: ValidationInput): Validator[] {

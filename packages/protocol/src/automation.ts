@@ -18,6 +18,7 @@ export interface AutomationRecord {
     | { type: "manual" };
   prompt: string;
   model?: string;
+  runtime?: string;
   memoryEnabled: boolean;
   sessionMode: "new" | "resume";
   resumeSessionId?: string;
@@ -51,6 +52,8 @@ export interface AutomationDraft {
   prompt: string;
   cwd?: string;
   enabled?: boolean;
+  model?: string;
+  runtime?: string;
   notify?: AutomationNotifyConfig;
 }
 

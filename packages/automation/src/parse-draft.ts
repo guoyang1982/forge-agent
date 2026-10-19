@@ -36,6 +36,8 @@ Output schema:
     "cron": "5-field cron expression",
     "timezone": "IANA timezone, default Asia/Shanghai",
     "prompt": "what the agent should do on each run",
+    "runtime": "optional runtime id: forge, cursor, codex, or claude-code",
+    "model": "optional model id if the user named one",
     "notify": {"enabled": true, "channelKind": "ilink"} // only when user asks to send/push results to WeChat/iLink
   },
   "questions": []
@@ -49,6 +51,8 @@ Rules:
 - name must be a concise task title, not the full user message.
 - prompt is the executable task instructions only (omit schedule frequency text).
 - If the user asks to send/push/notify results to WeChat or "me", set notify.enabled true and channelKind "ilink".
+- If the user names Cursor, Codex, or Claude Code, set runtime to cursor, codex, or claude-code.
+- If the user names a model, set model to that id; otherwise omit it.
 - Default timezone Asia/Shanghai unless user specifies another.`;
 }
 
@@ -116,6 +120,12 @@ function normalizeDraft(
     draft.timezone = raw.timezone.trim();
   } else if (draft.cron) {
     draft.timezone = DEFAULT_TIMEZONE;
+  }
+  if (isNonEmptyString(raw.model)) {
+    draft.model = raw.model.trim();
+  }
+  if (isNonEmptyString(raw.runtime)) {
+    draft.runtime = raw.runtime.trim();
   }
   const notifyRaw = raw.notify;
   if (notifyRaw && typeof notifyRaw === "object") {

@@ -6,7 +6,7 @@
     defaultProvider: "forge",
     cursor: { model: "", mode: "default" },
     codex: { model: "" },
-    claude: { model: "sonnet" },
+    claude: { model: "" },
   };
 
   const CLAUDE_MODELS = [

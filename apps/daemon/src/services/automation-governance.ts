@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AgentProfileStore } from "@forge/agent-profile";
-import { loadConfig } from "@forge/config";
+import { applyRequestedModel, loadConfig } from "@forge/config";
 import type { ValidationService } from "@forge/evidence";
 import type { AutomationRecord } from "@forge/protocol";
 import type { Database } from "@forge/store";
@@ -291,7 +291,7 @@ export class AutomationGovernanceService {
       | undefined;
     if (
       grant?.effect === "allow" &&
-      grantAllowsResources(grant.resource_scope_json, [assetId, assetVersionId])
+      grantAllowsAssetPublication(grant.resource_scope_json, assetId, assetVersionId)
     ) {
       if (grant.expires_at && grant.expires_at <= new Date().toISOString()) {
         throw new AutomationGrantRequiredError("automation asset publish grant expired");
@@ -306,6 +306,25 @@ export class AutomationGovernanceService {
 
 function grantAllowsWorkspace(resourceScopeJson: string, workspaceId: string): boolean {
   return grantAllowsResources(resourceScopeJson, [workspaceId]);
+}
+
+/** An existing automation asset grant covers later published versions of the same workflow. */
+function grantAllowsAssetPublication(
+  resourceScopeJson: string,
+  assetId: string,
+  assetVersionId: string,
+): boolean {
+  try {
+    const scope = JSON.parse(resourceScopeJson) as { resourceIds?: unknown };
+    const grantedResourceIds = scope.resourceIds;
+    return (
+      Array.isArray(grantedResourceIds) &&
+      grantedResourceIds.length > 0 &&
+      (grantedResourceIds.includes(assetId) || grantedResourceIds.includes(assetVersionId))
+    );
+  } catch {
+    return false;
+  }
 }
 
 function grantAllowsResources(resourceScopeJson: string, resourceIds: string[]): boolean {
@@ -327,11 +346,11 @@ function digest(value: string): string {
 }
 
 function resolveAutomationModel(automation: AutomationRecord): string {
-  const candidates = [
+  const cfg = applyRequestedModel(
+    loadConfig({ cwd: automation.cwd }),
     automation.model,
-    loadConfig({ cwd: automation.cwd }).model.name,
-    loadConfig().model.name,
-  ];
+  );
+  const candidates = [cfg.model.name, loadConfig().model.name];
   for (const raw of candidates) {
     const name = raw?.trim();
     if (name && name !== "forge-default") return name;

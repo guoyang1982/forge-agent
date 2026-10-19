@@ -5,8 +5,10 @@ import { describe, expect, it } from "vitest";
 import {
   classifyCodexTurnNotification,
   ensureCodexModelsCacheCompatible,
+  isCodexModelsCacheNoise,
   isCodexModelsCacheStderr,
   isCodexThreadIdleNotification,
+  shouldIgnoreCodexWarning,
   shouldSurfaceCodexStderr,
   stripAnsi,
 } from "./codex-runtime.js";
@@ -68,6 +70,17 @@ describe("Codex models-cache stderr handling", () => {
         "2026-07-20T05:00:15Z ERROR something_else: boom",
       ),
     ).toBe(true);
+    expect(isCodexModelsCacheNoise(ansi)).toBe(true);
+    expect(
+      isCodexModelsCacheNoise(
+        "Codex 模型缓存字段过期（supports_reasoning_summaries），已忽略该错误，不影响本轮完成。",
+      ),
+    ).toBe(true);
+    expect(shouldIgnoreCodexWarning(ansi)).toBe(true);
+    expect(shouldIgnoreCodexWarning("skills context budget exceeded")).toBe(true);
+    expect(shouldIgnoreCodexWarning("disk is full")).toBe(false);
+    const source = readFileSync(new URL("./codex-runtime.ts", import.meta.url), "utf8");
+    expect(source).not.toContain("Codex 模型缓存字段过期");
   });
 
   it("repairs models_cache.json missing supports_reasoning_summaries", () => {

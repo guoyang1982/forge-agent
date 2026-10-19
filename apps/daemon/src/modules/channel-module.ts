@@ -1,4 +1,5 @@
-import { DAEMON_METHODS } from "@forge/protocol";
+import { DAEMON_METHODS, rpcFault } from "@forge/protocol";
+import { RpcFaultError } from "../host/router.js";
 import type { DaemonModule } from "../host/types.js";
 import {
   handleChannelPollLogin,
@@ -53,8 +54,15 @@ export function createChannelModule(): DaemonModule<ForgeDaemonContext> {
         handleListChannelKinds());
       router.registerProduct(DAEMON_METHODS.GET_CHANNEL_GATEWAY_STATUS, async () =>
         handleGetChannelGatewayStatus(deps));
-      router.registerProduct(DAEMON_METHODS.START_CHANNEL_GATEWAY, async (params) =>
-        handleStartChannelGateway(params, deps));
+      router.registerProduct(DAEMON_METHODS.START_CHANNEL_GATEWAY, async (params) => {
+        try {
+          return await handleStartChannelGateway(params, deps);
+        } catch (error) {
+          if (error instanceof RpcFaultError) throw error;
+          const message = error instanceof Error ? error.message : String(error);
+          throw new RpcFaultError(rpcFault("INTERNAL_ERROR", message));
+        }
+      });
       router.registerProduct(DAEMON_METHODS.STOP_CHANNEL_GATEWAY, async () =>
         handleStopChannelGateway(deps));
       router.registerProduct(DAEMON_METHODS.CHANNEL_START_LOGIN, async (params) =>

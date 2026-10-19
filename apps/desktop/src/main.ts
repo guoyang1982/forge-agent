@@ -7,6 +7,7 @@ import {
   shell,
   type WebContents,
 } from "electron";
+import { installProductShell } from "./product-shell.js";
 import { killDaemonInDataDir } from "@forge/platform";
 import {
   resolveDevelopmentNodeExecutable,
@@ -14,6 +15,7 @@ import {
   waitForDaemonDisconnect,
 } from "./daemon-lifecycle.js";
 import { connectDaemon } from "@forge/bus";
+import { agentEventFromCoreNotification } from "./core-event-bridge.js";
 import {
   DAEMON_METHODS,
   FORGE_DAEMON_BUILD,
@@ -22,7 +24,7 @@ import {
   type RunAttachment,
   type TraceGetResult,
 } from "@forge/protocol";
-import { loadConfig, saveConfig, saveModelSelection } from "@forge/config";
+import { authorizeMcpServer, listAuthorizedMcpServers, loadConfig, readUserMcpConfig, saveConfig, saveModelSelection, saveUserMcpConfig } from "@forge/config";
 import { WorkspaceGuard, gitBranchInfo, gitSwitchBranch } from "@forge/workspace";
 import {
   attachmentPickerExtensions,
@@ -43,8 +45,7 @@ import {
 import { disposeAllTerminals, registerTerminalIpc } from "./terminal-ipc.js";
 import type { HooksSettingsFile, HooksSettingsScope } from "@forge/hooks";
 import {
-  gitDiffArgs,
-  parseUnifiedDiffByFile,
+  collectWorkspaceTurnDiffs,
   resolveRealWorkspaceFile,
   resolveWorkspaceImageFile,
 } from "./workspace-ipc-utils.js";
@@ -381,29 +382,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     "forge:workspace-turn-diffs",
     async (_event, payload: { cwd: string; baseSha?: string }) => {
-      const cwd = resolve(payload.cwd);
-      const baseSha = String(payload.baseSha || "").trim();
-      const args = gitDiffArgs(baseSha);
-      const stdout = await new Promise<string>((resolve, reject) => {
-        const proc = spawn("git", args, { cwd, windowsHide: true });
-        let out = "";
-        let err = "";
-        proc.stdout.on("data", (chunk: Buffer) => {
-          out += chunk.toString("utf8");
-        });
-        proc.stderr.on("data", (chunk: Buffer) => {
-          err += chunk.toString("utf8");
-        });
-        proc.on("error", reject);
-        proc.on("close", (code) => {
-          if (code !== 0 && !out.trim()) {
-            reject(new Error(err.trim() || `git ${args.join(" ")} failed (${code})`));
-            return;
-          }
-          resolve(out);
-        });
-      });
-      return { ok: true, files: parseUnifiedDiffByFile(stdout) };
+      return collectWorkspaceTurnDiffs(resolve(payload.cwd), payload.baseSha);
     },
   );
 
@@ -999,6 +978,45 @@ function registerIpcHandlers(): void {
     const resolvedCwd = cwd ?? process.cwd();
     const cfg = loadConfig({ cwd: resolvedCwd });
     return requestDaemonMethod(cfg, DAEMON_METHODS.LIST_MCP, { cwd: resolvedCwd });
+  });
+
+  ipcMain.handle("forge:get-mcp-config", async () => {
+    const cfg = loadConfig();
+    return readUserMcpConfig(cfg.daemon.dataDir);
+  });
+
+  ipcMain.handle("forge:mcp-auth-status", async () => {
+    const cfg = loadConfig();
+    return { names: listAuthorizedMcpServers(cfg.daemon.dataDir) };
+  });
+
+  ipcMain.handle("forge:connect-mcp", async (_event, payload?: { name?: string; url?: string }) => {
+    const cfg = loadConfig();
+    const name = String(payload?.name ?? "");
+    const url = String(payload?.url ?? "");
+    const result = await authorizeMcpServer({
+      dataDir: cfg.daemon.dataDir,
+      name,
+      url,
+      openUrl: (target) => shell.openExternal(target),
+    });
+    try {
+      await requestDaemonMethod(cfg, DAEMON_METHODS.RELOAD_RUNTIME, {});
+    } catch {
+      throw new Error("授权已保存，但运行时还没重新加载");
+    }
+    return { name: result.name };
+  });
+
+  ipcMain.handle("forge:save-mcp-config", async (_event, payload?: { text?: string }) => {
+    const cfg = loadConfig();
+    const saved = saveUserMcpConfig(cfg.daemon.dataDir, String(payload?.text ?? ""));
+    try {
+      await requestDaemonMethod(cfg, DAEMON_METHODS.RELOAD_RUNTIME, {});
+    } catch {
+      throw new Error("配置已写入，但运行时还没重新加载");
+    }
+    return { path: saved.path, names: saved.names };
   });
 
   ipcMain.handle(
@@ -1638,6 +1656,10 @@ async function ensureDaemonEventSubscriber(cfg?: ForgeConfig): Promise<void> {
       const client = await connectDaemon(config.daemon.socketPath);
       daemonEventClient = client;
       client.onEvent((ev) => sendAgentEvent(ev));
+      client.onNotification((event) => {
+        const ev = agentEventFromCoreNotification(event);
+        if (ev) sendAgentEvent(ev);
+      });
       client.onClose(() => {
         daemonEventClient = null;
         setTimeout(() => {
@@ -1740,6 +1762,14 @@ app.whenReady().then(async () => {
     console.error("[forge-browser] failed to start browser host", error);
   }
   const win = createWindow();
+  installProductShell({
+    getWorkbenchWindow: () => mainWindow,
+    createWorkbenchWindow: createWindow,
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    requestDaemonMethod: (method, params) =>
+      requestDaemonMethod(loadConfig(), method, params),
+  });
   void ensureDaemonEventSubscriber(loadConfig());
 
   win.webContents.on("did-finish-load", () => {

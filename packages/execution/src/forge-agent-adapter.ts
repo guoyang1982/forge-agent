@@ -35,6 +35,25 @@ export interface ForgeAgentStepExecutorOptions {
     event: AgentEvent,
     links: { runId: string; stepId: string; attemptId: string },
   ) => void;
+  unattendedFromRun?: (runId: string) => { companyWorkItemId?: string } | undefined;
+}
+
+export function applyUnattendedRunFlags(
+  request: RunRequest,
+  extras?: { companyWorkItemId?: string },
+): RunRequest {
+  const companyWorkItemId = request.companyWorkItemId || extras?.companyWorkItemId;
+  const autoApply = Boolean(
+    request.autoApply ||
+    companyWorkItemId ||
+    request.automationRun ||
+    request.channelRun,
+  );
+  return {
+    ...request,
+    autoApply,
+    ...(companyWorkItemId ? { companyWorkItemId } : {}),
+  };
 }
 
 export function runRequestToRunSpec(
@@ -80,6 +99,7 @@ export function forgeAgentRunInput(request: RunRequest): RunRequest {
     automationRun: request.automationRun,
     channelRun: request.channelRun,
     autoApply: request.autoApply,
+    companyWorkItemId: request.companyWorkItemId,
     files: request.files,
     attachments: request.attachments,
   };
@@ -137,7 +157,10 @@ export class ForgeAgentStepExecutor implements StepExecutor {
       };
     }
 
-    const request = parseForgeAgentStepInput(input.input);
+    const request = applyUnattendedRunFlags(
+      parseForgeAgentStepInput(input.input),
+      this.options.unattendedFromRun?.(input.runId),
+    );
     const emit = (event: AgentEvent) => {
       const linked =
         event.type === "session_start" || event.type === "done"
@@ -177,5 +200,16 @@ export class ForgeAgentStepExecutor implements StepExecutor {
         retryable: false,
       };
     }
+  }
+
+  async reconcile(_input: StepExecutionInput): Promise<StepOutcome | "unknown"> {
+    return {
+      state: "failed",
+      error: {
+        code: "CORE_INTERRUPTED",
+        message: "daemon restarted during agent step",
+      },
+      retryable: false,
+    };
   }
 }

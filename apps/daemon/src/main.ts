@@ -10,6 +10,13 @@ import { SessionStore } from "@forge/session";
 import { ForgeStore } from "@forge/store";
 import { AutomationStore } from "@forge/automation";
 import { ChannelStore } from "@forge/channel";
+import {
+  applyCompanyRunTerminalEvent,
+  CompanyService,
+  OrganizationService,
+  WorkGates,
+  WorkService,
+} from "@forge/company-domain";
 import { AgentProfileStore } from "@forge/agent-profile";
 import { ArtifactService, ValidationService } from "@forge/evidence";
 import { ApprovalService } from "@forge/policy";
@@ -24,6 +31,7 @@ import {
 } from "./runtime.js";
 import { DaemonHost } from "./host/daemon-host.js";
 import { createDaemonModules } from "./modules/index.js";
+import { previewCompanyApprovalForRun } from "./modules/company-module.js";
 import type { ForgeDaemonContext } from "./modules/context.js";
 import {
   executeAutomation,
@@ -125,6 +133,14 @@ const executionClock = {
   now: () => new Date().toISOString(),
   nowMs: () => Date.now(),
 };
+const companyClock = { now: () => executionClock.now() };
+const artifactRoot = join(bootConfig.daemon.dataDir, "company");
+const company = {
+  companies: new CompanyService(forgeStore.db, companyClock),
+  org: new OrganizationService(forgeStore.db, companyClock),
+  work: new WorkService(forgeStore.db, companyClock, { artifactRoot }),
+  gates: new WorkGates(forgeStore.db, companyClock, { artifactRoot }),
+};
 let host!: DaemonHost<ForgeDaemonContext>;
 const workspaceGroups = new WorkspaceGroupService(forgeStore.db);
 const workspaceLeases = new WorkspaceLeaseService(forgeStore.db);
@@ -150,7 +166,28 @@ automationGovernance.ensureLocalPolicy();
 const productionExecution = createProductionExecutionComposition({
   db: forgeStore.db,
   clock: executionClock,
-  broadcast: (event) => host.broadcastCoreEvent(event),
+  broadcast: (event) => {
+    try {
+      applyCompanyRunTerminalEvent(company.gates, event);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(
+        `[forge:company] applyCompanyRunTerminalEvent failed eventId=${event.eventId} runId=${event.runId}: ${message}`,
+      );
+    }
+    if (event.type === "run.succeeded" && event.runId) {
+      void previewCompanyApprovalForRun(
+        { store: forgeStore, company, dataDir: bootConfig.daemon.dataDir },
+        event.runId,
+      ).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(
+          `[forge:company] previewApproval failed runId=${event.runId}: ${message}`,
+        );
+      });
+    }
+    return host.broadcastCoreEvent(event);
+  },
   onDeliveryFailure: ({ event, error }) => {
     console.error(
       `[forge:events] CoreEvent delivery failed eventId=${event.eventId} runId=${event.runId}: ${error.message}`,
@@ -261,6 +298,8 @@ const context: ForgeDaemonContext = {
   agentProfiles,
   artifacts,
   validations,
+  company,
+  companyWorkflowCapabilities: productionExecution.companyWorkflowCapabilities,
   automationGovernance,
   executor,
   executionRecovery,
@@ -317,7 +356,22 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  await host.start();
+  try {
+    await host.start();
+  } catch (error) {
+    // Race: another daemon bound the socket between our alive-check and listen.
+    // Exit cleanly so we do not keep a second SQLite connection open (SQLITE_BUSY).
+    const code =
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : "";
+    if (code === "EADDRINUSE" || (await isDaemonAlive(context.socketPath))) {
+      console.log(`[forge] another daemon already serves ${context.socketPath} — exiting`);
+      forgeStore.close();
+      process.exit(0);
+    }
+    throw error;
+  }
   outboxDispatcher.start();
   writePid();
   console.log(`Forge daemon listening on ${context.socketPath}`);

@@ -27,7 +27,7 @@ import {
   type SessionHookSource,
 } from "@forge/hooks";
 import { findSkillById, resolveSkill } from "@forge/skill-registry";
-import { loadMcpServers } from "@forge/config";
+import { attachMcpAuthorization, loadMcpServers } from "@forge/config";
 import {
   collectPluginMcpServers,
   collectPluginSkillPaths,
@@ -337,10 +337,18 @@ export async function prepareRunContext(options: {
     console.log(`[forge] Browser tools: ${browserToolCount} registered`);
   }
 
-  const mcpServers = loadMcpServers(
+  const loadedMcpServers = loadMcpServers(
     options.dataDir,
     options.guard.cwdPath,
   );
+  let mcpServers = loadedMcpServers;
+  try {
+    mcpServers = await attachMcpAuthorization(options.dataDir, loadedMcpServers);
+  } catch (error) {
+    console.warn(
+      `[forge] MCP authorization skipped: ${error instanceof Error ? error.message : "unavailable"}`,
+    );
+  }
   const pluginMcpServers = collectPluginMcpServers([
     ...options.runtime.plugins,
     ...projectPlugins,

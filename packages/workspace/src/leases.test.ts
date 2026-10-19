@@ -88,6 +88,32 @@ describe("WorkspaceLeaseService", () => {
     expect(leases.reclaimExpired("2026-01-01T00:00:00.000Z")).toEqual([expired.id]);
     expect(leases.acquire(writeLease(frontend, "run-b")).runId).toBe("run-b");
   });
+
+  it("lets a later run take over an unexpired write lease after the holder died", () => {
+    const { store, leases, frontend } = leaseFixture();
+    insertAttempt(store, { id: "attempt-dead", state: "abandoned" });
+    leases.acquire({
+      ...writeLease(frontend, "run-a"),
+      attemptId: "attempt-dead",
+      stepId: "step-1",
+    });
+
+    expect(leases.reclaimOrphaned()).toHaveLength(1);
+    expect(leases.acquire(writeLease(frontend, "run-b")).runId).toBe("run-b");
+  });
+
+  it("releases a run's leases when the durable run is cancelled", () => {
+    const { store, leases, frontend } = leaseFixture();
+    insertAttempt(store, { id: "attempt-dead", state: "abandoned" });
+    leases.acquire({
+      ...writeLease(frontend, "run-a"),
+      attemptId: "attempt-dead",
+      stepId: "step-1",
+    });
+
+    expect(leases.releaseByRunId("run-a", "run cancelled")).toBe(1);
+    expect(leases.acquire(writeLease(frontend, "run-b")).runId).toBe("run-b");
+  });
 });
 
 function leaseFixture() {

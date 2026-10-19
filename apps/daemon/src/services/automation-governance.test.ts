@@ -86,6 +86,31 @@ describe("AutomationGovernanceService local bootstrap", () => {
     ).not.toBe("forge-default");
   });
 
+  it("reuses an existing asset publish grant when a new workflow version is published", async () => {
+    const fx = fixture();
+    fx.seedExternalGrant();
+    const now = new Date().toISOString();
+    const assetId = `automation:${fx.automation.id}`;
+    fx.db
+      .prepare(
+        `INSERT INTO core_assets (
+          id, kind, name, owner_subject_kind, owner_subject_id, state, created_at, updated_at
+        ) VALUES (?, 'workflow', ?, 'human', 'local-user', 'published', ?, ?)`,
+      )
+      .run(assetId, fx.automation.name, now, now);
+    fx.db
+      .prepare(
+        `INSERT INTO core_asset_versions (
+          id, asset_id, version, state, owner_subject_id, source_ref, content_hash, created_at
+        ) VALUES (?, ?, 1, 'published', 'local-user', 'test', 'hash', ?)`,
+      )
+      .run(`${assetId}:1`, assetId, now);
+
+    await expect(fx.governance.prepare(fx.automation, fx.definition)).resolves.toMatchObject({
+      budgetAccountId: expect.stringContaining("automation-budget:"),
+    });
+  });
+
   it("issues grants from an explicit user authorization", async () => {
     const fx = fixture();
     fx.governance.ensureLocalPolicy();

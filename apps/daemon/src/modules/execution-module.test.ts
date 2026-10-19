@@ -13,6 +13,12 @@ import {
 } from "@forge/execution";
 import { EventStore } from "@forge/event-store";
 import { ForgeStore } from "@forge/store";
+import {
+  CompanyService,
+  OrganizationService,
+  WorkGates,
+  WorkService,
+} from "@forge/company-domain";
 import { CancelService } from "../services/cancel-service.js";
 import { RpcFaultError, TypedRouter } from "../host/router.js";
 import type { ForgeDaemonContext } from "./context.js";
@@ -43,6 +49,109 @@ describe("execution module", () => {
 
     expect(result).toEqual({ runId: "run-1", state: "running" });
     expect(context.executionStore.getRun("run-1")?.state).toBe("running");
+  });
+
+  it("rejects run.create for a company work item without an accepted plan", async () => {
+    const { router, context } = executionRouterFixture();
+    const { item } = createCompanyWorkItem(context);
+
+    await expect(
+      router.handle(
+        "run.create",
+        {
+          ...singleStepRunSpec(),
+          policyContext: { companyWorkItemId: item.id },
+        },
+        rpcContext(),
+      ),
+    ).rejects.toMatchObject({
+      fault: {
+        code: "POLICY_DENIED",
+        message: expect.stringMatching(/plan not accepted/),
+      },
+    });
+  });
+
+  it("links a company-gated run to its accepted plan", async () => {
+    const { router, context } = executionRouterFixture();
+    const { item, employee } = createCompanyWorkItem(context);
+    const plan = context.company.gates.upsertDraft({
+      workItemId: item.id,
+      kind: "plan",
+      content: "Implement the durable run",
+      actorId: employee.id,
+    });
+    context.company.gates.acceptArtifact({
+      artifactId: plan.id,
+      actorId: employee.id,
+    });
+    context.store.db
+      .prepare(
+        `INSERT INTO company_run_links
+          (id, company_id, work_item_id, run_id, plan_artifact_id, created_at)
+        VALUES (?, ?, ?, '', ?, ?)`,
+      )
+      .run(
+        "run-link-placeholder",
+        plan.companyId,
+        item.id,
+        plan.id,
+        context.executionClock.now(),
+      );
+
+    const result = await router.handle(
+      "run.create",
+      {
+        ...singleStepRunSpec(),
+        policyContext: { companyWorkItemId: item.id },
+      },
+      rpcContext(),
+    );
+    const links = context.store.db
+      .prepare(
+        `SELECT work_item_id AS workItemId, run_id AS runId,
+          plan_artifact_id AS planArtifactId
+        FROM company_run_links
+        WHERE work_item_id = ?`,
+      )
+      .all(item.id);
+    const linkedItem = context.store.db
+      .prepare("SELECT state FROM company_work_items WHERE id = ?")
+      .get(item.id);
+
+    expect(result).toEqual({ runId: "run-1", state: "running" });
+    expect(links).toEqual([
+      {
+        workItemId: item.id,
+        runId: "run-1",
+        planArtifactId: plan.id,
+      },
+    ]);
+    expect(linkedItem).toEqual({ state: "in_progress" });
+  });
+
+  it("maps unexpected company gate failures to INTERNAL_ERROR", async () => {
+    const { router, context } = executionRouterFixture();
+    const { item } = createCompanyWorkItem(context);
+    context.company.gates.assertImplementationRunAllowed = () => {
+      throw new Error("database is locked");
+    };
+
+    await expect(
+      router.handle(
+        "run.create",
+        {
+          ...singleStepRunSpec(),
+          policyContext: { companyWorkItemId: item.id },
+        },
+        rpcContext(),
+      ),
+    ).rejects.toMatchObject({
+      fault: {
+        code: "INTERNAL_ERROR",
+        message: "Internal RPC error",
+      },
+    });
   });
 
   it("returns run details including step states", async () => {
@@ -167,12 +276,38 @@ describe("execution module", () => {
     expect(result.tree.name).toBe("fix it");
   });
 
+  it("resolves the workbench session from run events when the spec has none", async () => {
+    const { router, context } = executionRouterFixture();
+    await router.handle("run.create", singleStepRunSpec(), rpcContext());
+    context.eventStore.append({
+      eventId: "agent-session-1",
+      type: "agent.event",
+      subject: { kind: "agent_profile", id: "forge-default" },
+      correlationId: "corr-1",
+      runId: "run-1",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      data: { sessionId: "sess-from-event" },
+    });
+
+    const result = await router.handle(
+      "trace.get",
+      { runId: "run-1" },
+      rpcContext(),
+    );
+
+    expect(result.sessionId).toBe("sess-from-event");
+  });
+
   it("recovers interrupted attempts before reclaiming expired workspace leases", async () => {
     const { context } = executionRouterFixture();
     const order: string[] = [];
     context.workspaceLeases = {
       reclaimExpired: () => {
         order.push("reclaim");
+        return [];
+      },
+      reclaimOrphaned: () => {
+        order.push("reclaim-orphaned");
         return [];
       },
     } as ForgeDaemonContext["workspaceLeases"];
@@ -187,7 +322,7 @@ describe("execution module", () => {
 
     await createExecutionModule().start?.(context);
 
-    expect(order).toEqual(["recover", "reclaim", "wake"]);
+    expect(order).toEqual(["recover", "reclaim", "reclaim-orphaned", "wake"]);
   });
 });
 
@@ -212,6 +347,12 @@ function executionRouterFixture(): {
     stepExecutors,
     clock,
   );
+  const company = {
+    companies: new CompanyService(forgeStore.db, clock),
+    org: new OrganizationService(forgeStore.db, clock),
+    work: new WorkService(forgeStore.db, clock),
+    gates: new WorkGates(forgeStore.db, clock),
+  };
   let tickScheduled = false;
   const context = {
     socketPath: join(root, "daemon.sock"),
@@ -238,6 +379,7 @@ function executionRouterFixture(): {
     agentProfiles: {} as ForgeDaemonContext["agentProfiles"],
     artifacts: {} as ForgeDaemonContext["artifacts"],
     validations: {} as ForgeDaemonContext["validations"],
+    company,
     automationGovernance: {} as ForgeDaemonContext["automationGovernance"],
     workspaceLeases: { reclaimExpired: () => [] } as ForgeDaemonContext["workspaceLeases"],
     executor,
@@ -257,6 +399,40 @@ function executionRouterFixture(): {
   registerExecutionHandlers(router, context);
   expect(tickScheduled).toBe(false);
   return { router, context };
+}
+
+function createCompanyWorkItem(context: ForgeDaemonContext) {
+  const company = context.company.companies.create({ name: "Forge Test Co" });
+  const department = context.company.org.createDepartment({
+    companyId: company.id,
+    name: "Engineering",
+  });
+  const template = context.company.org.createPositionTemplate({
+    companyId: company.id,
+    name: "Engineer",
+    charter: "Implement accepted plans",
+  });
+  const position = context.company.org.createPosition({
+    companyId: company.id,
+    departmentId: department.id,
+    templateId: template.id,
+    title: "Engineer",
+  });
+  const employee = context.company.org.hire({
+    companyId: company.id,
+    displayName: "Test Engineer",
+    positionId: position.id,
+    autonomyLevel: 2,
+  });
+  const item = context.company.work.createWorkItem({
+    companyId: company.id,
+    type: "implementation",
+    title: "Create a run",
+    problem: "No run exists",
+    expectedOutcome: "A durable run exists",
+    ownerId: employee.id,
+  });
+  return { item, employee };
 }
 
 function singleStepRunSpec(input?: { id?: string; sessionId?: string }): RunSpec {

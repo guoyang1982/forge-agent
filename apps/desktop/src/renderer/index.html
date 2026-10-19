@@ -63,7 +63,7 @@
               </button>
               <button id="navMcpBtn" class="side-nav-item side-nav-subitem">
                 <span class="nav-icon">⎈</span>
-                <span>MCP</span>
+                <span>连接器</span>
               </button>
               <button id="navSkillsBtn" class="side-nav-item side-nav-subitem">
                 <span class="nav-icon">◆</span>
@@ -326,6 +326,10 @@
 
           <footer id="composer" class="composer">
             <div class="composer-wrap">
+              <div id="companyReturnBar" class="company-return-bar hidden">
+                <span>这条执行来自公司工作项</span>
+                <button type="button" id="companyReturnBtn">回经营台</button>
+              </div>
               <div
                 id="slashPalette"
                 class="slash-palette hidden"
@@ -657,6 +661,24 @@
         <div class="field">
           <label for="automationPromptInput">Prompt</label>
           <textarea id="automationPromptInput" class="modal-input" rows="6" placeholder="自动化任务说明…"></textarea>
+        </div>
+        <div class="field-grid">
+          <div class="field">
+            <label for="automationRuntimeSelect">Runtime</label>
+            <select id="automationRuntimeSelect" class="modal-input">
+              <option value="">跟随项目默认</option>
+              <option value="forge">Forge</option>
+              <option value="cursor">Cursor</option>
+              <option value="codex">Codex</option>
+              <option value="claude-code">Claude Code</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="automationModelSelect">模型</label>
+            <select id="automationModelSelect" class="modal-input">
+              <option value="">跟随项目默认</option>
+            </select>
+          </div>
         </div>
         <div class="field">
           <label>工作目录</label>
@@ -1070,6 +1092,7 @@
     <script src="./hooks-ui.js"></script>
     <script src="./session-run-ui.js"></script>
     <script src="./git-branch-refresh.js"></script>
+    <script src="./connector-catalog.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

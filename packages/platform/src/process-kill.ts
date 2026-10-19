@@ -55,7 +55,27 @@ export function killProcessesOnIpcPath(
   }
 }
 
+/**
+ * Best-effort: terminate any process still holding the Forge SQLite DB.
+ * Duplicate daemons that lost the socket still pin WAL locks (SQLITE_BUSY).
+ */
+function killProcessesHoldingDb(dbPath: string): void {
+  if (process.platform === "win32") return;
+  try {
+    const output = execSync(`lsof -t ${JSON.stringify(dbPath)} 2>/dev/null`, {
+      encoding: "utf8",
+    });
+    for (const line of output.split(/\n/)) {
+      const pid = Number(line.trim());
+      if (Number.isFinite(pid) && pid > 1 && pid !== process.pid) killPid(pid);
+    }
+  } catch {
+    /* no holders */
+  }
+}
+
 /** Convenience wrapper when only the Forge data dir is known. */
 export function killDaemonInDataDir(dataDir: string, ipcPath: string): void {
   killProcessesOnIpcPath(ipcPath, { pidFile: join(dataDir, "daemon.pid") });
+  killProcessesHoldingDb(join(dataDir, "data.db"));
 }

@@ -6,6 +6,7 @@ import {
 } from "./permissions.js";
 import type { NetworkServiceConfig } from "./network-service.js";
 import type { BrowserBackendSummary } from "./browser.js";
+import { DAEMON_COMPANY_METHODS } from "./company.js";
 
 export {
   DEFAULT_PERMISSIONS,
@@ -37,6 +38,7 @@ export * from "./automation.js";
 export * from "./channel.js";
 export * from "./mobile.js";
 export * from "./browser.js";
+export * from "./company.js";
 export * from "./v2/index.js";
 
 export type JsonRpcId = number | string;
@@ -119,6 +121,30 @@ export interface RunRequest {
   /** Inbound channel gateway run (WeChat iLink, etc.). */
   channelRun?: ChannelRunContext;
   autoApply?: boolean;
+  /** Unattended Company work-item run — skip interactive write/command confirms. */
+  companyWorkItemId?: string;
+  /**
+   * Bound skill ids for the focused digital employee / talent.
+   * When set, skill matching prefers these ids (see also `strictTalentSkills`).
+   */
+  talentSkillIds?: string[];
+  /**
+   * When true with `talentSkillIds`, only those skills are offered in the catalog.
+   */
+  strictTalentSkills?: boolean;
+  /**
+   * Company digital-employee persona (talent pack system prompt). Injected into
+   * the run's system context so the model acts as that employee; skills still
+   * load on demand from the normal catalog / persona instructions.
+   */
+  personaPrompt?: string;
+  /** Display label for workbench, e.g. "苏衡 · 高级开发工程师". */
+  personaLabel?: string;
+  /**
+   * When true, the caller expected a company digital-employee persona. If
+   * `personaPrompt` is empty the daemon emits a failed `persona_active` event.
+   */
+  personaExpected?: boolean;
   files?: string[];
   attachments?: RunAttachment[];
 }
@@ -429,6 +455,7 @@ export interface McpListItem {
   name: string;
   command: string;
   args: string[];
+  url?: string;
   enabled: boolean;
   source: string;
   managedInConfig: boolean;
@@ -1030,6 +1057,17 @@ export type AgentEvent =
       loadedCount: number;
     }
   | {
+      /** Company digital-employee talent-pack persona (system prompt) injection result. */
+      type: "persona_active";
+      sessionId?: string;
+      loaded: boolean;
+      label?: string;
+      promptChars?: number;
+      /** Short preview of the injected persona for the workbench detail panel. */
+      preview?: string;
+      reason?: string;
+    }
+  | {
       type: "skill_used";
       sessionId?: string;
       skillId: string;
@@ -1406,6 +1444,13 @@ export interface ForgeConfig {
   activeProfile?: string;
   /** Named profiles — deepseek, openai, custom, … */
   profiles?: Record<string, ModelProfile>;
+  /** External agent runtime settings (Claude Code CLI, etc.). */
+  runtimes?: {
+    claudeCode?: {
+      env?: Record<string, string>;
+      models?: RuntimeModelSummary[];
+    };
+  };
   model: {
     /** Catalog id: openai | deepseek | dashscope | anthropic-deepseek | custom */
     provider?: string;
@@ -1435,7 +1480,8 @@ export interface ForgeConfig {
   mcp?: {
     servers: Array<{
       name: string;
-      command: string;
+      command?: string;
+      url?: string;
       args?: string[];
       env?: Record<string, string>;
       enabled?: boolean;
@@ -1594,6 +1640,7 @@ export const DAEMON_METHODS = {
   MOBILE_WORKSPACE_DIFF_LIST: "mobile.workspace.diff.list",
   MOBILE_WORKSPACE_DIFF_GET: "mobile.workspace.diff.get",
   PERMISSION_RESPONSE: "permission_response",
+  ...DAEMON_COMPANY_METHODS,
 } as const;
 
 export const AGENT_EVENT_METHOD = "agent.event";

@@ -121,7 +121,9 @@ export class DurableExecutor {
       const firstPartyChat =
         run?.spec.policyContext &&
         isFirstPartyChatPolicyContext(run.spec.policyContext);
-      if (!firstPartyChat) {
+      const companyWorkItem =
+        typeof run?.spec.policyContext?.companyWorkItemId === "string";
+      if (!firstPartyChat && !companyWorkItem) {
         this.store.finishAttempt(
           claimed.id,
           {

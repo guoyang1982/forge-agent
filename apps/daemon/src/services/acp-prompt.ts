@@ -22,6 +22,20 @@ export function buildAcpPromptBlocks(
 
   sections.push(FORGE_TURN_RULES);
 
+  if (request.automationRun || request.companyWorkItemId) {
+    sections.push(
+      [
+        request.companyWorkItemId ? "Company execution:" : "Automation execution:",
+        "- You are the unattended executor, not a chatbot. Complete the task in this turn.",
+        "- Do not ask the user clarifying questions, preferences, or confirmation.",
+        "- Writes land immediately. Do not wait for REPL y or a click to confirm.",
+        "- If a tool is denied or fails, pick a reasonable default and continue; do not wait for a reply.",
+        "- Follow the user's task exactly. If they ask to inspect/review only, do not modify files.",
+        "- Finish with a concrete result summary.",
+      ].join("\n"),
+    );
+  }
+
   if (options?.priorHistory) {
     sections.push(options.priorHistory);
   }

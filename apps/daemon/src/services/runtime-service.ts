@@ -8,8 +8,20 @@ import type {
 } from "@forge/protocol";
 import { getProvider, loadConfig } from "@forge/config";
 import { acpSessionPool } from "./acp-session-pool.js";
-import { listClaudeModels } from "./claude-runtime.js";
-import { listCodexModels, listCodexModes } from "./codex-runtime.js";
+import {
+  listClaudeModels,
+  prewarmClaudeRuntime,
+  releaseAllClaudePrewarm,
+  releaseClaudeSession,
+} from "./claude-runtime.js";
+import {
+  listCodexModels,
+  listCodexModes,
+  prewarmCodexAppServer,
+  releaseAllCodexPrewarm,
+  releaseCodexSession,
+  resolveCodexBinary,
+} from "./codex-runtime.js";
 import { listCursorModes, prewarmCursorAcp, probeCursorRuntime } from "./cursor-runtime.js";
 
 function commandExists(name: string): boolean {
@@ -114,13 +126,23 @@ export async function listRuntimes(cwd: string): Promise<RuntimeListResult> {
     claude.models = listClaudeModels().models;
   }
 
-  const codex = summarizeBinaryProvider({
-    id: "codex",
-    label: "Codex",
-    kind: "app-server",
-    binaryCandidates: ["codex"],
-    readyMessage: "Codex app-server 可用",
-  });
+  const codexBinary = resolveCodexBinary();
+  const codex: RuntimeProviderSummary = codexBinary
+    ? {
+        id: "codex",
+        label: "Codex",
+        kind: "app-server",
+        status: "ready",
+        message: "Codex app-server 可用",
+        binaryPath: codexBinary,
+      }
+    : {
+        id: "codex",
+        label: "Codex",
+        kind: "app-server",
+        status: "binary_missing",
+        message: "未找到 codex CLI",
+      };
   if (codex.status === "ready") {
     codex.modes = listCodexModes();
     try {
@@ -181,11 +203,15 @@ export async function closeAcpSession(params: {
 
 export async function releaseAcpForgeSession(sessionId: string): Promise<{ released: number }> {
   const released = await acpSessionPool.releaseForgeSession(sessionId);
+  releaseCodexSession(sessionId);
+  releaseClaudeSession(sessionId);
   return { released };
 }
 
 export async function releaseAllAcpSessions(): Promise<{ released: number }> {
   const released = await acpSessionPool.releaseAll();
+  releaseAllCodexPrewarm();
+  releaseAllClaudePrewarm();
   return { released };
 }
 
@@ -216,6 +242,21 @@ export async function prewarmAcpSession(params: {
       model: params.model,
       mode: params.mode,
       sandboxMode: params.sandboxMode as never,
+    });
+  }
+  if (params.provider === "codex") {
+    return prewarmCodexAppServer({
+      cwd,
+      model: params.model,
+      mode: params.mode,
+      sandboxMode: params.sandboxMode,
+    });
+  }
+  if (params.provider === "claude-code") {
+    return prewarmClaudeRuntime({
+      cwd,
+      model: params.model,
+      mode: params.mode,
     });
   }
   return { ok: false, skipped: "unsupported_provider" };

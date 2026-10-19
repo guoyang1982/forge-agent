@@ -46,6 +46,31 @@ describe("ChannelGatewayHost restart policy", () => {
     await new Promise((resolve) => setTimeout(resolve, 250));
     expect((await host.getStatus()).running).toBe(false);
   });
+
+  it("fails fast when the Gateway process exits before health", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "forge-gateway-host-"));
+    tempDirs.push(dataDir);
+    const port = 40_000 + Math.floor(Math.random() * 10_000);
+    const host = new ChannelGatewayHost({
+      dataDir,
+      pidFile: join(dataDir, "gateway.pid"),
+      listenPort: port,
+      gatewayEntry: join(appRoot, "test-fixtures", "channel-gateway-crash.mjs"),
+      healthTimeoutMs: 5_000,
+      restartBaseDelayMs: 20,
+      restartMaxDelayMs: 100,
+    });
+    hosts.push(host);
+
+    const startedAt = Date.now();
+    await expect(host.start()).rejects.toThrow(
+      /exited before becoming healthy[\s\S]*boom: simulated gateway crash/,
+    );
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect((await host.getStatus()).running).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect((await host.getStatus()).running).toBe(false);
+  });
 });
 
 async function eventually<T>(fn: () => Promise<T | null>, timeoutMs = 5_000): Promise<T> {

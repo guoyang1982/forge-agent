@@ -320,14 +320,20 @@ export class GovernedStepExecutor {
       }
 
       if (stepOutcome.state === "waiting") {
-        this.releaseIdempotencyClaim(input);
-        return {
-          state: "waiting",
-          waitReason: {
-            kind: "manual_review",
-            reason: stepOutcome.waitRef,
-          },
+        const waitReason: StepWaitReason = {
+          kind: "manual_review",
+          reason: stepOutcome.waitRef,
         };
+        this.store.enterStepWait(
+          input.attemptId,
+          "manual_review",
+          stepOutcome.payload != null
+            ? { ...waitReason, payload: stepOutcome.payload }
+            : waitReason,
+          this.clock.now(),
+        );
+        this.releaseIdempotencyClaim(input);
+        return { state: "waiting", waitReason };
       }
 
       if (stepOutcome.state === "failed") {

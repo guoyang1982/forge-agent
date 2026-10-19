@@ -1,3 +1,4 @@
+import { composeReadOnlyToolGate } from "./read-only-tools.js";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type {
@@ -9,7 +10,7 @@ import type {
 } from "@forge/protocol";
 import { flattenContentForTextOnlyApi, plainTextFromChatContent } from "@forge/protocol";
 import { DEFAULT_CONFIG } from "@forge/protocol";
-import { loadConfig } from "@forge/config";
+import { applyRequestedModel, loadConfig } from "@forge/config";
 import type { SessionStore } from "@forge/session";
 import {
   AgentMaxStepsError,
@@ -91,6 +92,7 @@ import { getExternalRuntime } from "./external-runtime-registry.js";
 import { buildExternalHistoryContext } from "./external-runtime-history.js";
 import { createMcpServerRequestHandler } from "./mcp-permission.js";
 import type { RuntimePolicy } from "@forge/agent-profile";
+import { applyUnattendedRunFlags } from "@forge/execution";
 
 export interface RunServiceDeps {
   sessions: SessionStore;
@@ -124,23 +126,14 @@ export async function handleRun(
   runtimePolicy?: RuntimePolicy,
   externalSignal?: AbortSignal,
 ): Promise<RunResult> {
-  const req = params as RunRequest;
+  const req = applyUnattendedRunFlags(params as RunRequest);
   const cwd = req.cwd || process.cwd();
   const absCwd = resolve(cwd);
   const loaded = loadConfig({ cwd: absCwd });
-  const requestedModel = effectiveModelName(
-    runtimePolicy?.model || req.runtime?.model,
-  );
   const provider = req.runtime?.provider?.trim() || "forge";
   const config =
-    provider === "forge" && requestedModel
-      ? {
-          ...loaded,
-          model: {
-            ...loaded.model,
-            name: requestedModel,
-          },
-        }
+    provider === "forge"
+      ? applyRequestedModel(loaded, runtimePolicy?.model || req.runtime?.model)
       : loaded;
   const guard = await WorkspaceGuard.ensure(absCwd, {
     allowedRoots: config.permissions?.fileSystem.allowedRoots,
@@ -182,10 +175,7 @@ export async function handleRun(
           : `[微信] ${req.message}`
       ).slice(0, 120)
     : req.automationRun
-      ? (req.automationRun.name
-          ? `[自动化] ${req.automationRun.name}`
-          : `[自动化] ${req.message}`
-        ).slice(0, 120)
+      ? `[自动化] ${String(req.message || req.automationRun.name || "").trim()}`.slice(0, 200)
       : runPreviewFromAttachments(req);
 
   runEmit({
@@ -403,14 +393,11 @@ export async function handleRun(
         abort.signal,
         config.permissions?.apps,
       ),
-      // When the message focuses a single hired talent, prioritize (or, in
-      // strict mode, restrict to) that talent's bound skills during skill
-      // matching. Full talent activation happens further below.
-      ...(await resolveFocusedTalentSkillContext(
-        config.daemon.dataDir,
-        cwd,
-        effectiveMessage,
-      )),
+      // Company research (and similar callers) pass talentSkillIds on the
+      // request. Otherwise, when the message focuses a single hired talent,
+      // prioritize (or restrict) that talent's bound skills. Full talent
+      // activation happens further below.
+      ...(await resolveRunTalentSkillContext(req, config.daemon.dataDir, cwd, effectiveMessage)),
     });
     hookBindings = discoveredHookBindings;
     hookCtx = discoveredHookCtx;
@@ -466,6 +453,31 @@ export async function handleRun(
     }
 
     let initial = assembleRunMessages(freshMessages, historyPack.messages);
+    // Company research (and similar) pass the digital employee's talent-pack
+    // persona so the model acts as that person — not a generic researcher.
+    const personaPrompt =
+      typeof req.personaPrompt === "string" ? req.personaPrompt.trim() : "";
+    const personaLabel =
+      typeof req.personaLabel === "string" ? req.personaLabel.trim() : "";
+    let companyPersonaLoaded = false;
+    if (personaPrompt) {
+      injectSystemContext(initial, buildCompanyPersonaBlock(personaPrompt));
+      companyPersonaLoaded = true;
+      runEmit({
+        type: "persona_active",
+        loaded: true,
+        label: personaLabel || undefined,
+        promptChars: personaPrompt.length,
+        preview: personaPrompt.slice(0, 280),
+      });
+    } else if (req.personaExpected) {
+      runEmit({
+        type: "persona_active",
+        loaded: false,
+        label: personaLabel || undefined,
+        reason: "员工档案没有 system_prompt（人设），本轮未注入人才包身份",
+      });
+    }
     // The current user message is persisted just below. Establish the replay
     // baseline now so cancellation during intent planning cannot append the
     // entire initial prompt (and duplicate that user message) in the catch path.
@@ -599,6 +611,14 @@ export async function handleRun(
       })),
       dispatchAssignments: dispatchAssignmentInputs,
       unknownMentions,
+      companyPersona: companyPersonaLoaded
+        ? {
+            label: personaLabel || "company digital employee",
+            promptChars: personaPrompt.length,
+          }
+        : req.personaExpected
+          ? { label: personaLabel || "expected", promptChars: 0, missing: true }
+          : undefined,
     });
     if (abort.signal.aborted) throw new RunCancelledError(initial);
     runEmit({
@@ -606,7 +626,10 @@ export async function handleRun(
       summary: intentPlan.summary,
       runKind: intentPlan.runKind,
       constraints: intentPlan.constraints,
-      uncertainties: intentPlan.uncertainties,
+      uncertainties: scrubPersonaFalseNegatives(
+        intentPlan.uncertainties,
+        companyPersonaLoaded,
+      ),
       executionReason: intentPlan.executionReason,
       source: intentPlan.source,
     });
@@ -891,16 +914,21 @@ export async function handleRun(
       confirmSoftware: sharedConfirmSoftware,
       confirmCommand:
         // autoApply is about patches, not shell — it must not silence command
-        // confirmation. Only non-interactive runs (automation/channel) bypass.
-        config.ui?.confirmCommands && !req.automationRun && !req.channelRun
+        // confirmation. Only non-interactive runs (automation/channel/company) bypass.
+        config.ui?.confirmCommands &&
+        !req.automationRun &&
+        !req.channelRun &&
+        !req.companyWorkItemId
           ? createCommandConfirmHandler(runEmit, sessionId, abort.signal)
           : undefined,
       spawnSubagent,
       signal: abort.signal,
       skillRoots,
-      allowTool: talentToolGate
-        ? (name) => talentToolGate!(name)
-        : undefined,
+      // Read-only runs (e.g. governed research branches) get an allowlist of non-mutating tools.
+      allowTool: composeReadOnlyToolGate(
+        req,
+        talentToolGate ? (name) => talentToolGate!(name) : undefined,
+      ),
       onEvent: (event) => {
         trackSkillUsage(event);
         runEmit(event);
@@ -1013,12 +1041,30 @@ export async function handleRun(
 type ActiveTalent = { hired: HiredTalent; template: TalentTemplate };
 
 /**
- * When a message focuses exactly one hired talent (a single `@mention`), return
- * its bound skills so skill matching can prefer them, plus strict mode when the
- * talent has `strictSkills` enabled. Multi-@ dispatch returns nothing: each
- * dispatched talent gets its own skill context in its sub-run, so biasing the
- * coordinator would mislead.
+ * Prefer explicit RunRequest skill binding (company research digital employees).
+ * Otherwise, when a message focuses exactly one hired talent (a single
+ * `@mention`), return its bound skills so skill matching can prefer them, plus
+ * strict mode when the talent has `strictSkills` enabled. Multi-@ dispatch
+ * returns nothing: each dispatched talent gets its own skill context in its
+ * sub-run, so biasing the coordinator would mislead.
  */
+async function resolveRunTalentSkillContext(
+  req: RunRequest,
+  dataDir: string,
+  cwd: string,
+  message: string,
+): Promise<{ talentSkillIds?: string[]; strictTalentSkills?: boolean }> {
+  if (Array.isArray(req.talentSkillIds) || req.strictTalentSkills === true) {
+    return {
+      talentSkillIds: Array.isArray(req.talentSkillIds)
+        ? req.talentSkillIds.filter((id) => typeof id === "string" && id.trim().length > 0)
+        : [],
+      strictTalentSkills: Boolean(req.strictTalentSkills),
+    };
+  }
+  return resolveFocusedTalentSkillContext(dataDir, cwd, message);
+}
+
 async function resolveFocusedTalentSkillContext(
   dataDir: string,
   cwd: string,
@@ -1071,6 +1117,12 @@ function intentRunKind(talentCount: number): IntentPlanRunKind {
   return "talent_dispatch";
 }
 
+type CompanyPersonaIntentInfo = {
+  label: string;
+  promptChars: number;
+  missing?: boolean;
+};
+
 async function buildRunIntentPlan(options: {
   config: ForgeConfig;
   signal?: AbortSignal;
@@ -1080,6 +1132,7 @@ async function buildRunIntentPlan(options: {
   talents: Array<{ mention: string; displayName: string; role: string }>;
   dispatchAssignments: IntentDispatchAssignment[];
   unknownMentions: string[];
+  companyPersona?: CompanyPersonaIntentInfo;
 }): Promise<RunIntentPlan> {
   const fallback = fallbackIntentPlan(options);
   try {
@@ -1110,8 +1163,14 @@ function fallbackIntentPlan(options: {
   runKind: IntentPlanRunKind;
   talents: Array<{ mention: string; displayName: string; role: string }>;
   unknownMentions: string[];
+  companyPersona?: CompanyPersonaIntentInfo;
 }): RunIntentPlan {
   const constraints = [];
+  if (options.companyPersona && !options.companyPersona.missing) {
+    constraints.push(
+      `数字人人设已注入：${options.companyPersona.label}（${options.companyPersona.promptChars} 字）`,
+    );
+  }
   if (options.talents.length) {
     constraints.push(
       `已识别人才：${options.talents
@@ -1124,19 +1183,38 @@ function fallbackIntentPlan(options: {
       `未命中人才：${options.unknownMentions.map((m) => `@${m}`).join(" ")}`,
     );
   }
+  const uncertainties = ["模型理解不可用，已使用规则摘要。"];
+  if (options.companyPersona?.missing) {
+    uncertainties.push("本轮期望数字人人设但档案缺少 system_prompt。");
+  }
   return {
     summary: options.message.trim().replace(/\s+/g, " ").slice(0, 180) || "执行用户请求",
     runKind: options.runKind,
     constraints,
-    uncertainties: ["模型理解不可用，已使用规则摘要。"],
+    uncertainties,
     executionReason:
       options.runKind === "talent_dispatch"
         ? "检测到多个已雇佣人才提及，将先规划再按依赖执行。"
         : options.runKind === "talent_foreground"
           ? "检测到一个已雇佣人才提及，将由该人才前台接管本轮。"
-          : "未检测到已雇佣人才提及，将由 Coordinator 直接执行。",
+          : options.companyPersona && !options.companyPersona.missing
+            ? "公司调研分支已注入数字人人设，将按该人设执行。"
+            : "未检测到已雇佣人才提及，将由 Coordinator 直接执行。",
     source: "heuristic",
   };
+}
+
+function scrubPersonaFalseNegatives(
+  uncertainties: string[],
+  personaLoaded: boolean,
+): string[] {
+  if (!personaLoaded) return uncertainties;
+  return uncertainties.filter(
+    (item) =>
+      !/persona|talent-pack|system prompt|人设|无人设|没有.*人设|cannot be confirmed/i.test(
+        item,
+      ),
+  );
 }
 
 function buildIntentPlanningPrompt(options: {
@@ -1146,6 +1224,7 @@ function buildIntentPlanningPrompt(options: {
   talents: Array<{ mention: string; displayName: string; role: string }>;
   dispatchAssignments: IntentDispatchAssignment[];
   unknownMentions: string[];
+  companyPersona?: CompanyPersonaIntentInfo;
 }): string {
   const isDispatch =
     options.runKind === "talent_dispatch" && options.dispatchAssignments.length > 0;
@@ -1194,12 +1273,25 @@ function buildIntentPlanningPrompt(options: {
         '  "executionReason": "why this run mode/flow is appropriate"',
         "}",
       ];
+  const companyPersonaLines = options.companyPersona
+    ? options.companyPersona.missing
+      ? [
+          "Company digital-employee persona: EXPECTED BUT MISSING (no system_prompt on employee profile).",
+          "You MAY list persona missing as an uncertainty.",
+        ]
+      : [
+          `Company digital-employee persona: LOADED — ${options.companyPersona.label} (${options.companyPersona.promptChars} chars).`,
+          "It is already injected into the system context for this run.",
+          "Do NOT list missing persona / talent-pack / system prompt as an uncertainty.",
+        ]
+    : ["Company digital-employee persona: none for this run."];
   return [
     "Understand the user's request before execution.",
     "Return JSON only. Do not execute or plan tool calls here.",
     "",
     `Workspace: ${options.cwd}`,
     `Detected runKind: ${options.runKind}`,
+    ...companyPersonaLines,
     isDispatch ? "Hired talents and their tasks:" : "Detected hired talents:",
     roster,
     `Unknown @mentions: ${unknown}`,
@@ -1360,6 +1452,17 @@ function injectSystemContext(
   if (typeof system.content === "string") {
     system.content = `${system.content}\n\n${block}`;
   }
+}
+
+function buildCompanyPersonaBlock(personaPrompt: string): string {
+  return [
+    "## Digital employee persona (talent pack)",
+    "Act as this company digital employee for the whole turn. Their persona below",
+    "overrides generic researcher framing when they conflict. Follow the task JSON",
+    "contract in the user message for output shape.",
+    "",
+    personaPrompt,
+  ].join("\n");
 }
 
 function buildTalentAssignments(
@@ -1546,10 +1649,4 @@ function linkExternalAbortSignal(
     return;
   }
   externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
-}
-
-function effectiveModelName(name: string | undefined): string | undefined {
-  const trimmed = name?.trim();
-  if (!trimmed || trimmed === "forge-default") return undefined;
-  return trimmed;
 }

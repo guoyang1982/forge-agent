@@ -5,11 +5,15 @@ import { fileURLToPath } from "node:url";
 
 export interface McpServerConfig {
   name: string;
-  command: string;
+  command?: string;
+  /** Remote Streamable HTTP MCP endpoint. OAuth tokens stay outside this config. */
+  url?: string;
   args?: string[];
   env?: Record<string, string>;
   enabled?: boolean;
   cwd?: string;
+  /** Runtime-only bearer token. Never write this into mcp.json. */
+  authorization?: string;
 }
 
 interface McpTool {
@@ -67,6 +71,8 @@ export class McpClient {
   private proc: ChildProcessWithoutNullStreams | null = null;
   private buffer = "";
   private stderrTail = "";
+  private httpReady = false;
+  private sessionId = "";
   private nextId = 1;
   private pending = new Map<number, PendingRequest>();
   private startPromise: Promise<void> | null = null;
@@ -99,6 +105,13 @@ export class McpClient {
   }
 
   private async startProcess(): Promise<void> {
+    if (this.config.url) {
+      await this.startHttp();
+      return;
+    }
+    if (!this.config.command) {
+      throw new Error(`MCP ${this.config.name} 缺少 command`);
+    }
     this.buffer = "";
     this.stderrTail = "";
     const proc = spawn(this.config.command, this.config.args ?? [], {
@@ -173,6 +186,7 @@ export class McpClient {
     params: unknown,
     options: McpToolCallOptions = {},
   ): Promise<unknown> {
+    if (this.config.url) return this.httpRequest(method, params);
     return new Promise((resolve, reject) => {
       const proc = this.proc;
       if (!proc?.stdin || !this.isRunning()) {
@@ -269,9 +283,70 @@ export class McpClient {
   }
 
   private notify(method: string, params: unknown): void {
+    if (this.config.url) {
+      void this.postJsonRpc({ jsonrpc: "2.0", method, params });
+      return;
+    }
     this.proc?.stdin?.write(
       JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n",
     );
+  }
+
+  private async startHttp(): Promise<void> {
+    if (!this.config.authorization) {
+      throw new Error(`MCP ${this.config.name} 需要授权`);
+    }
+    await this.httpRequest("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "forge-agent", version: "0.2.0" },
+    });
+    await this.postJsonRpc({
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+      params: {},
+    });
+    this.httpReady = true;
+  }
+
+  private httpRequest(method: string, params: unknown): Promise<unknown> {
+    const id = this.nextId++;
+    return this.postJsonRpc({ jsonrpc: "2.0", id, method, params });
+  }
+
+  private async postJsonRpc(payload: Record<string, unknown>): Promise<unknown> {
+    if (!this.config.url || !this.config.authorization) {
+      throw new Error(`MCP ${this.config.name} 需要授权`);
+    }
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${this.config.authorization}`,
+    };
+    if (this.sessionId) headers["mcp-session-id"] = this.sessionId;
+    const response = await fetch(this.config.url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+      redirect: "error",
+      signal: AbortSignal.timeout(this.requestTimeoutMs),
+    });
+    const session = response.headers.get("mcp-session-id") ?? "";
+    if (session && session.length <= 200 && /^[A-Za-z0-9._:-]+$/.test(session)) {
+      this.sessionId = session;
+    }
+    if (response.status === 401) {
+      this.httpReady = false;
+      throw new Error(`MCP ${this.config.name} 需要重新授权`);
+    }
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`MCP ${this.config.name} 请求失败 (${response.status})`);
+    }
+    if (!text.trim()) return undefined;
+    const message = parseMcpHttpMessage(response.headers.get("content-type") ?? "", text);
+    if (message.error) throw new Error(message.error.message || "MCP 请求失败");
+    return message.result;
   }
 
   async listTools(): Promise<McpTool[]> {
@@ -320,15 +395,37 @@ export class McpClient {
   }
 
   isRunning(): boolean {
+    if (this.config.url) return this.httpReady;
     return (
       this.proc != null && this.proc.exitCode == null && !this.proc.killed
     );
   }
 
   stop(): void {
+    if (this.config.url) {
+      this.httpReady = false;
+      this.sessionId = "";
+      return;
+    }
     const proc = this.proc;
     if (proc) this.invalidate(proc, new Error(`MCP ${this.config.name} stopped`));
   }
+}
+
+export function parseMcpHttpMessage(
+  contentType: string,
+  body: string,
+): { result?: unknown; error?: { message?: string } } {
+  const payload = contentType.includes("text/event-stream")
+    ? body
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim())
+        .filter(Boolean)
+        .at(-1)
+    : body;
+  if (!payload) return {};
+  return JSON.parse(payload) as { result?: unknown; error?: { message?: string } };
 }
 
 function isImageContentBlock(block: McpContentBlock): boolean {

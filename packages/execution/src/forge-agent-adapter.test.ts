@@ -20,6 +20,45 @@ describe("forge agent adapter", () => {
     });
   });
 
+  it("forwards autoApply and companyWorkItemId into the durable step", () => {
+    expect(
+      runRequestToRunSpec(
+        {
+          cwd: "/repo",
+          message: "fix it",
+          autoApply: true,
+          companyWorkItemId: "work_1",
+        },
+        fixedIds(),
+      ).steps[0]?.input,
+    ).toMatchObject({
+      autoApply: true,
+      companyWorkItemId: "work_1",
+    });
+  });
+
+  it("auto-applies company runs even when the stored step omitted autoApply", async () => {
+    const run = vi.fn<ForgeAgentRunFn>().mockResolvedValue({
+      sessionId: "session-unattended",
+      finalText: "done",
+    });
+    const adapter = new ForgeAgentStepExecutor({
+      run,
+      unattendedFromRun: (runId) =>
+        runId === "run-1" ? { companyWorkItemId: "work_1" } : undefined,
+    });
+    await adapter.execute(stepInput(), new AbortController().signal);
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        autoApply: true,
+        companyWorkItemId: "work_1",
+      }),
+      expect.any(Function),
+      expect.any(AbortSignal),
+      undefined,
+    );
+  });
+
   it("stores finalText as an output artifact reference", async () => {
     const adapter = new ForgeAgentStepExecutor({
       run: vi.fn<ForgeAgentRunFn>().mockResolvedValue({
@@ -117,6 +156,21 @@ describe("forge agent adapter", () => {
     );
 
     expect(receivedPolicy).toEqual(runtimePolicy);
+  });
+
+  it("fails interrupted agent steps on daemon restart instead of parking them", async () => {
+    const adapter = new ForgeAgentStepExecutor({
+      run: vi.fn<ForgeAgentRunFn>().mockResolvedValue({
+        sessionId: "session-1",
+        finalText: "done",
+      }),
+    });
+    const outcome = await adapter.reconcile!(stepInput());
+    expect(outcome).toMatchObject({
+      state: "failed",
+      retryable: false,
+      error: { code: "CORE_INTERRUPTED" },
+    });
   });
 
   it("hashes final text deterministically", () => {

@@ -81,4 +81,29 @@ describe("acp-prompt", () => {
     expect(text).toContain("结论");
     expect(text).toContain("分析一下这个方案");
   });
+
+  it("tells unattended automation runs to finish the task without asking questions", () => {
+    const text = expandRunPromptText({
+      ...request("写个新的小游戏"),
+      automationRun: { name: "执行一次 写个新的小游戏" },
+    });
+
+    expect(text).toContain("unattended executor");
+    expect(text).toContain("Do not ask the user clarifying questions");
+    expect(text).toContain("inspect/review only");
+    expect(text).toContain("Do not wait for REPL");
+    expect(text).not.toContain("Write real files to the workspace");
+    expect(text).toContain("写个新的小游戏");
+  });
+
+  it("tells unattended company runs to finish without waiting for confirm", () => {
+    const text = expandRunPromptText({
+      ...request("实现已接受的计划"),
+      companyWorkItemId: "work_1",
+    });
+    expect(text).toContain("Company execution:");
+    expect(text).toContain("unattended executor");
+    expect(text).toContain("Do not wait for REPL");
+    expect(text).toContain("实现已接受的计划");
+  });
 });

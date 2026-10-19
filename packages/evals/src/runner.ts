@@ -18,56 +18,63 @@ export class EvalRunner {
 
   async runSuite(suite: EvalSuite): Promise<EvalRunResult> {
     const repeats = Math.max(1, suite.repeats ?? 1);
-    const execute = this.options.executeCase ?? defaultExecuteCase;
+    const execute = this.options.executeCase;
+    if (!execute) throw new Error("eval executor required");
     const results: EvalCaseResult[] = [];
 
     for (const evalCase of suite.cases) {
       for (let repeatIndex = 0; repeatIndex < repeats; repeatIndex++) {
-        const startedAt = Date.now();
-        const output = await execute({ suite, evalCase, repeatIndex });
-        const elapsed = Date.now() - startedAt;
-
-        if (output.durationMs > evalCase.budget.maxDurationMs) {
+        const startedAt = performance.now();
+        const controller = new AbortController();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const budgetMs = evalCase.budget.maxDurationMs;
+          if (!Number.isFinite(budgetMs) || budgetMs < 0 || budgetMs > 2_147_483_647) {
+            throw new Error("invalid duration budget");
+          }
+          const timeout = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              // Reject first: an executor's abort handler may settle its promise.
+              reject(new Error("duration budget exceeded"));
+              controller.abort();
+            }, budgetMs);
+          });
+          // Promise.race also observes late rejections from uncooperative executors.
+          const output = await Promise.race([
+            Promise.resolve().then(() => execute({ suite, evalCase, repeatIndex, signal: controller.signal })),
+            timeout,
+          ]);
+          const durationMs = Math.max(performance.now() - startedAt, output.durationMs);
+          const budgetFailure = durationMs > budgetMs
+            ? "duration budget exceeded"
+            : output.costMinor > evalCase.budget.maxCostMinor
+              ? "cost budget exceeded"
+              : undefined;
+          if (durationMs > budgetMs) controller.abort();
+          results.push({
+            ...output,
+            caseId: evalCase.id,
+            repeatIndex,
+            passed: budgetFailure ? false : output.passed,
+            durationMs,
+            costKnown: true,
+            failureReason: budgetFailure ?? output.failureReason,
+          });
+        } catch (error) {
           results.push({
             caseId: evalCase.id,
             repeatIndex,
             passed: false,
-            durationMs: output.durationMs,
-            costMinor: output.costMinor,
-            toolCorrect: output.toolCorrect,
-            policyCompliant: output.policyCompliant,
-            traceFixture: output.traceFixture,
-            failureReason: output.failureReason ?? "duration budget exceeded",
+            durationMs: performance.now() - startedAt,
+            costMinor: 0n,
+            costKnown: false,
+            toolCorrect: false,
+            policyCompliant: false,
+            failureReason: error instanceof Error ? error.message : String(error),
           });
-          continue;
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
         }
-
-        if (output.costMinor > evalCase.budget.maxCostMinor) {
-          results.push({
-            caseId: evalCase.id,
-            repeatIndex,
-            passed: false,
-            durationMs: output.durationMs,
-            costMinor: output.costMinor,
-            toolCorrect: output.toolCorrect,
-            policyCompliant: output.policyCompliant,
-            traceFixture: output.traceFixture,
-            failureReason: output.failureReason ?? "cost budget exceeded",
-          });
-          continue;
-        }
-
-        results.push({
-          caseId: evalCase.id,
-          repeatIndex,
-          passed: output.passed,
-          durationMs: output.durationMs || elapsed,
-          costMinor: output.costMinor,
-          toolCorrect: output.toolCorrect,
-          policyCompliant: output.policyCompliant,
-          traceFixture: output.traceFixture,
-          failureReason: output.failureReason,
-        });
       }
     }
 
@@ -80,19 +87,6 @@ export class EvalRunner {
       criticalCaseIds: suite.cases.filter((evalCase) => evalCase.critical).map((evalCase) => evalCase.id),
     };
   }
-}
-
-async function defaultExecuteCase(
-  input: EvalCaseExecutionInput,
-): Promise<EvalCaseExecutionOutput> {
-  void input;
-  return {
-    passed: true,
-    durationMs: 0,
-    costMinor: 0n,
-    toolCorrect: true,
-    policyCompliant: true,
-  };
 }
 
 function pinnedVersionsFromSuite(suite: EvalSuite): PinnedVersions {
@@ -131,6 +125,7 @@ function computeMetrics(results: EvalCaseResult[], suite: EvalSuite): EvalRunMet
     p50DurationMs: percentile(durations, 0.5),
     p95DurationMs: percentile(durations, 0.95),
     totalCostMinor,
+    unknownCostCount: results.filter((result) => result.costKnown === false).length,
     unstableCaseIds,
   };
 }

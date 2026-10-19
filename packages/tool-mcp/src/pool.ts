@@ -20,8 +20,10 @@ export function mcpPoolCacheKey(
     .map((s) => ({
       name: s.name,
       command: s.command,
+      url: s.url,
       args: s.args ?? [],
       cwd: s.cwd,
+      auth: s.authorization ? "yes" : "",
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
   return createHash("sha256")

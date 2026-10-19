@@ -14,10 +14,17 @@ const GATEWAY_ENTRY = join(
   "main.js",
 );
 
+function formatChildOutput(output: string): string {
+  const trimmed = output.trim().slice(-1200);
+  return trimmed ? `\n${trimmed}` : "";
+}
+
 export class ChannelGatewayHost {
   private child: ChildProcess | null = null;
   private startedAt: string | null = null;
   private desiredRunning = false;
+  private awaitingFirstHealth = false;
+  private lastChildOutput = "";
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private crashTimes: number[] = [];
 
@@ -57,13 +64,14 @@ export class ChannelGatewayHost {
 
   async start(): Promise<ChannelGatewayStatus> {
     if (!this.desiredRunning) this.crashTimes = [];
-    this.desiredRunning = true;
     const remote = await this.fetchStatus();
     if (remote?.running) {
+      this.desiredRunning = true;
       this.adoptDiscoveredGateway(remote);
       return remote;
     }
     if (this.isRunning()) {
+      this.desiredRunning = true;
       return (await this.fetchStatus()) ?? this.fallbackStatus(true);
     }
     const gatewayEntry = this.deps.gatewayEntry ?? GATEWAY_ENTRY;
@@ -80,6 +88,9 @@ export class ChannelGatewayHost {
       FORGE_CHANNEL_GATEWAY_PORT: String(this.deps.listenPort ?? 8787),
     };
 
+    this.desiredRunning = true;
+    this.awaitingFirstHealth = true;
+    this.lastChildOutput = "";
     const child = spawn(process.execPath, [gatewayEntry], {
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -91,10 +102,15 @@ export class ChannelGatewayHost {
       this.writePidFile(this.child.pid);
     }
 
+    const captureOutput = (chunk: Buffer | string) => {
+      this.lastChildOutput = `${this.lastChildOutput}${String(chunk)}`.slice(-4000);
+    };
     child.stdout?.on("data", (chunk) => {
+      captureOutput(chunk);
       process.stdout.write(`[channel-gateway] ${chunk}`);
     });
     child.stderr?.on("data", (chunk) => {
+      captureOutput(chunk);
       process.stderr.write(`[channel-gateway] ${chunk}`);
     });
     child.on("exit", (code, signal) => {
@@ -104,7 +120,7 @@ export class ChannelGatewayHost {
         this.startedAt = null;
         this.clearPidFile();
       }
-      if (wasCurrentChild && this.desiredRunning) {
+      if (wasCurrentChild && this.desiredRunning && !this.awaitingFirstHealth) {
         console.error(
           `[channel-gateway] exited unexpectedly (code=${String(code)}, signal=${String(signal)})`,
         );
@@ -113,11 +129,18 @@ export class ChannelGatewayHost {
     });
 
     try {
-      await this.waitForHealth(this.deps.healthTimeoutMs ?? 15_000);
+      await this.waitForHealth(child, this.deps.healthTimeoutMs ?? 15_000);
     } catch (error) {
+      this.awaitingFirstHealth = false;
+      this.desiredRunning = false;
+      if (this.restartTimer) {
+        clearTimeout(this.restartTimer);
+        this.restartTimer = null;
+      }
       if (this.child === child) child.kill("SIGTERM");
       throw error;
     }
+    this.awaitingFirstHealth = false;
     return (await this.fetchStatus()) ?? this.fallbackStatus(true);
   }
 
@@ -250,18 +273,70 @@ export class ChannelGatewayHost {
     }
   }
 
-  private async waitForHealth(timeoutMs: number): Promise<void> {
+  private async waitForHealth(child: ChildProcess, timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const base = `http://${this.deps.listenHost ?? "127.0.0.1"}:${this.deps.listenPort ?? 8787}`;
-      try {
-        const res = await fetch(`${base}/health`);
-        if (res.ok) return;
-      } catch {
-        /* retry */
+    const base = `http://${this.deps.listenHost ?? "127.0.0.1"}:${this.deps.listenPort ?? 8787}`;
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setInterval> | undefined;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearInterval(timer);
+        child.off("exit", onExit);
+        child.off("error", onError);
+        fn();
+      };
+      const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+        const rejectWithOutput = () =>
+          finish(() =>
+            reject(
+              new Error(
+                `channel-gateway exited before becoming healthy (code=${String(code)}, signal=${String(signal)})${formatChildOutput(this.lastChildOutput)}`,
+              ),
+            ),
+          );
+        if (this.lastChildOutput.trim()) {
+          rejectWithOutput();
+          return;
+        }
+        setTimeout(rejectWithOutput, 50);
+      };
+      const onError = (error: Error) => {
+        finish(() => reject(error));
+      };
+      child.once("exit", onExit);
+      child.once("error", onError);
+      if (child.exitCode !== null || child.signalCode) {
+        onExit(child.exitCode, child.signalCode);
+        return;
       }
-      await new Promise((r) => setTimeout(r, 300));
-    }
-    throw new Error("channel-gateway health check timed out");
+
+      const tick = async () => {
+        if (settled) return;
+        try {
+          const res = await fetch(`${base}/health`);
+          if (res.ok) {
+            finish(() => resolve());
+            return;
+          }
+        } catch {
+          /* retry */
+        }
+        if (Date.now() >= deadline) {
+          finish(() =>
+            reject(
+              new Error(
+                `channel-gateway health check timed out${formatChildOutput(this.lastChildOutput)}`,
+              ),
+            ),
+          );
+        }
+      };
+      timer = setInterval(() => {
+        void tick();
+      }, 300);
+      void tick();
+    });
   }
 }

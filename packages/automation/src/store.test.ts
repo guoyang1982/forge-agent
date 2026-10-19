@@ -140,6 +140,70 @@ describe("AutomationStore", () => {
     expect(store.listRuns(created.id)).toHaveLength(0);
   });
 
+  it("persists model from a draft create and can clear it later", () => {
+    const store = new AutomationStore(bootDb());
+    const created = store.create({
+      name: "AI news",
+      prompt: "发送ai新闻",
+      cwd: "/tmp/proj",
+      cron: "0 * * * *",
+      timezone: "Asia/Shanghai",
+      model: "deepseek-v4-flash",
+    });
+    expect(created.model).toBe("deepseek-v4-flash");
+    expect(store.get(created.id)?.model).toBe("deepseek-v4-flash");
+
+    const updated = store.update(created.id, { model: "qwen3.7-plus" });
+    expect(updated?.model).toBe("qwen3.7-plus");
+
+    const cleared = store.update(created.id, { model: "" });
+    expect(cleared?.model).toBeUndefined();
+  });
+
+  it("persists a cursor runtime from a draft create", () => {
+    const store = new AutomationStore(bootDb());
+    const created = store.create({
+      name: "AI news",
+      prompt: "发送ai新闻",
+      cwd: "/tmp/proj",
+      cron: "0 * * * *",
+      timezone: "Asia/Shanghai",
+      runtime: "cursor",
+      model: "composer",
+    });
+    expect(created.runtime).toBe("cursor");
+    expect(created.model).toBe("composer");
+
+    const updated = store.update(created.id, { runtime: "codex", model: "gpt-5" });
+    expect(updated).toMatchObject({ runtime: "codex", model: "gpt-5" });
+
+    const cleared = store.update(created.id, { runtime: "", model: "" });
+    expect(cleared?.runtime).toBeUndefined();
+    expect(cleared?.model).toBeUndefined();
+  });
+
+  it("updates prompt and cron schedule in place", () => {
+    const store = new AutomationStore(bootDb());
+    const created = store.create({
+      name: "Game",
+      prompt: "执行一次 写个新的小游戏",
+      cwd: "/tmp/proj",
+      cron: "*/5 * * * *",
+      timezone: "Asia/Shanghai",
+    });
+
+    const updated = store.update(created.id, {
+      prompt: "写一个横版跳跃小游戏",
+      trigger: { type: "cron", cron: "0 * * * *", timezone: "Asia/Shanghai" },
+    });
+    expect(updated?.prompt).toBe("写一个横版跳跃小游戏");
+    expect(updated?.trigger).toEqual({
+      type: "cron",
+      cron: "0 * * * *",
+      timezone: "Asia/Shanghai",
+    });
+  });
+
   it("lists enabled cron automations", () => {
     const store = new AutomationStore(bootDb());
     store.create({
