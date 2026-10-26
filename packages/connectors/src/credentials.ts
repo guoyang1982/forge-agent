@@ -5,7 +5,11 @@ export interface CredentialProvider {
 }
 
 export class InMemoryCredentialProvider implements CredentialProvider {
-  constructor(private readonly secrets: Record<string, string>) {}
+  constructor(private readonly secrets: Record<string, string> = {}) {}
+
+  put(ref: string, secret: string): void {
+    this.secrets[ref] = secret;
+  }
 
   async resolve(ref: string): Promise<ResolvedCredential> {
     const token = this.secrets[ref];

@@ -5,8 +5,10 @@ export {
   ConnectorAccountMismatchError,
   ConnectorApprovalError,
   ConnectorGateway,
+  connectorApprovalParameters,
   type ConnectorBudgetPolicy,
   type ConnectorGatewayDeps,
+  type ConnectorPolicy,
 } from "./gateway.js";
 export { MockConnectorAdapter } from "./adapters/mock.js";
 export {

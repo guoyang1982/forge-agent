@@ -56,6 +56,7 @@ export interface ConnectorActionRecord extends ConnectorProposalRecord {
 export interface AdapterResult {
   ok: boolean;
   externalId?: string;
+  url?: string;
   summary?: string;
   error?: string;
 }
