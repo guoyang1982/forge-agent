@@ -33,6 +33,25 @@ afterEach(() => {
 });
 
 describe("ConnectorGateway", () => {
+  it("stores the adapter url on a successful execute", async () => {
+    const fx = connectorFixture();
+    fx.adapter.executeImpl = async () => ({
+      ok: true,
+      externalId: "ext-1",
+      url: "https://example.test/notes/1",
+      summary: "published",
+    });
+    const input = publishInput("with-url");
+    const proposal = await fx.gateway.propose(input);
+    seedApproval(fx.db, "approval-url", proposal, input);
+    const executed = await fx.gateway.execute(proposal.id, "approval-url");
+    expect(JSON.parse(executed.resultJson ?? "{}")).toMatchObject({
+      ok: true,
+      externalId: "ext-1",
+      url: "https://example.test/notes/1",
+    });
+  });
+
   it("denies a high-risk proposal using the adapter's risk", async () => {
     const fx = connectorFixture();
     denyHighRisk(fx.db);

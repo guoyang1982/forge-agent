@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "@forge/store";
-import type { PolicyEngine } from "@forge/policy";
+import type { AuthorizationInput, PolicyDecision } from "@forge/policy";
 import {
   ApprovalExpiredError,
   ApprovalHashMismatchError,
@@ -33,9 +33,13 @@ export interface ConnectorBudgetPolicy {
   currency: string;
 }
 
+export interface ConnectorPolicy {
+  authorize(input: AuthorizationInput): PolicyDecision;
+}
+
 export interface ConnectorGatewayDeps {
   db: Database;
-  policy: PolicyEngine;
+  policy: ConnectorPolicy;
   approvals: ApprovalService;
   budgetLedger?: BudgetLedgerService;
   budget?: ConnectorBudgetPolicy;
@@ -262,6 +266,7 @@ export class ConnectorGateway {
           {
             ok: result.ok,
             externalId: result.externalId,
+            url: result.url,
             summary: result.summary,
             error: result.error,
           },
@@ -639,7 +644,7 @@ function mapAction(row: ActionRow): ConnectorProposalRecord {
   };
 }
 
-function connectorApprovalParameters(
+export function connectorApprovalParameters(
   proposal: ConnectorProposalRecord,
   payload: Record<string, unknown>,
 ): Record<string, unknown> {
