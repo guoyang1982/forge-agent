@@ -98,7 +98,13 @@ export class SocialPublishService {
     const body = row.result_json
       ? (JSON.parse(row.result_json) as { externalId?: string; url?: string; error?: string })
       : {};
-    const status: PublishStatus = TERMINAL.has(row.state) ? row.state : "failed";
+    const status: PublishStatus =
+      row.state === "succeeded" ||
+      row.state === "failed" ||
+      row.state === "unknown" ||
+      row.state === "reconciled"
+        ? row.state
+        : "failed";
     return result(request, status, {
       proposalId: actionId,
       externalId: body.externalId,
