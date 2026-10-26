@@ -1,5 +1,8 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
+import type { SocialPublishService } from "@forge/connectors";
+import type { SubjectRef } from "@forge/protocol";
+import type { Database } from "@forge/store";
 import { createBuiltinRegistry, type ToolRegistry } from "@forge/tools";
 import { buildAgentContext, formatContextForPrompt } from "@forge/context";
 import { MemoryStore, registerMemoryTools } from "@forge/memory";
@@ -42,6 +45,7 @@ import {
   type McpServerRequestHandler,
 } from "@forge/tool-mcp";
 import type { WorkspaceGuard } from "@forge/workspace";
+import { attachPublishTool } from "./services/publish-tool.js";
 import {
   buildInitialMessages,
   buildUserMessageContent,
@@ -64,6 +68,11 @@ export interface ForgeRuntime {
   monorepoRoot: string;
   config?: Partial<ForgeConfig>;
   browser: BrowserService;
+  publish?: {
+    service: SocialPublishService;
+    subject: SubjectRef;
+    db: Database;
+  };
 }
 
 const projectPluginsByCwd = new Map<string, DiscoveredPlugin[]>();
@@ -301,6 +310,7 @@ export async function prepareRunContext(options: {
   );
 
   const registry = createBuiltinRegistry();
+  attachPublishTool(registry, options.runtime);
   attachToolHooks(registry, {
     bindings: hookBindings,
     ctx: hookCtx,

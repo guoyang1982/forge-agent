@@ -19,7 +19,12 @@ import {
 } from "@forge/company-domain";
 import { AgentProfileStore } from "@forge/agent-profile";
 import { ArtifactService, ValidationService } from "@forge/evidence";
-import { ApprovalService } from "@forge/policy";
+import {
+  ConnectorGateway,
+  InMemoryCredentialProvider,
+  SocialPublishService,
+} from "@forge/connectors";
+import { ApprovalService, PolicyEngine } from "@forge/policy";
 import { BudgetLedgerService } from "@forge/usage-ledger";
 import { WorkspaceGroupService, WorkspaceLeaseService } from "@forge/workspace";
 import { clearMcpClientPool } from "@forge/tool-mcp";
@@ -82,9 +87,18 @@ async function createRuntimeFromCurrentConfig(): Promise<ForgeRuntime> {
   });
 }
 
+function attachPublishRuntime(next: ForgeRuntime): ForgeRuntime {
+  next.publish = {
+    service: publishService,
+    subject: publishSubject,
+    db: forgeStore.db,
+  };
+  return next;
+}
+
 async function getRuntime(): Promise<ForgeRuntime> {
   if (!runtime) {
-    runtime = await createRuntimeFromCurrentConfig();
+    runtime = attachPublishRuntime(await createRuntimeFromCurrentConfig());
     console.log(
       `[forge] loaded ${runtime.skills.length} skills, ${runtime.plugins.length} plugins`,
     );
@@ -97,7 +111,7 @@ async function reloadRuntime(): Promise<ReloadRuntimeResult> {
   runtime?.memory.close();
   clearProjectPluginCache();
   clearMcpClientPool();
-  runtime = await createRuntimeFromCurrentConfig();
+  runtime = attachPublishRuntime(await createRuntimeFromCurrentConfig());
   console.log(
     `[forge] reloaded ${runtime.skills.length} skills, ${runtime.plugins.length} plugins`,
   );
@@ -145,6 +159,20 @@ let host!: DaemonHost<ForgeDaemonContext>;
 const workspaceGroups = new WorkspaceGroupService(forgeStore.db);
 const workspaceLeases = new WorkspaceLeaseService(forgeStore.db);
 const approvals = new ApprovalService(forgeStore.db);
+const publishSubject = { kind: "human", id: "local" };
+const publishService = new SocialPublishService(
+  forgeStore.db,
+  new ConnectorGateway({
+    db: forgeStore.db,
+    policy: {
+      authorize: (input) => PolicyEngine.fromDatabase(forgeStore.db).authorize(input),
+    },
+    approvals,
+    credentials: new InMemoryCredentialProvider(),
+    adapters: new Map(),
+  }),
+  approvals,
+);
 const budgetLedger = new BudgetLedgerService(forgeStore.db);
 const agentProfiles = new AgentProfileStore(forgeStore.db);
 const artifacts = new ArtifactService(
