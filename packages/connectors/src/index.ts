@@ -18,3 +18,11 @@ export {
   type PublishResult,
 } from "./social/route.js";
 export type { PublishStatus } from "./social/types.js";
+export {
+  connectPublishAccount,
+  listPublishAccounts,
+  loadPublishView,
+  markAccountNeedsAuth,
+  type ConnectPublishAccountInput,
+} from "./social/accounts.js";
+export { SocialPublishService } from "./social/publish.js";
