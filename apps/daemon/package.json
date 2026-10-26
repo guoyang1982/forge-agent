@@ -22,6 +22,7 @@
     "@forge/bus": "workspace:*",
     "@forge/company-domain": "workspace:*",
     "@forge/config": "workspace:*",
+    "@forge/connectors": "workspace:*",
     "@forge/context": "workspace:*",
     "@forge/event-store": "workspace:*",
     "@forge/execution": "workspace:*",
