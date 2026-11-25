@@ -651,6 +651,36 @@ function normalizeEffortOptions(value: unknown): string[] {
     .filter((item): item is string => Boolean(item));
 }
 
+/** Models the current Codex login can actually run. Hidden entries stay out of the picker. */
+export function codexModelsFromListResult(result: unknown): RuntimeModelSummary[] {
+  const data = isRecord(result) && Array.isArray(result.data)
+    ? result.data
+    : Array.isArray(result)
+      ? result
+      : [];
+  return data
+    .map(normalizeCodexModel)
+    .filter((model): model is RuntimeModelSummary => Boolean(model));
+}
+
+/**
+ * Keep a requested model only when the live catalog lists it.
+ * An empty catalog means the lookup failed; leave the request unchanged.
+ */
+export function resolveCodexModelChoice(
+  models: RuntimeModelSummary[],
+  requested: string | undefined,
+): { model?: string; replacedFrom?: string } {
+  const wanted = requested?.trim() || "";
+  if (!models.length) return { model: wanted || undefined };
+  const known = new Set(models.map((model) => model.model || model.id));
+  if (wanted && known.has(wanted)) return { model: wanted };
+  const fallback = models.find((model) => model.isDefault) || models[0];
+  const next = fallback ? fallback.model || fallback.id : undefined;
+  if (!wanted) return { model: next };
+  return { model: next, replacedFrom: wanted };
+}
+
 /** Accept app-server `model/list` objects and the raw `codex debug models` catalog. */
 export function normalizeCodexModel(value: unknown): RuntimeModelSummary | null {
   if (!isRecord(value)) return null;
@@ -674,8 +704,7 @@ export function normalizeCodexModel(value: unknown): RuntimeModelSummary | null 
 export async function listCodexModels(cwd: string): Promise<RuntimeModelListResult> {
   return withCodexRpc(cwd, async (rpc) => {
     const result = await rpc.request("model/list", { includeHidden: false });
-    const data = isRecord(result) && Array.isArray(result.data) ? result.data : [];
-    return { models: data.map(normalizeCodexModel).filter((m): m is RuntimeModelSummary => Boolean(m)) };
+    return { models: codexModelsFromListResult(result) };
   });
 }
 
@@ -1009,6 +1038,36 @@ export function releaseAllCodexPrewarm(): number {
   return codexPool.releaseAll();
 }
 
+async function applyLiveCodexModel(
+  rpc: CodexJsonRpcClient,
+  options: CodexRuntimeOptions,
+  notify: (message: string) => void,
+): Promise<CodexRuntimeOptions> {
+  let models: RuntimeModelSummary[] = [];
+  try {
+    models = codexModelsFromListResult(await rpc.request("model/list", { includeHidden: false }));
+  } catch {
+    return options;
+  }
+  const choice = resolveCodexModelChoice(models, options.request.runtime?.model);
+  if (!choice.model || choice.model === options.request.runtime?.model) return options;
+  if (choice.replacedFrom) {
+    const dropped = choice.replacedFrom.replace(/\s+/g, " ").slice(0, 80);
+    notify(`Codex 模型 ${dropped} 当前账号不可用，已改用 ${choice.model}`);
+  }
+  return {
+    ...options,
+    request: {
+      ...options.request,
+      runtime: {
+        provider: options.request.runtime?.provider ?? "codex",
+        ...options.request.runtime,
+        model: choice.model,
+      },
+    },
+  };
+}
+
 export async function runCodexRuntime(options: CodexRuntimeOptions): Promise<RunResult> {
   const cacheRepair = ensureCodexModelsCacheCompatible();
   if (cacheRepair.repaired) {
@@ -1152,14 +1211,23 @@ async function runCodexTurn(options: CodexRuntimeOptions): Promise<RunResult> {
     const turnOptions = acquired.handle.threadId
       ? { ...options, priorHistory: undefined }
       : options;
+    const resolvedOptions = await applyLiveCodexModel(rpc, turnOptions, (message) => {
+      emitStatus(options.emit, options.sessionId, message);
+    });
+    if (
+      resolvedOptions.request.runtime?.model !== turnOptions.request.runtime?.model
+      && acquired.handle.threadId
+    ) {
+      acquired.handle.threadId = undefined;
+    }
     let threadId = acquired.handle.threadId;
     if (!threadId) {
-      const thread = await rpc.request("thread/start", buildThreadStartParams(turnOptions));
+      const thread = await rpc.request("thread/start", buildThreadStartParams(resolvedOptions));
       threadId = resolveThreadId(thread);
       acquired.handle.threadId = threadId;
     }
     emitStatus(options.emit, options.sessionId, "Codex turn 启动中…");
-    await rpc.request("turn/start", buildTurnStartParams(turnOptions, threadId));
+    await rpc.request("turn/start", buildTurnStartParams(resolvedOptions, threadId));
     // Arm even if turn/started notification is skipped/reordered.
     turnArmed = true;
     await completion;
