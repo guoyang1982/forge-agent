@@ -956,6 +956,83 @@ function foldLiveRunActivityContent(details) {
   return foldBody.childElementCount > 0;
 }
 
+function runActivityShellHasWork(details) {
+  if (!details) return false;
+  const body = details.querySelector(".run-activity-body");
+  if (runActivityBodyHasSubstantiveContent(body)) return true;
+  const stream = getRunActivityContentHost(details);
+  return Boolean(stream && stream !== body && runActivityBodyHasSubstantiveContent(stream));
+}
+
+/** Tools, thinking, or subagents belong in a collapsed 已处理 shell. Narration does not. */
+function runActivityShellWorthFolding(details) {
+  if (!details) return false;
+  const selector =
+    ".tool-event, details.thinking, details.step-tool-group, .codex-activity-chip, details.subagent-talent-activity, .codex-commentary";
+  const body = details.querySelector(".run-activity-body");
+  if (body?.querySelector(selector)) return true;
+  const stream = getRunActivityContentHost(details);
+  return Boolean(stream && stream !== body && stream.querySelector?.(selector));
+}
+
+/**
+ * Drop a shell that would only read 「已处理 <1s / 点击展开查看详情」.
+ * Text, skill lines, and the live answer are lifted onto the timeline first.
+ */
+function discardEmptyRunActivityShell(details) {
+  if (!details?.isConnected || details.classList.contains("subagent-talent-activity")) return false;
+  if (runActivityShellWorthFolding(details)) return false;
+  const parent = details.parentElement;
+  const streamId = details.dataset.streamId;
+  const stream = streamId
+    ? parent?.querySelector(
+        `:scope > .run-activity-stream[data-stream-id="${cssEscape(streamId)}"]`,
+      )
+    : null;
+  if (parent) {
+    const hosts = [];
+    if (stream?.classList?.contains("run-activity-stream")) hosts.push(stream);
+    const body = details.querySelector(".run-activity-body");
+    if (body) hosts.push(body);
+    const lifted = hosts.flatMap((host) => [...host.children]);
+    for (const node of lifted) parent.insertBefore(node, details);
+  }
+  const entryId = details.dataset.timelineEntryId;
+  const sid = getActiveEventSessionId();
+  stream?.remove();
+  details.remove();
+  if (sid && entryId) {
+    const timelineState = getNormalTimelineState(sid, false);
+    if (timelineState) {
+      const entries = ensureTimelineEntries(timelineState);
+      const idx = entries.findIndex(
+        (entry) => entry.type === "run_activity" && entry.id === entryId,
+      );
+      if (idx >= 0) {
+        const entry = entries[idx];
+        // Keep narration so a later restore can draw it flat. Drop empty chrome.
+        if (!(entry.children || []).length) {
+          const removed = entries.splice(idx, 1)[0];
+          if (timelineState.activeRunEntry === removed) timelineState.activeRunEntry = null;
+          touchTimelineState(sid);
+        } else if (timelineState.activeRunEntry === entry) {
+          timelineState.activeRunEntry = null;
+          entry.active = false;
+          entry.finalized = true;
+          touchTimelineState(sid);
+        }
+      }
+    }
+  }
+  if (state.runActivityEl === details) {
+    state.runActivityEl = null;
+    state.runActivityBody = null;
+    state.runActivityFoldBody = null;
+    state.runActivityStreamEl = null;
+  }
+  return true;
+}
+
 function unwrapLiveRunActivityContent(details) {
   const stream =
     getRunActivityContentHost(details) ||
@@ -1366,6 +1443,25 @@ function findTurnPromptDomAnchor(mount, turnIndex) {
   return null;
 }
 
+function relocateUserPromptEntry(entries, entry) {
+  if (!Array.isArray(entries) || !entry) return;
+  const from = entries.indexOf(entry);
+  if (from < 0) return;
+  entries.splice(from, 1);
+  const turnIndex = entries.filter((item) => item.type === "event" && item.isUserPrompt).length;
+  const insertAt = findTurnPromptCacheInsertIndex(entries, turnIndex);
+  entries.splice(Math.max(0, Math.min(insertAt, entries.length)), 0, entry);
+}
+
+/** Kinds before an activity, nearest first. "prompt" means this activity already belongs to that question. */
+function activityShouldFollowPrompt(previousKinds) {
+  for (const kind of previousKinds || []) {
+    if (kind === "prompt") return false;
+    if (kind === "activity" || kind === "conclusion") return true;
+  }
+  return true;
+}
+
 function findLeadingTurnPromptInsertIndex(entries) {
   if (!Array.isArray(entries)) return 0;
   const turnIndex = entries.filter(
@@ -1543,7 +1639,11 @@ function markTimelineEventUserPrompt(line) {
   if (!entryId) return;
   const sid = line.dataset.eventDetailSession || getActiveEventSessionId();
   const entry = findTimelineEventEntry(sid, entryId);
-  if (entry) entry.isUserPrompt = true;
+  if (!entry) return;
+  entry.isUserPrompt = true;
+  const timelineState = getNormalTimelineState(sid, false);
+  const entries = timelineState ? ensureTimelineEntries(timelineState) : null;
+  if (entries) relocateUserPromptEntry(entries, entry);
 }
 
 function updateTimelineEventEntry(sessionId, entryId, patch) {
@@ -2067,7 +2167,27 @@ function renderStructuredSubagentEntry(entry, container, sessionId) {
   return details;
 }
 
+function runActivityEntryWorthFolding(entry) {
+  return (entry?.children || []).some((child) => {
+    if (
+      child.type === "thinking" ||
+      child.type === "codex_commentary" ||
+      child.type === "codex_activity" ||
+      child.type === "subagent"
+    ) {
+      return true;
+    }
+    const cls = String(child.className || "");
+    return child.type === "event" && /tool-event|step-tool-group/.test(cls);
+  });
+}
+
 function renderStructuredRunActivityEntry(entry, mount, sessionId) {
+  // Text-only turns have no tool/thinking fold. Draw the answer directly.
+  if (!entry.active && !runActivityEntryWorthFolding(entry)) {
+    renderRunActivityChildrenIntoBody(entry.children || [], mount, sessionId);
+    return null;
+  }
   const details = document.createElement("details");
   const isActive = Boolean(entry.active) && !entry.finalized;
   details.className = `run-activity${isActive ? " run-activity-active" : ""}`;
@@ -4000,6 +4120,7 @@ function isSessionRunConcluded(sessionId) {
 
 /** New user message in an existing session — allow progress UI and a fresh conclusion block. */
 function beginSessionTurn(sessionId, startedAtMs = Date.now()) {
+  finalizePreviousTurnActivity();
   if (sessionId) {
     state.runActivityStartedAtBySession.set(
       sessionId,
@@ -4100,11 +4221,91 @@ function realignRunActivitiesToTurns(root = getTimelineMount()) {
       }
     }
   }
+  sweepPlainRunActivityChrome(root);
+}
+
+/** Remove inactive shells that have no tools or thinking. Keep their text. */
+function sweepPlainRunActivityChrome(root = getTimelineMount()) {
+  if (!root?.querySelectorAll) return;
+  for (const activity of [
+    ...root.querySelectorAll(":scope > details.run-activity:not(.subagent-talent-activity)"),
+  ]) {
+    if (activity.classList.contains("run-activity-active")) continue;
+    discardEmptyRunActivityShell(activity);
+  }
+}
+
+function previousTimelineKinds(node) {
+  const kinds = [];
+  let prev = node?.previousElementSibling;
+  while (prev) {
+    let kind = "other";
+    if (prev.classList?.contains("user-prompt")) kind = "prompt";
+    else if (prev.classList?.contains("run-conclusion")) kind = "conclusion";
+    else if (
+      prev.matches?.("details.run-activity") &&
+      !prev.classList.contains("subagent-talent-activity")
+    ) {
+      kind = "activity";
+    }
+    kinds.push(kind);
+    if (kind !== "other") break;
+    prev = prev.previousElementSibling;
+  }
+  return kinds;
+}
+
+/** Thinking that arrived before its question sits above that question. Move it underneath. */
+function reanchorEarlyRunActivityAfterPrompt(root) {
+  if (!root?.querySelectorAll) return;
+  const prompts = [...root.querySelectorAll(":scope > .event.user-prompt")];
+  for (let index = 0; index < prompts.length; index += 1) {
+    const prompt = prompts[index];
+    let node = prompt.previousElementSibling;
+    let stream = null;
+    if (node?.classList?.contains("run-activity-stream")) {
+      stream = node;
+      node = node.previousElementSibling;
+    }
+    if (
+      !node?.classList?.contains("run-activity-active") ||
+      node.classList.contains("subagent-talent-activity")
+    ) {
+      continue;
+    }
+    if (!activityShouldFollowPrompt(previousTimelineKinds(node))) continue;
+    prompt.insertAdjacentElement("afterend", node);
+    if (stream) node.insertAdjacentElement("afterend", stream);
+    node.dataset.turnIndex = String(index);
+  }
+}
+
+function finalizePreviousTurnActivity() {
+  const mount = getTimelineMount();
+  if (!mount?.querySelectorAll) return;
+  for (const activity of [
+    ...mount.querySelectorAll(":scope > details.run-activity"),
+  ]) {
+    if (activity.classList.contains("subagent-talent-activity")) continue;
+    const active = activity.classList.contains("run-activity-active");
+    if (active && activityShouldFollowPrompt(previousTimelineKinds(activity))) continue;
+    if (runActivityShellWorthFolding(activity)) {
+      if (!active) continue;
+      if (state.runActivityEl === activity) {
+        updateRunActivitySummary({ finalized: true });
+      } else {
+        activity.classList.remove("run-activity-active");
+      }
+      continue;
+    }
+    discardEmptyRunActivityShell(activity);
+  }
 }
 
 /** Keep each turn's run-activity block directly under its user-prompt (开始执行). */
 function normalizeTimelineTurnOrder(root = getTimelineMount()) {
   realignRunActivitiesToTurns(root);
+  reanchorEarlyRunActivityAfterPrompt(root);
 }
 
 function shouldHoistNodeIntoRunActivity(node) {
@@ -4797,7 +4998,9 @@ function reattachLiveRunDomRefs(mount = getTimelineMount()) {
   if (!target) return false;
 
   activities.forEach((el) => {
-    if (el !== target) el.classList.remove("run-activity-active");
+    if (el === target || el.classList.contains("subagent-talent-activity")) return;
+    if (discardEmptyRunActivityShell(el)) return;
+    el.classList.remove("run-activity-active");
   });
 
   state.runActivityEl = target;
@@ -5431,9 +5634,10 @@ function finalizeRunActivity(options = {}) {
       contentHost?.classList?.contains("run-activity-stream") ? contentHost : null;
     if (!state.runActivityStats) state.runActivityStats = createRunActivityStats();
 
-    // Keep one closed 已处理 per turn. Dropping a short turn's shell made
-    // earlier turns in the same session lose their chip.
+    // Keep one closed 已处理 per turn when it actually holds work.
+    // An empty shell only shows 「已处理 <1s / 点击展开查看详情」.
     foldLiveRunActivityContent(details);
+    if (discardEmptyRunActivityShell(details)) continue;
     if (!runActivityHasExpandedContent(details)) details.open = false;
     updateRunActivitySummary({
       finalized: true,
@@ -7757,6 +7961,9 @@ function renderRunConclusion(finalText, explicitSessionId, options = {}) {
     forgeSessionLog("conclusion:skip-no-mount", { sid, explicitSessionId });
     return;
   }
+  // A text-only reply already sits on the timeline. An empty 结论 card would
+  // just repeat it or leave a blank bubble under the removed 已处理 chrome.
+  if (!state.runFinalText && !files.length) return;
 
   const turnActivity = resolveTurnRunActivityForConclusion(container);
   if (turnHasConclusionAfter(turnActivity)) {
@@ -12078,7 +12285,9 @@ function appendRestoredAssistantText(text) {
     state.stepNarrativesBySession.set(sid, list);
   }
   endStepToolGroup();
-  ensureRunActivity({ force: true });
+  // A new shell per paragraph leaves empty 「已处理 <1s」 rows beside the live one.
+  if (!runActivityRefsValid()) ensureRunActivity({ force: true });
+  else ensureRunActivity();
   const mount = state.runActivityBody || state.currentStepBody || $("timeline");
   const wrap = document.createElement("div");
   wrap.className = "event step-narrative done";
@@ -12216,7 +12425,8 @@ function partitionProcessFromFinalAnswer(text) {
 
 function persistProcessBlocksInActivity(processBlocks) {
   if (!processBlocks?.length) return;
-  ensureRunActivity({ force: true });
+  if (!runActivityRefsValid()) ensureRunActivity({ force: true });
+  else ensureRunActivity();
   for (const block of processBlocks) {
     appendRestoredAssistantText(block);
   }

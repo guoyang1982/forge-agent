@@ -721,6 +721,25 @@ describe("restored step narratives", () => {
     expect(restored).toContain("shouldSkipCodexCommentary");
   });
 
+  it("does not leave a 已处理 chip when the turn never called tools", () => {
+    const source = appSource();
+    const discard =
+      source.match(/function discardEmptyRunActivityShell[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(discard).toContain("runActivityShellWorthFolding");
+    expect(discard).toContain("insertBefore(node, details)");
+    const finalizePrev =
+      source.match(/function finalizePreviousTurnActivity[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(finalizePrev).toContain("discardEmptyRunActivityShell");
+    expect(finalizePrev).toContain("runActivityShellWorthFolding");
+    const renderEntry =
+      source.match(/function renderStructuredRunActivityEntry[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(renderEntry).toContain("runActivityEntryWorthFolding");
+    expect(renderEntry).toContain("renderRunActivityChildrenIntoBody");
+    const realign =
+      source.match(/function realignRunActivitiesToTurns[\s\S]*?\n}\n/)?.[0] ?? "";
+    expect(realign).toContain("sweepPlainRunActivityChrome");
+  });
+
   it("persists intermediate text_delta segments inside 已处理 before tools run", () => {
     const source = appSource();
     const finish = source.match(/function finishStreamTextSegment[\s\S]*?\n}\n/)?.[0] ?? "";
@@ -998,6 +1017,38 @@ describe("session restore timeline", () => {
     // soft-refresh from the daemon journal so the timeline can catch up.
     expect(switchFn).toContain("needsJournalRefresh");
     expect(switchFn).toContain("structuredTimelineHasConclusion");
+  });
+
+  it("puts a question ahead of thinking that arrived before the prompt", () => {
+    const source = appSource();
+    const should =
+      source.match(/function activityShouldFollowPrompt[\s\S]*?\n}\n/)?.[0] ?? "";
+    const cache =
+      source.match(/function findTurnPromptCacheInsertIndex[\s\S]*?\n}\n/)?.[0] ?? "";
+    const relocate =
+      source.match(/function relocateUserPromptEntry[\s\S]*?\n}\n/)?.[0] ?? "";
+    const { activityShouldFollowPrompt, relocateUserPromptEntry } = new Function(
+      `${should}\n${cache}\n${relocate}\nreturn { activityShouldFollowPrompt, relocateUserPromptEntry };`,
+    )();
+    expect(activityShouldFollowPrompt(["prompt"])).toBe(false);
+    expect(activityShouldFollowPrompt(["activity"])).toBe(true);
+    expect(activityShouldFollowPrompt(["other", "conclusion"])).toBe(true);
+    const prompt = { type: "event", isUserPrompt: true };
+    const entries = [
+      { type: "event", isUserPrompt: true },
+      { type: "run_activity" },
+      { type: "conclusion" },
+      { type: "run_activity" },
+      prompt,
+    ];
+    relocateUserPromptEntry(entries, prompt);
+    expect(entries.map((entry) => entry.type)).toEqual([
+      "event",
+      "run_activity",
+      "conclusion",
+      "event",
+      "run_activity",
+    ]);
   });
 
   it("inserts later-turn prompts before their own 已处理/结论 blocks", () => {
