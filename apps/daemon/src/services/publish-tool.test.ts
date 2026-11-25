@@ -35,7 +35,7 @@ describe("attachPublishTool", () => {
     const registry = createBuiltinRegistry();
     attachPublishTool(registry, {});
     const result = await registry.execute(
-      { id: "1", name: "connector.publish", arguments: {} },
+      { id: "1", name: "connector_publish", arguments: {} },
       ctx,
     );
     expect(result).toContain("Unknown tool");
@@ -84,7 +84,7 @@ describe("attachPublishTool", () => {
       await registry.execute(
         {
           id: "2",
-          name: "connector.publish",
+          name: "connector_publish",
           arguments: {
             connectorId: "connector-1",
             connectorAccountId: "account-1",
@@ -102,7 +102,7 @@ describe("attachPublishTool", () => {
       await registry.execute(
         {
           id: "3",
-          name: "connector.publish",
+          name: "connector_publish",
           arguments: {
             connectorId: "connector-1",
             connectorAccountId: "account-1",
@@ -118,7 +118,7 @@ describe("attachPublishTool", () => {
 
     const listed = JSON.parse(
       await registry.execute(
-        { id: "4", name: "connector.list_publish_accounts", arguments: {} },
+        { id: "4", name: "connector_list_publish_accounts", arguments: {} },
         ctx,
       ),
     );
