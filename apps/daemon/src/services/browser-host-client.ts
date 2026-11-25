@@ -66,6 +66,10 @@ export class DesktopBrowserBackend implements BrowserBackend {
     return this.request("click", input);
   }
 
+  clickText(tabId: string, text: string): Promise<void> {
+    return this.request("clickText", { tabId, text });
+  }
+
   type(input: BrowserTypeInput): Promise<void> {
     return this.request("type", input);
   }

@@ -12,6 +12,7 @@ function backend(id = "iab"): BrowserBackend {
     navigate: vi.fn(async (input) => ({ id: input.tabId, backendId: id, title: "Next", url: input.url, active: true })),
     snapshot: vi.fn(async (tabId) => ({ tabId, backendId: id, title: "Example", url: "https://example.com", elements: [{ ref: "e1", role: "button", name: "Continue" }] })),
     click: vi.fn(async () => undefined),
+    clickText: vi.fn(async () => undefined),
     type: vi.fn(async () => undefined),
     screenshot: vi.fn(async (tabId) => ({ tabId, backendId: id, mime: "image/png" as const, data: "aW1hZ2U=" })),
     close: vi.fn(async () => undefined),

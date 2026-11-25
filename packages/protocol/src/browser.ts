@@ -28,6 +28,7 @@ export interface BrowserElement {
   role?: string;
   name?: string;
   value?: string;
+  href?: string;
   disabled?: boolean;
 }
 
