@@ -22,7 +22,22 @@ import { ArtifactService, ValidationService } from "@forge/evidence";
 import {
   ConnectorGateway,
   InMemoryCredentialProvider,
+  LOCAL_PUBLISH_ACCOUNT,
+  MockConnectorAdapter,
   SocialPublishService,
+  TOUTIAO_BROWSER_ACCOUNT,
+  ToutiaoBrowserAdapter,
+  XIAOHONGSHU_BROWSER_ACCOUNT,
+  XiaohongshuBrowserAdapter,
+  beginToutiaoLogin,
+  beginXiaohongshuLogin,
+  confirmToutiaoLogin,
+  confirmXiaohongshuLogin,
+  connectLocalPublishAccount,
+  listPublishAccountStates,
+  listPublishAccounts,
+  markAccountNeedsAuth,
+  type ConnectorAdapter,
 } from "@forge/connectors";
 import { ApprovalService, PolicyEngine } from "@forge/policy";
 import { BudgetLedgerService } from "@forge/usage-ledger";
@@ -160,6 +175,77 @@ const workspaceGroups = new WorkspaceGroupService(forgeStore.db);
 const workspaceLeases = new WorkspaceLeaseService(forgeStore.db);
 const approvals = new ApprovalService(forgeStore.db);
 const publishSubject = { kind: "human", id: "local" };
+const publishCredentials = new InMemoryCredentialProvider();
+publishCredentials.put(LOCAL_PUBLISH_ACCOUNT.credentialRef, "local-publish");
+publishCredentials.put(XIAOHONGSHU_BROWSER_ACCOUNT.credentialRef, "browser-session");
+publishCredentials.put(TOUTIAO_BROWSER_ACCOUNT.credentialRef, "browser-session");
+const localPublishAdapter = new MockConnectorAdapter();
+localPublishAdapter.executeImpl = async (input) => ({
+  ok: true,
+  externalId: `local:${input.proposalId}`,
+  url: `local://publish/${encodeURIComponent(input.proposalId)}`,
+  summary: "published locally",
+});
+const xiaohongshuBrowser = {
+  async listTabs() {
+    const runtime = await getRuntime();
+    const tabs = await runtime.browser.listTabs();
+    return tabs.map((tab) => ({ tabId: tab.id, url: tab.url, title: tab.title }));
+  },
+  async open(url: string) {
+    const runtime = await getRuntime();
+    const tab = await runtime.browser.open({ url });
+    const snap = await runtime.browser.snapshot(tab.id);
+    return {
+      tabId: snap.tabId,
+      url: snap.url,
+      title: snap.title,
+      text: snap.text,
+      elements: snap.elements,
+    };
+  },
+  async navigate(tabId: string, url: string) {
+    const runtime = await getRuntime();
+    const tab = await runtime.browser.navigate({ tabId, url });
+    const snap = await runtime.browser.snapshot(tab.id);
+    return {
+      tabId: snap.tabId,
+      url: snap.url,
+      title: snap.title,
+      text: snap.text,
+      elements: snap.elements,
+    };
+  },
+  async snapshot(tabId: string) {
+    const runtime = await getRuntime();
+    const snap = await runtime.browser.snapshot(tabId);
+    return {
+      tabId: snap.tabId,
+      url: snap.url,
+      title: snap.title,
+      text: snap.text,
+      elements: snap.elements,
+    };
+  },
+  async type(tabId: string, ref: string, text: string) {
+    const runtime = await getRuntime();
+    await runtime.browser.type({ tabId, ref, text, clear: true });
+  },
+  async click(tabId: string, ref: string) {
+    const runtime = await getRuntime();
+    await runtime.browser.click({ tabId, ref });
+  },
+  async clickText(tabId: string, text: string) {
+    const runtime = await getRuntime();
+    await runtime.browser.clickText(tabId, text);
+  },
+};
+const xiaohongshuAdapter = new XiaohongshuBrowserAdapter(xiaohongshuBrowser, (accountId) =>
+  markAccountNeedsAuth(forgeStore.db, accountId),
+);
+const toutiaoAdapter = new ToutiaoBrowserAdapter(xiaohongshuBrowser, (accountId) =>
+  markAccountNeedsAuth(forgeStore.db, accountId),
+);
 const publishService = new SocialPublishService(
   forgeStore.db,
   new ConnectorGateway({
@@ -168,11 +254,68 @@ const publishService = new SocialPublishService(
       authorize: (input) => PolicyEngine.fromDatabase(forgeStore.db).authorize(input),
     },
     approvals,
-    credentials: new InMemoryCredentialProvider(),
-    adapters: new Map(),
+    credentials: publishCredentials,
+    adapters: new Map<string, ConnectorAdapter>([
+      [LOCAL_PUBLISH_ACCOUNT.adapterKind, localPublishAdapter],
+      [XIAOHONGSHU_BROWSER_ACCOUNT.adapterKind, xiaohongshuAdapter],
+      [TOUTIAO_BROWSER_ACCOUNT.adapterKind, toutiaoAdapter],
+    ]),
   }),
   approvals,
 );
+const localPublish = {
+  listAccounts: () => listPublishAccounts(forgeStore.db, publishSubject),
+  listStates: () => listPublishAccountStates(forgeStore.db, publishSubject),
+  connect: () => connectLocalPublishAccount(forgeStore.db, publishCredentials, publishSubject),
+  beginXiaohongshuLogin: async () => {
+    try {
+      return await beginXiaohongshuLogin(xiaohongshuBrowser);
+    } catch (error) {
+      throw new Error(browserUnavailable(error));
+    }
+  },
+  confirmXiaohongshuLogin: async () => {
+    try {
+      return await confirmXiaohongshuLogin(
+        xiaohongshuBrowser,
+        forgeStore.db,
+        publishCredentials,
+        publishSubject,
+      );
+    } catch (error) {
+      if (error instanceof Error && /还没有登录|无法确认已经登录/.test(error.message)) throw error;
+      throw new Error(browserUnavailable(error));
+    }
+  },
+  beginToutiaoLogin: async () => {
+    try {
+      return await beginToutiaoLogin(xiaohongshuBrowser);
+    } catch (error) {
+      throw new Error(browserUnavailable(error));
+    }
+  },
+  confirmToutiaoLogin: async () => {
+    try {
+      return await confirmToutiaoLogin(
+        xiaohongshuBrowser,
+        forgeStore.db,
+        publishCredentials,
+        publishSubject,
+      );
+    } catch (error) {
+      if (error instanceof Error && /还没有登录|无法确认已经登录/.test(error.message)) throw error;
+      throw new Error(browserUnavailable(error));
+    }
+  },
+};
+function browserUnavailable(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/unavailable|closed the connection|timed out|ENOENT/i.test(message)) {
+    return "请先保持 Forge 桌面窗口打开，再连接创作者账号。";
+  }
+  return message;
+}
+
 const budgetLedger = new BudgetLedgerService(forgeStore.db);
 const agentProfiles = new AgentProfileStore(forgeStore.db);
 const artifacts = new ArtifactService(
@@ -336,6 +479,7 @@ const context: ForgeDaemonContext = {
   getRuntime,
   reloadRuntime,
   shutdownRuntime,
+  localPublish,
 };
 
 host = new DaemonHost(createDaemonModules(context), context);

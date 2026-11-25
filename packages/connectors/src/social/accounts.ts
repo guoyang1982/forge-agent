@@ -165,3 +165,43 @@ export function listPublishAccounts(db: Database, subject: SubjectRef) {
     return [{ connectorId: row.connector_id, accountId: row.account_id, name: row.name }];
   });
 }
+
+export function listPublishAccountStates(db: Database, subject: SubjectRef) {
+  const rows = db
+    .prepare(
+      `SELECT a.id AS account_id, a.name, a.metadata_json AS account_metadata,
+              c.id AS connector_id, c.capabilities_json
+       FROM core_connector_accounts a
+       JOIN core_connectors c ON c.id = a.connector_id`,
+    )
+    .all() as Array<{
+    account_id: string;
+    name: string;
+    account_metadata: string;
+    connector_id: string;
+    capabilities_json: string;
+  }>;
+  return rows.flatMap((row) => {
+    let capabilities: string[] = [];
+    let health = "";
+    try {
+      const parsed = JSON.parse(row.capabilities_json) as unknown;
+      capabilities = Array.isArray(parsed) ? parsed.map(String) : [];
+      health = String((JSON.parse(row.account_metadata) as { health?: string }).health ?? "");
+    } catch {
+      return [];
+    }
+    if (!capabilities.includes("publish")) return [];
+    if (health !== "connected" && health !== "needs_auth") return [];
+    const scope = JSON.stringify({ resourceIds: [row.connector_id] });
+    const grant = db
+      .prepare(
+        `SELECT id FROM core_grants
+         WHERE subject_kind = ? AND subject_id = ? AND action = 'connector.publish'
+           AND resource_kind = 'connector' AND resource_scope_json = ? AND effect = 'allow'`,
+      )
+      .get(subject.kind, subject.id, scope);
+    if (!grant) return [];
+    return [{ connectorId: row.connector_id, accountId: row.account_id, name: row.name, health }];
+  });
+}
