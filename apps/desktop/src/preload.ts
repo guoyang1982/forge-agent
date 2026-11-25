@@ -578,6 +578,32 @@ const api = {
       }>;
       unconfiguredCount: number;
     }>,
+  listPublishAccounts: () =>
+    ipcRenderer.invoke("forge:list-publish-accounts") as Promise<{
+      accounts: Array<{ connectorId: string; accountId: string; name: string }>;
+    }>,
+  connectLocalPublish: () =>
+    ipcRenderer.invoke("forge:connect-local-publish") as Promise<{
+      account: { connectorId: string; accountId: string; name: string };
+    }>,
+  beginXiaohongshuLogin: () =>
+    ipcRenderer.invoke("forge:begin-xiaohongshu-login") as Promise<{
+      status: "needs_auth";
+      loginUrl: string;
+    }>,
+  confirmXiaohongshuLogin: () =>
+    ipcRenderer.invoke("forge:confirm-xiaohongshu-login") as Promise<{
+      account: { connectorId: string; accountId: string; name: string };
+    }>,
+  beginToutiaoLogin: () =>
+    ipcRenderer.invoke("forge:begin-toutiao-login") as Promise<{
+      status: "needs_auth";
+      loginUrl: string;
+    }>,
+  confirmToutiaoLogin: () =>
+    ipcRenderer.invoke("forge:confirm-toutiao-login") as Promise<{
+      account: { connectorId: string; accountId: string; name: string };
+    }>,
   getMcpConfig: () =>
     ipcRenderer.invoke("forge:get-mcp-config") as Promise<{
       path: string;

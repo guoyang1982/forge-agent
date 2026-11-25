@@ -16199,7 +16199,15 @@ function connectorKindLabel(kind) {
   if (kind === "api-key") return "API 密钥";
   if (kind === "browser") return "浏览器登录";
   if (kind === "cli") return "命令行";
+  if (kind === "local") return "本地发布";
   return "仅技能";
+}
+
+function connectorSourceLabel(source) {
+  if (source === "plugin") return "插件自动加载";
+  if (source === "example") return "配置示例";
+  if (source === "catalog") return "本机演练";
+  return "手动配置";
 }
 
 function renderConnectorCard(entry) {
@@ -16209,7 +16217,7 @@ function renderConnectorCard(entry) {
     <span class="connector-card-body">
       <span class="connector-card-name">${escapeHtml(entry.name)}${connected ? '<span class="connector-status is-connected">已连接</span>' : entry.health === "needs_auth" ? '<span class="connector-status">待授权</span>' : ""}</span>
       <span class="connector-card-desc">${escapeHtml(entry.description)}</span>
-      <span class="tiny">${escapeHtml(connectorKindLabel(entry.kind))} · ${escapeHtml(entry.source === "plugin" ? "插件自动加载" : entry.source === "example" ? "配置示例" : "手动配置")}</span>
+      <span class="tiny">${escapeHtml(connectorKindLabel(entry.kind))} · ${escapeHtml(connectorSourceLabel(entry.source))}</span>
     </span>
   </button>`;
 }
@@ -16249,6 +16257,7 @@ function renderConnectorDetail(entry, catalog) {
           <p>${escapeHtml(entry.description)}</p>
         </div>
         <button type="button" class="btn primary" data-connector-connect="${escapeHtml(entry.id)}" ${connected ? "disabled" : ""}>${connected ? "已连接" : "连接"}</button>
+        ${entry.confirmAction && !connected ? `<button type="button" class="btn secondary" data-connector-confirm="${escapeHtml(entry.id)}">我已登录</button>` : ""}
       </div>
       <div class="connector-detail-meta">
         <span class="connector-status ${connected ? "is-connected" : ""}">${connected ? "已连接" : entry.health === "needs_auth" ? "待授权" : "未连接"}</span>
@@ -16274,7 +16283,22 @@ async function renderMcpView() {
     const res = await requireBridge().listMcp(cwd);
     const installed = Array.isArray(res?.installed) ? res.installed : [];
     const configured = Array.isArray(res?.configured) ? res.configured : [];
-    const catalog = ForgeConnectorCatalog.buildConnectorCatalog({ installed, configured });
+    const mcpCatalog = ForgeConnectorCatalog.buildConnectorCatalog({ installed, configured });
+    let publishAccounts = [];
+    let publishStates = [];
+    try {
+      const published = await requireBridge().listPublishAccounts();
+      publishAccounts = Array.isArray(published?.accounts) ? published.accounts : [];
+      publishStates = Array.isArray(published?.states) ? published.states : publishAccounts;
+    } catch {
+      publishAccounts = [];
+      publishStates = [];
+    }
+    const xiaohongshuState = publishStates.find((account) => account.connectorId === "xiaohongshu-browser");
+    const toutiaoState = publishStates.find((account) => account.connectorId === "toutiao-browser");
+    const xiaohongshu = ForgeConnectorCatalog.xiaohongshuPublishConnector(xiaohongshuState?.health);
+    const toutiao = ForgeConnectorCatalog.toutiaoPublishConnector(toutiaoState?.health);
+    const catalog = [xiaohongshu, toutiao, ...mcpCatalog];
     try {
       const auth = await requireBridge().mcpAuthStatus();
       const names = new Set(Array.isArray(auth?.names) ? auth.names : []);
@@ -16396,6 +16420,14 @@ function bindConnectorPage(root, catalog) {
       const id = btn.getAttribute("data-connector-connect") || "";
       const entry = catalog.find((item) => item.id === id);
       if (!entry) return;
+      if (entry.action === "connect-xiaohongshu") {
+        void beginXiaohongshuLogin();
+        return;
+      }
+      if (entry.action === "connect-toutiao") {
+        void beginToutiaoLogin();
+        return;
+      }
       if (entry.url) {
         void connectRemoteConnector(entry);
         return;
@@ -16409,6 +16441,17 @@ function bindConnectorPage(root, catalog) {
         return;
       }
       notifyUser(`连接 ${entry.name} 需要在对方页面完成授权。密钥不会写入对话。`, "warn");
+    });
+  });
+  root.querySelectorAll("[data-connector-confirm]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-connector-confirm") || "";
+      const entry = catalog.find((item) => item.id === id);
+      if (entry?.confirmAction === "confirm-toutiao") {
+        void confirmToutiaoLogin();
+        return;
+      }
+      void confirmXiaohongshuLogin();
     });
   });
   root.querySelectorAll("[data-connector-choice]").forEach((btn) => {
@@ -16427,6 +16470,54 @@ function bindConnectorPage(root, catalog) {
       notifyUser("浏览器登录要在官网由你完成一次授权，完成前不会标成已连接。", "warn");
     });
   });
+}
+
+async function beginXiaohongshuLogin() {
+  try {
+    notifyUser("正在打开小红书创作者页面。登录完成后点「我已登录」。", "info");
+    await requireBridge().beginXiaohongshuLogin();
+    state.connectorDetailId = "publish:xiaohongshu";
+    void renderMcpView();
+  } catch (err) {
+    const message = String(err?.message || err).replace(/^Error:\s*/, "").slice(0, 180);
+    notifyUser(message, "err");
+  }
+}
+
+async function beginToutiaoLogin() {
+  try {
+    notifyUser("正在打开头条号页面。登录完成后点「我已登录」。", "info");
+    await requireBridge().beginToutiaoLogin();
+    state.connectorDetailId = "publish:toutiao";
+    void renderMcpView();
+  } catch (err) {
+    const message = String(err?.message || err).replace(/^Error:\s*/, "").slice(0, 180);
+    notifyUser(message, "err");
+  }
+}
+
+async function confirmToutiaoLogin() {
+  try {
+    await requireBridge().confirmToutiaoLogin();
+    notifyUser("今日头条创作者账号已连接", "done");
+    state.connectorDetailId = "publish:toutiao";
+    void renderMcpView();
+  } catch (err) {
+    const message = String(err?.message || err).replace(/^Error:\s*/, "").slice(0, 180);
+    notifyUser(message, "err");
+  }
+}
+
+async function confirmXiaohongshuLogin() {
+  try {
+    await requireBridge().confirmXiaohongshuLogin();
+    notifyUser("小红书创作者账号已连接", "done");
+    state.connectorDetailId = "publish:xiaohongshu";
+    void renderMcpView();
+  } catch (err) {
+    const message = String(err?.message || err).replace(/^Error:\s*/, "").slice(0, 180);
+    notifyUser(message, "err");
+  }
 }
 
 async function connectRemoteConnector(entry) {

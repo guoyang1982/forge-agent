@@ -68,4 +68,32 @@ describe("renderer connector catalog", () => {
     expect(entry.url).toBe("https://klingai.com/mcp");
     expect(entry.statusNote).toContain("等待账号授权");
   });
+
+  it("keeps Xiaohongshu logged out until the creator session is confirmed", () => {
+    const catalog = loadCatalog();
+    const card = catalog.xiaohongshuPublishConnector("disconnected");
+    expect(card).toMatchObject({
+      id: "publish:xiaohongshu",
+      name: "小红书",
+      health: "disconnected",
+      loginUrl: "https://creator.xiaohongshu.com/",
+      confirmAction: "confirm-xiaohongshu",
+    });
+    expect(JSON.stringify(card)).not.toContain("cred://");
+    expect(JSON.stringify(card)).not.toContain("cookie");
+  });
+
+  it("keeps Toutiao logged out until the creator session is confirmed", () => {
+    const catalog = loadCatalog();
+    const card = catalog.toutiaoPublishConnector("disconnected");
+    expect(card).toMatchObject({
+      id: "publish:toutiao",
+      name: "今日头条",
+      health: "disconnected",
+      loginUrl: "https://mp.toutiao.com/profile_v4/index",
+      confirmAction: "confirm-toutiao",
+    });
+    expect(JSON.stringify(card)).not.toContain("cred://");
+    expect(JSON.stringify(card)).not.toContain("cookie");
+  });
 });

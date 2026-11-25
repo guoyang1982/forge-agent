@@ -1,4 +1,5 @@
-import { DAEMON_METHODS } from "@forge/protocol";
+import { DAEMON_METHODS, rpcFault } from "@forge/protocol";
+import { RpcFaultError } from "../host/router.js";
 import type { DaemonModule } from "../host/types.js";
 import {
   handleGetConfig,
@@ -63,6 +64,49 @@ export function createAssetsModule(): DaemonModule<ForgeDaemonContext> {
         handleListSkills(params, { getRuntime: context.getRuntime }));
       router.registerProduct(DAEMON_METHODS.LIST_MCP, async (params) =>
         handleListMcp(params, runtimeFiles));
+      router.registerProduct(DAEMON_METHODS.LIST_PUBLISH_ACCOUNTS, async () => {
+        if (!context.localPublish) throw new Error("local publish is unavailable");
+        return {
+          accounts: context.localPublish.listAccounts(),
+          states: context.localPublish.listStates(),
+        };
+      });
+      router.registerProduct(DAEMON_METHODS.CONNECT_LOCAL_PUBLISH, async () => {
+        if (!context.localPublish) throw new Error("local publish is unavailable");
+        return { account: context.localPublish.connect() };
+      });
+      router.registerProduct(DAEMON_METHODS.BEGIN_XIAOHONGSHU_LOGIN, async () => {
+        if (!context.localPublish) throw new Error("local publish is unavailable");
+        try {
+          return await context.localPublish.beginXiaohongshuLogin();
+        } catch (error) {
+          throw publishFault(error);
+        }
+      });
+      router.registerProduct(DAEMON_METHODS.CONFIRM_XIAOHONGSHU_LOGIN, async () => {
+        if (!context.localPublish) throw new Error("local publish is unavailable");
+        try {
+          return { account: await context.localPublish.confirmXiaohongshuLogin() };
+        } catch (error) {
+          throw publishFault(error);
+        }
+      });
+      router.registerProduct(DAEMON_METHODS.BEGIN_TOUTIAO_LOGIN, async () => {
+        if (!context.localPublish) throw new Error("local publish is unavailable");
+        try {
+          return await context.localPublish.beginToutiaoLogin();
+        } catch (error) {
+          throw publishFault(error);
+        }
+      });
+      router.registerProduct(DAEMON_METHODS.CONFIRM_TOUTIAO_LOGIN, async () => {
+        if (!context.localPublish) throw new Error("local publish is unavailable");
+        try {
+          return { account: await context.localPublish.confirmToutiaoLogin() };
+        } catch (error) {
+          throw publishFault(error);
+        }
+      });
       router.registerProduct(DAEMON_METHODS.GET_CONFIG, async (params) =>
         handleGetConfig(params));
       router.registerProduct(DAEMON_METHODS.RELOAD_RUNTIME, async () =>
@@ -110,6 +154,11 @@ export function createAssetsModule(): DaemonModule<ForgeDaemonContext> {
       }
     },
   };
+}
+
+function publishFault(error: unknown): never {
+  const message = error instanceof Error ? error.message : String(error);
+  throw new RpcFaultError(rpcFault("VALIDATION_FAILED", message));
 }
 
 function registerTalentMethods(

@@ -127,10 +127,58 @@
     };
   }
 
+  function toutiaoPublishConnector(health) {
+    const status = health === "connected" || health === "needs_auth" ? health : "disconnected";
+    return {
+      id: "publish:toutiao",
+      name: "今日头条",
+      description: "用头条号登录后发布文章。登录在 Forge 浏览器里由你完成，不会保存网页令牌。",
+      kind: "browser",
+      source: "catalog",
+      health: status,
+      enabled: true,
+      examples: [
+        '@publisher 用今日头条账号发布，幂等键 demo-toutiao-2，payload 原样是 {"title":"两字标题","content":"正文"}',
+      ],
+      statusNote:
+        status === "needs_auth"
+          ? "登录已失效，请在 Forge 浏览器里重新登录"
+          : "在 Forge 浏览器中登录头条号。封面上传还没有接上，缺封面时不会记成已发布。",
+      loginUrl: "https://mp.toutiao.com/profile_v4/index",
+      action: "connect-toutiao",
+      confirmAction: "confirm-toutiao",
+    };
+  }
+
+  function xiaohongshuPublishConnector(health) {
+    const status = health === "connected" || health === "needs_auth" ? health : "disconnected";
+    return {
+      id: "publish:xiaohongshu",
+      name: "小红书",
+      description: "用创作者中心登录后发布。登录在 Forge 浏览器里由你完成，不会保存网页令牌。",
+      kind: "browser",
+      source: "catalog",
+      health: status,
+      enabled: true,
+      examples: [
+        '@publisher 用小红书账号发布，幂等键 demo-xhs-1，payload 原样是 {"note":"你好"}',
+      ],
+      statusNote:
+        status === "needs_auth"
+          ? "登录已失效，请在 Forge 浏览器里重新登录"
+          : "在 Forge 浏览器中登录创作者中心。图片上传还没有接上。",
+      loginUrl: "https://creator.xiaohongshu.com/",
+      action: "connect-xiaohongshu",
+      confirmAction: "confirm-xiaohongshu",
+    };
+  }
+
   root.ForgeConnectorCatalog = {
     connectorIdForMcp,
     mcpRowToConnector,
     buildConnectorCatalog,
     connectionChoices,
+    toutiaoPublishConnector,
+    xiaohongshuPublishConnector,
   };
 })(typeof globalThis !== "undefined" ? globalThis : window);

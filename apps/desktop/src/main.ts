@@ -980,6 +980,36 @@ function registerIpcHandlers(): void {
     return requestDaemonMethod(cfg, DAEMON_METHODS.LIST_MCP, { cwd: resolvedCwd });
   });
 
+  ipcMain.handle("forge:list-publish-accounts", async () => {
+    const cfg = loadConfig();
+    return requestDaemonMethod(cfg, DAEMON_METHODS.LIST_PUBLISH_ACCOUNTS, {});
+  });
+
+  ipcMain.handle("forge:connect-local-publish", async () => {
+    const cfg = loadConfig();
+    return requestDaemonMethod(cfg, DAEMON_METHODS.CONNECT_LOCAL_PUBLISH, {});
+  });
+
+  ipcMain.handle("forge:begin-xiaohongshu-login", async () => {
+    const cfg = loadConfig();
+    return requestDaemonMethod(cfg, DAEMON_METHODS.BEGIN_XIAOHONGSHU_LOGIN, {});
+  });
+
+  ipcMain.handle("forge:confirm-xiaohongshu-login", async () => {
+    const cfg = loadConfig();
+    return requestDaemonMethod(cfg, DAEMON_METHODS.CONFIRM_XIAOHONGSHU_LOGIN, {});
+  });
+
+  ipcMain.handle("forge:begin-toutiao-login", async () => {
+    const cfg = loadConfig();
+    return requestDaemonMethod(cfg, DAEMON_METHODS.BEGIN_TOUTIAO_LOGIN, {});
+  });
+
+  ipcMain.handle("forge:confirm-toutiao-login", async () => {
+    const cfg = loadConfig();
+    return requestDaemonMethod(cfg, DAEMON_METHODS.CONFIRM_TOUTIAO_LOGIN, {});
+  });
+
   ipcMain.handle("forge:get-mcp-config", async () => {
     const cfg = loadConfig();
     return readUserMcpConfig(cfg.daemon.dataDir);

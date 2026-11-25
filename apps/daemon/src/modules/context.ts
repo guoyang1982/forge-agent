@@ -64,4 +64,13 @@ export interface ForgeDaemonContext extends DaemonContext {
   getRuntime: () => Promise<ForgeRuntime>;
   reloadRuntime: () => Promise<ReloadRuntimeResult>;
   shutdownRuntime: () => Promise<void>;
+  localPublish?: {
+    listAccounts(): Array<{ connectorId: string; accountId: string; name: string }>;
+    listStates(): Array<{ connectorId: string; accountId: string; name: string; health: string }>;
+    connect(): { connectorId: string; accountId: string; name: string };
+    beginXiaohongshuLogin(): Promise<{ status: "needs_auth"; loginUrl: string }>;
+    confirmXiaohongshuLogin(): Promise<{ connectorId: string; accountId: string; name: string }>;
+    beginToutiaoLogin(): Promise<{ status: "needs_auth"; loginUrl: string }>;
+    confirmToutiaoLogin(): Promise<{ connectorId: string; accountId: string; name: string }>;
+  };
 }
