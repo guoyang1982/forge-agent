@@ -22,7 +22,7 @@ export function attachPublishTool(
 
   registry.register(
     {
-      name: "connector.list_publish_accounts",
+      name: "connector_list_publish_accounts",
       description:
         "List connected accounts that declare publish. Returns connector id, account id, and name only.",
       parameters: {
@@ -39,7 +39,7 @@ export function attachPublishTool(
 
   registry.register(
     {
-      name: "connector.publish",
+      name: "connector_publish",
       description:
         "Publish an opaque payload through one connected account. The payload is forwarded unchanged.",
       parameters: {

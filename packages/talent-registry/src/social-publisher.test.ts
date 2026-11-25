@@ -17,7 +17,7 @@ describe("social-publisher", () => {
       sourcePath: "marketing/social-publisher.md",
       connectors: [],
       suggestedSkills: ["publishing-social-post"],
-      suggestedTools: ["connector.publish", "connector.list_publish_accounts"],
+      suggestedTools: ["connector_publish", "connector_list_publish_accounts"],
     });
     expect(talent?.methodology?.join("\n")).toContain("payload");
     expect(talent?.qualityGates?.join("\n")).toContain("payload");

@@ -12,8 +12,8 @@ describe("publishing-social-post", () => {
     const skill = skills.find((item) => item.id === "publishing-social-post");
     expect(skill?.description).toContain("payload");
     const text = await readFile(join(skillsDir, "publishing-social-post", "SKILL.md"), "utf8");
-    expect(text).toContain("connector.publish");
-    expect(text).toContain("connector.list_publish_accounts");
+    expect(text).toContain("connector_publish");
+    expect(text).toContain("connector_list_publish_accounts");
     expect(text).toContain("payload");
     expect(text).not.toMatch(forbidden);
   });
