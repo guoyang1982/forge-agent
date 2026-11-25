@@ -403,6 +403,9 @@ const state = {
   codexModels: [],
   selectedCodexModel: "",
   loadingCodexModels: false,
+  codexModelsLoadedAt: 0,
+  codexModelsLoad: null,
+  codexModelClampNotice: "",
   claudeModels: [
     { id: "sonnet", model: "sonnet", displayName: "Sonnet", isDefault: true },
     { id: "opus", model: "opus", displayName: "Opus" },
@@ -10511,9 +10514,11 @@ function applyRuntimePrefsToComposer() {
   state.selectedClaudeModel = prefs.claude?.model || state.selectedClaudeModel || "sonnet";
   renderRuntimeModelSelect();
   if (prefs.defaultProvider === "cursor") void loadCursorModelsForActiveProject();
-  if (prefs.defaultProvider === "codex") void loadCodexModelsForActiveProject();
+  if (prefs.defaultProvider === "codex") {
+    void loadCodexModelsForActiveProject().then(() => scheduleAcpPrewarm());
+  }
   if (prefs.defaultProvider === "claude-code") void loadClaudeModelsForActiveProject();
-  if (selectedWarmRuntime(prefs)) scheduleAcpPrewarm();
+  if (selectedWarmRuntime(prefs) && prefs.defaultProvider !== "codex") scheduleAcpPrewarm();
 }
 
 /** Reflect the current session/run runtime in the composer bar without saving it as the user default. */
@@ -10535,9 +10540,9 @@ function applyComposerRuntime(provider, model) {
   }
   renderRuntimeModelSelect();
   if (next === "cursor") void loadCursorModelsForActiveProject();
-  if (next === "codex") void loadCodexModelsForActiveProject();
+  if (next === "codex") void loadCodexModelsForActiveProject().then(() => scheduleAcpPrewarm());
   if (next === "claude-code") void loadClaudeModelsForActiveProject();
-  if (next === "cursor" || next === "codex" || next === "claude-code") scheduleAcpPrewarm();
+  if (next === "cursor" || next === "claude-code") scheduleAcpPrewarm();
 }
 
 function syncComposerToSessionRuntime(sessionId) {
@@ -10558,10 +10563,11 @@ function setDefaultRuntimeProvider(providerId) {
 function getSelectedRuntimeRequest() {
   const value = $("runtimeSelect")?.value || "forge";
   if (value === "codex") {
-    const model =
+    const raw =
       $("profileSelect")?.dataset.runtime === "codex"
         ? $("profileSelect")?.value
         : state.selectedCodexModel;
+    const model = state.codexModels.length ? listedModelId(state.codexModels, raw) : "";
     return { provider: "codex", ...(model ? { model } : {}) };
   }
   if (value === "claude-code") {
@@ -13527,7 +13533,7 @@ function renderCodexModelSelect() {
   if ([...sel.options].some((opt) => opt.value === preferred)) sel.value = preferred;
   state.selectedCodexModel = sel.value;
   const saved = loadRuntimePrefs().codex?.model || "";
-  if (saved && saved !== state.selectedCodexModel && !state.codexModels.some((m) => (m.model || m.id) === saved)) {
+  if (saved !== state.selectedCodexModel && state.codexModels.length) {
     saveRuntimePrefs({ codex: { model: state.selectedCodexModel } });
   }
 }
@@ -13692,29 +13698,48 @@ async function loadClaudeModelsForActiveProject({ force = false } = {}) {
   renderRuntimeModelSelect();
 }
 
-async function loadCodexModelsForActiveProject({ force = false } = {}) {
-  if (state.loadingCodexModels) return;
-  if (!force && state.codexModels.length) {
+function noteUnavailableCodexModel(previous, next) {
+  if (!previous || !next || previous === next) return;
+  const key = `${previous}->${next}`;
+  if (state.codexModelClampNotice === key) return;
+  state.codexModelClampNotice = key;
+  notifyUser(`Codex 模型 ${previous} 当前账号不可用，已改用 ${next}`, "warn");
+}
+
+function loadCodexModelsForActiveProject({ force = false, maxAgeMs = 20000 } = {}) {
+  const age = state.codexModelsLoadedAt ? Date.now() - state.codexModelsLoadedAt : Infinity;
+  if (!force && state.codexModels.length && age < maxAgeMs) {
     renderRuntimeModelSelect();
-    return;
+    return Promise.resolve();
   }
-  state.loadingCodexModels = true;
-  renderRuntimeModelSelect();
-  try {
-    const cwd = getActiveProject()?.cwd;
-    const res = await requireBridge().listCodexModels({ cwd });
-    state.codexModels = Array.isArray(res?.models) ? res.models : [];
-    if (!state.selectedCodexModel && state.codexModels.length) {
-      const def = state.codexModels.find((m) => m.isDefault) || state.codexModels[0];
-      state.selectedCodexModel = def.model || def.id || "";
+  if (state.codexModelsLoad) return state.codexModelsLoad;
+  if (!state.codexModels.length) {
+    state.loadingCodexModels = true;
+    renderRuntimeModelSelect();
+  }
+  const job = (async () => {
+    const previous = state.selectedCodexModel || loadRuntimePrefs().codex?.model || "";
+    try {
+      const cwd = getActiveProject()?.cwd;
+      const res = await requireBridge().listCodexModels({ cwd });
+      const models = Array.isArray(res?.models) ? res.models : [];
+      state.codexModels = models;
+      state.codexModelsLoadedAt = Date.now();
+      const next = listedModelId(models, previous);
+      if (models.length) state.selectedCodexModel = next;
+      if (previous && models.length && !models.some((m) => (m.model || m.id) === previous)) {
+        noteUnavailableCodexModel(previous, next);
+      }
+    } catch (e) {
+      notifyUser(`加载 Codex 模型失败: ${String(e)}`, "warn");
+    } finally {
+      state.loadingCodexModels = false;
+      state.codexModelsLoad = null;
+      renderRuntimeModelSelect();
     }
-  } catch (e) {
-    state.codexModels = [];
-    notifyUser(`加载 Codex 模型失败: ${String(e)}`, "warn");
-  } finally {
-    state.loadingCodexModels = false;
-    renderRuntimeModelSelect();
-  }
+  })();
+  state.codexModelsLoad = job;
+  return job;
 }
 
 async function loadCursorModelsForActiveProject({ force = false } = {}) {
@@ -17343,7 +17368,8 @@ function fillAutomationModelSelect(select, selected, cfg = state.config, runtime
       `<option value="${escapeHtml(row.value)}"${isSelected ? " selected" : ""}>${escapeHtml(row.label)}</option>`,
     );
   }
-  if (current && !matched) {
+  const liveCatalog = provider === "codex" || provider === "cursor" || provider === "claude-code";
+  if (current && !matched && !(liveCatalog && rows.length)) {
     options.push(
       `<option value="${escapeHtml(current)}" selected>${escapeHtml(current)}</option>`,
     );
@@ -19323,8 +19349,8 @@ async function renderRuntimesView() {
         state.selectedClaudeModel = def.model || def.id || "sonnet";
       }
     }
+    await loadCodexModelsForActiveProject({ force: true });
     const prefs = loadRuntimePrefs();
-    await loadCodexModelsForActiveProject();
     window.ForgeRuntimeUI.renderPage(
       root,
       state.runtimeProviders,
@@ -20012,10 +20038,12 @@ function bindActions() {
     state.acpPrewarmKey = "";
     saveRuntimePrefs({ defaultProvider: runtime });
     renderRuntimeModelSelect();
-    if (runtime === "codex") void loadCodexModelsForActiveProject();
+    if (runtime === "codex") {
+      void loadCodexModelsForActiveProject({ force: true }).then(() => scheduleAcpPrewarm());
+    }
     if (runtime === "claude-code") void loadClaudeModelsForActiveProject();
     if (runtime === "cursor") void loadCursorModelsForActiveProject();
-    if (runtime === "cursor" || runtime === "codex" || runtime === "claude-code") {
+    if (runtime === "cursor" || runtime === "claude-code") {
       scheduleAcpPrewarm();
     }
     notifyUser(
@@ -20421,12 +20449,17 @@ function bindActions() {
           notifyUser("执行中无法使用斜杠命令，请等待本轮完成", "warn");
           return;
         }
+        let queuedRuntime = getSelectedRuntimeRequest();
+        if (queuedRuntime?.provider === "codex") {
+          await loadCodexModelsForActiveProject({ force: true });
+          queuedRuntime = getSelectedRuntimeRequest();
+        }
         enqueueComposerRun(
           stopSid,
           active?.id || "",
           message,
           attachments,
-          getSelectedRuntimeRequest(),
+          queuedRuntime,
         );
         $("messageInput").value = "";
         clearComposerAttachments();
@@ -20542,7 +20575,12 @@ function bindActions() {
       }
     }
 
-    void executeAgentRun(active, message, attachments, getSelectedRuntimeRequest());
+    let runtimeRequest = getSelectedRuntimeRequest();
+    if (runtimeRequest?.provider === "codex") {
+      await loadCodexModelsForActiveProject({ force: true });
+      runtimeRequest = getSelectedRuntimeRequest();
+    }
+    void executeAgentRun(active, message, attachments, runtimeRequest);
   }
 
   $("runBtn").addEventListener("click", () => {

@@ -4,10 +4,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   classifyCodexTurnNotification,
+  codexModelsFromListResult,
   ensureCodexModelsCacheCompatible,
   isCodexModelsCacheNoise,
   isCodexModelsCacheStderr,
   isCodexThreadIdleNotification,
+  resolveCodexModelChoice,
   shouldIgnoreCodexWarning,
   shouldSurfaceCodexStderr,
   stripAnsi,
@@ -55,6 +57,41 @@ describe("Codex turn completion signals", () => {
         true,
       ),
     ).toBeNull();
+  });
+});
+
+describe("Codex live model catalog", () => {
+  const models = [
+    { id: "gpt-6-luna", model: "gpt-6-luna", displayName: "GPT-6-Luna", isDefault: true },
+    { id: "gpt-5.6-terra", model: "gpt-5.6-terra", displayName: "GPT-5.6-Terra" },
+  ];
+
+  it("keeps a model the account currently lists", () => {
+    expect(resolveCodexModelChoice(models, "gpt-5.6-terra")).toEqual({ model: "gpt-5.6-terra" });
+  });
+
+  it("replaces a model the account does not list", () => {
+    expect(resolveCodexModelChoice(models, "gpt-6.1-sol")).toEqual({
+      model: "gpt-6-luna",
+      replacedFrom: "gpt-6.1-sol",
+    });
+  });
+
+  it("pins the account default when the request omits a model", () => {
+    expect(resolveCodexModelChoice(models, "")).toEqual({ model: "gpt-6-luna" });
+  });
+
+  it("leaves the request unchanged when the catalog cannot be read", () => {
+    expect(resolveCodexModelChoice([], "gpt-6.1-sol")).toEqual({ model: "gpt-6.1-sol" });
+  });
+
+  it("drops hidden models from the picker catalog", () => {
+    expect(codexModelsFromListResult({
+      data: [
+        { slug: "gpt-6-luna", display_name: "GPT-6-Luna", visibility: "list" },
+        { slug: "gpt-reserve", display_name: "GPT-Reserve", visibility: "hide" },
+      ],
+    }).map((model) => model.model)).toEqual(["gpt-6-luna"]);
   });
 });
 
