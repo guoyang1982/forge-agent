@@ -5,6 +5,11 @@ apps/desktop/.electron-staging/
 .electron-staging/
 apps/mobile/.expo/
 .idea/
+*.tsbuildinfo
+apps/mobile/android/.kotlin/
+# Local runtime data and tool scratch.
+apps/daemon/.forge/
+.superpowers/brainstorm/
 *.db
 *.db-wal
 *.db-shm
