@@ -36,6 +36,36 @@ function fakeTools(log) {
   } as never;
 }
 
+describe("text-only talents", () => {
+  it("accepts a text answer when no coding tool is visible", async () => {
+    chatMock.mockReset();
+    chatMock.mockResolvedValueOnce({
+      text: "{\"note\":\"今天开始学 AI。\"}",
+      reasoningContent: "",
+      toolCalls: [],
+    });
+    const warnings: string[] = [];
+    const out = await runReActLoop({
+      config: cfg(),
+      guard: {} as never,
+      messages: [{ role: "user", content: "@xhs 继续优化这篇稿" }],
+      tools: {
+        definitions: [{ name: "echo" }],
+        async execute() {
+          return "{}";
+        },
+      } as never,
+      autoApply: false,
+      onEvent: (event) => {
+        if (event.type === "warning") warnings.push(event.message);
+      },
+    });
+    expect(chatMock).toHaveBeenCalledTimes(1);
+    expect(warnings).toEqual([]);
+    expect(out.finalText).toBe("{\"note\":\"今天开始学 AI。\"}");
+  });
+});
+
 describe("parallel tool execution", () => {
   it("runs registered tool cleanups when tool execution throws", async () => {
     chatMock.mockReset();

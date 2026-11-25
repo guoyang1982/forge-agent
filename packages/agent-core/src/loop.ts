@@ -46,6 +46,18 @@ import { ContextCompressor } from "./context-compression.js";
 const NO_TOOL_RETRY_NUDGE =
   "[forge] 这是编码/改代码任务。请在本轮使用 read_file、grep、write_patch 或 run_command 等工具完成，不要仅用文字回复。";
 
+const CODING_TOOL_NAMES = new Set([
+  "read_file",
+  "list_dir",
+  "grep",
+  "write_patch",
+  "run_command",
+]);
+
+function hasCodingTool(definitions: Array<{ name: string }>): boolean {
+  return definitions.some((definition) => CODING_TOOL_NAMES.has(definition.name));
+}
+
 export interface RunAgentInput {
   config: ForgeConfig;
   guard: WorkspaceGuard;
@@ -356,7 +368,8 @@ export async function runReActLoop(
         step === 0 &&
         !noToolRetryUsed &&
         lastUser &&
-        looksLikeCodingTask(lastUser)
+        looksLikeCodingTask(lastUser) &&
+        hasCodingTool(visibleToolDefs)
       ) {
         noToolRetryUsed = true;
         onEvent?.({
