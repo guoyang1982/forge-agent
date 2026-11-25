@@ -23,27 +23,31 @@ const REQUEST_LIMIT_BYTES = 256 * 1024;
 const SNAPSHOT_SCRIPT = String.raw`(() => {
   const attribute = "data-forge-browser-ref";
   let nextRef = Number(document.documentElement.getAttribute("data-forge-browser-next-ref") || "1");
-  const selector = "a[href],button,input,textarea,select,[role],[contenteditable='true'],[tabindex]";
+  const selector = "a[href],button,input,textarea,select,img,[role],[contenteditable='true'],[tabindex]";
   const elements = [];
   for (const element of Array.from(document.querySelectorAll(selector)).slice(0, 1000)) {
     const rect = element.getBoundingClientRect();
     const style = getComputedStyle(element);
     if (rect.width <= 0 || rect.height <= 0 || style.visibility === "hidden" || style.display === "none") continue;
+    const tag = element.tagName.toLowerCase();
+    if (tag === "img" && (rect.width < 80 || rect.height < 80)) continue;
     let ref = element.getAttribute(attribute);
     if (!ref) {
       ref = "e" + nextRef++;
       element.setAttribute(attribute, ref);
     }
-    const tag = element.tagName.toLowerCase();
     const explicitRole = element.getAttribute("role");
-    const role = explicitRole || (tag === "a" ? "link" : tag === "button" ? "button" : tag === "select" ? "combobox" : tag === "textarea" ? "textbox" : tag === "input" ? ((element.getAttribute("type") || "text") === "checkbox" ? "checkbox" : "textbox") : undefined);
-    const rawName = element.getAttribute("aria-label") || element.getAttribute("placeholder") || element.getAttribute("title") || element.innerText || element.textContent || "";
+    const editable = element.isContentEditable;
+    const role = explicitRole || (tag === "a" ? "link" : tag === "button" ? "button" : tag === "select" ? "combobox" : tag === "textarea" || editable ? "textbox" : tag === "input" ? ((element.getAttribute("type") || "text") === "checkbox" ? "checkbox" : "textbox") : tag === "img" ? "img" : undefined);
+    const rawName = element.getAttribute("aria-label") || element.getAttribute("placeholder") || element.getAttribute("data-placeholder") || element.getAttribute("alt") || element.getAttribute("title") || element.innerText || element.textContent || "";
     const value = "value" in element ? String(element.value || "") : undefined;
+    const href = tag === "a" ? String(element.href || "") : "";
     elements.push({
       ref,
       role,
       name: rawName.trim().replace(/\\s+/g, " ").slice(0, 300) || undefined,
       value: value ? value.slice(0, 1000) : undefined,
+      href: /^https?:\/\//i.test(href) ? href : undefined,
       disabled: Boolean(element.disabled || element.getAttribute("aria-disabled") === "true") || undefined,
     });
     if (elements.length >= 500) break;
@@ -69,6 +73,38 @@ function safeEqual(left: string, right: string): boolean {
   const a = Buffer.from(left);
   const b = Buffer.from(right);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+async function clickAccessibleText(win: BrowserWindow, text: string): Promise<boolean> {
+  const debugger_ = win.webContents.debugger;
+  const attachedHere = !debugger_.isAttached();
+  if (attachedHere) debugger_.attach("1.3");
+  try {
+    const tree = await debugger_.sendCommand("Accessibility.getFullAXTree") as {
+      nodes?: Array<{ role?: { value?: string }; name?: { value?: string }; backendDOMNodeId?: number }>;
+    };
+    const named = (tree.nodes ?? []).filter((node) => (node.name?.value ?? "").replace(/\s+/g, " ").trim() === text && node.backendDOMNodeId);
+    const node = named.find((item) => item.role?.value === "button") ?? named[0];
+    if (!node?.backendDOMNodeId) return false;
+    const quads = await debugger_.sendCommand("DOM.getContentQuads", { backendNodeId: node.backendDOMNodeId }) as {
+      quads?: number[][];
+    };
+    const quad = quads.quads?.[0];
+    if (!quad || quad.length < 8) return false;
+    const x = Math.round((quad[0] + quad[2] + quad[4] + quad[6]) / 4);
+    const y = Math.round((quad[1] + quad[3] + quad[5] + quad[7]) / 4);
+    win.show();
+    win.focus();
+    win.webContents.focus();
+    win.webContents.sendInputEvent({ type: "mouseMove", x, y });
+    win.webContents.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
+    win.webContents.sendInputEvent({ type: "mouseUp", x, y, button: "left", clickCount: 1 });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (attachedHere && debugger_.isAttached()) debugger_.detach();
+  }
 }
 
 class ForgeBrowserController {
@@ -142,6 +178,77 @@ class ForgeBrowserController {
       return true;
     })()`, true);
     if (!clicked) throw new Error(`Browser element not found: ${input.ref}. Take a new snapshot and retry.`);
+  }
+
+  async clickText(tabId: string, text: string): Promise<void> {
+    if (!/^[\u4e00-\u9fa5A-Za-z0-9]{1,12}$/.test(text)) {
+      throw new Error("Browser click text is not allowed");
+    }
+    const win = this.requireWindow(tabId);
+    const wanted = JSON.stringify(text);
+    const target = await win.webContents.executeJavaScript(String.raw`(() => {
+      const wanted = ${wanted};
+      const seen = new Set();
+      const candidates = [];
+      const collect = (root) => {
+        if (!root || seen.has(root) || !root.querySelectorAll) return;
+        seen.add(root);
+        for (const element of root.querySelectorAll("button,a,[role='button'],div,span")) candidates.push(element);
+        for (const element of root.querySelectorAll("*")) {
+          if (element.shadowRoot) collect(element.shadowRoot);
+        }
+        for (const frame of root.querySelectorAll("iframe")) {
+          try { collect(frame.contentDocument); } catch (error) {}
+        }
+      };
+      collect(document);
+      const matches = candidates.filter((element) => {
+        const label = (element.innerText || element.textContent || "").trim().replace(/\s+/g, " ");
+        if (label !== wanted) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      });
+      matches.sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return leftRect.width * leftRect.height - rightRect.width * rightRect.height;
+      });
+      let element = matches[0];
+      if (!element) return null;
+      let current = element;
+      while (current && current !== document.body) {
+        const style = getComputedStyle(current);
+        if (style.cursor === "pointer" || current.tagName === "BUTTON" || current.getAttribute("role") === "button") {
+          element = current;
+          break;
+        }
+        const root = current.getRootNode();
+        current = current.parentElement || (root && root.host) || null;
+      }
+      const style = getComputedStyle(element);
+      if (element.getAttribute("aria-disabled") === "true" || style.pointerEvents === "none") return { disabled: true };
+      element.scrollIntoView({ block: "center", inline: "center" });
+      const rect = element.getBoundingClientRect();
+      element.click();
+      return {
+        disabled: false,
+        x: Math.round(rect.left + rect.width / 2),
+        y: Math.round(rect.top + rect.height / 2),
+      };
+    })()`, true) as { disabled: boolean; x: number; y: number } | null;
+    if (!target) {
+      const clicked = await clickAccessibleText(win, text);
+      if (!clicked) throw new Error(`Browser element not found: ${text}. Take a new snapshot and retry.`);
+      return;
+    }
+    if (target.disabled) throw new Error(`Browser element is disabled: ${text}`);
+    win.show();
+    win.focus();
+    win.webContents.focus();
+    win.webContents.sendInputEvent({ type: "mouseMove", x: target.x, y: target.y });
+    win.webContents.sendInputEvent({ type: "mouseDown", x: target.x, y: target.y, button: "left", clickCount: 1 });
+    win.webContents.sendInputEvent({ type: "mouseUp", x: target.x, y: target.y, button: "left", clickCount: 1 });
   }
 
   async type(input: BrowserTypeInput): Promise<void> {
@@ -271,6 +378,7 @@ async function respond(socket: Socket, token: string, controller: ForgeBrowserCo
       case "navigate": result = await controller.navigate(params as unknown as BrowserNavigateInput); break;
       case "snapshot": result = await controller.snapshot(String(params.tabId)); break;
       case "click": result = await controller.click(params as unknown as BrowserElementActionInput); break;
+      case "clickText": result = await controller.clickText(String(params.tabId), String(params.text ?? "")); break;
       case "type": result = await controller.type(params as unknown as BrowserTypeInput); break;
       case "screenshot": result = await controller.screenshot(String(params.tabId)); break;
       case "close": result = controller.close(String(params.tabId)); break;

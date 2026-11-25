@@ -22,7 +22,9 @@ function setup(interact: "allow" | "confirm" | "deny" = "allow") {
     open: vi.fn(async ({ url }) => ({ id: "t1", backendId: "iab", title: "", url: url ?? "about:blank", active: true })),
     navigate: vi.fn(async ({ tabId, url }) => ({ id: tabId, backendId: "iab", title: "", url, active: true })),
     snapshot: vi.fn(async (tabId) => ({ tabId, backendId: "iab", title: "", url: "https://example.com", elements: [] })),
-    click: vi.fn(async () => undefined), type: vi.fn(async () => undefined),
+    click: vi.fn(async () => undefined),
+    clickText: vi.fn(async () => undefined),
+    type: vi.fn(async () => undefined),
     screenshot: vi.fn(async (tabId) => ({ tabId, backendId: "iab", mime: "image/png" as const, data: Buffer.from("png").toString("base64") })),
     close: vi.fn(async () => undefined),
   };

@@ -23,6 +23,7 @@ export interface BrowserBackend {
   navigate(input: BrowserNavigateInput): Promise<BrowserTab>;
   snapshot(tabId: string): Promise<BrowserSnapshot>;
   click(input: BrowserElementActionInput): Promise<void>;
+  clickText(tabId: string, text: string): Promise<void>;
   type(input: BrowserTypeInput): Promise<void>;
   screenshot(tabId: string): Promise<BrowserScreenshot>;
   close(tabId: string): Promise<void>;
@@ -63,6 +64,7 @@ export class BrowserService {
   navigate(input: BrowserNavigateInput): Promise<BrowserTab> { return this.backend(input.backendId).navigate(input); }
   snapshot(tabId: string, backendId?: BrowserBackendId): Promise<BrowserSnapshot> { return this.backend(backendId).snapshot(tabId); }
   click(input: BrowserElementActionInput): Promise<void> { return this.backend(input.backendId).click(input); }
+  clickText(tabId: string, text: string, backendId?: BrowserBackendId): Promise<void> { return this.backend(backendId).clickText(tabId, text); }
   type(input: BrowserTypeInput): Promise<void> { return this.backend(input.backendId).type(input); }
   screenshot(tabId: string, backendId?: BrowserBackendId): Promise<BrowserScreenshot> { return this.backend(backendId).screenshot(tabId); }
   close(tabId: string, backendId?: BrowserBackendId): Promise<void> { return this.backend(backendId).close(tabId); }
